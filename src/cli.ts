@@ -17,6 +17,9 @@ const HELP = `seo-watchdog <command>
                             crawl, snapshot, diff, update findings, alert on new criticals
   findings <site> [--severity critical|warn|info] [--status open|resolved|muted|all]
   changes <site> [--run <id>]   change events from a run (default: latest)
+  gsc <site> <key.json>     connect Search Console (service-account key) for real keyword demand
+  discover <site>           find the site's top competitors (needs ANTHROPIC_API_KEY; SERPER_API_KEY optional)
+  competitors <site>        list discovered competitors and alternatives
   serve [port]              localhost dashboard (default http://127.0.0.1:4321)
   mute <finding-id> | unmute <finding-id>
   remove <site>
@@ -87,6 +90,27 @@ switch (cmd) {
     const clip = (v: string | null) => (v == null ? '∅' : v.length > 120 ? v.slice(0, 117) + '…' : v);
     for (const e of rows) console.log(`${e.type}${e.field ? `.${e.field}` : ''}  ${e.subject || '(site)'}${e.before != null || e.after != null ? `\n    ${clip(e.before)}  →  ${clip(e.after)}` : ''}`);
     console.log(`${rows.length} change(s) in run #${runId}`);
+    break;
+  }
+  case 'gsc': {
+    const s = site(arg);
+    const key = process.argv.slice(2).filter((a) => !a.startsWith('--'))[2] ?? die('usage: gsc <site> <service-account-key.json>');
+    const { findProperty } = await import('./gsc.ts');
+    const prop = await findProperty(key, s.url).catch((e) => die(e.message));
+    db.prepare('UPDATE sites SET gsc_key = ?, gsc_property = ? WHERE id = ?').run(key, prop, s.id);
+    console.log(`connected ${s.url} → Search Console property ${prop}`);
+    break;
+  }
+  case 'discover': {
+    const { discover } = await import('./competitors.ts');
+    const r = await discover(db, site(arg), (m) => console.log('  ' + m)).catch((e) => die(e.message));
+    console.log(`discovery #${r.discoveryId}: ${JSON.stringify(r.stats)}`);
+    break;
+  }
+  case 'competitors': {
+    const { candidates } = await import('./competitors.ts');
+    for (const c of candidates(db, site(arg).id).filter((c) => c.status !== 'rejected'))
+      console.log(`[${c.status}] ${c.domain}  score ${c.score}  ${c.types.join('+')}  ${c.evidence.overlap ?? 0} shared keywords${c.evidence.best ? `, best #${c.evidence.best}` : ''}${c.evidence.reason ? `\n    ${c.evidence.reason}` : ''}`);
     break;
   }
   case 'serve': {

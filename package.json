@@ -4,11 +4,18 @@
   "private": true,
   "type": "module",
   "description": "SEO / GEO / agent-readiness watchdog for any website: snapshot, diff, findings, alerts.",
-  "engines": { "node": ">=24" },
-  "bin": { "seo-watchdog": "src/cli.ts" },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "seo-watchdog": "src/cli.ts"
+  },
   "scripts": {
     "wd": "node src/cli.ts",
     "dashboard": "node src/cli.ts serve",
     "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0"
   }
 }

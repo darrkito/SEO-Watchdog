@@ -133,7 +133,7 @@ ul.urls li:first-child{border-top:0}ul.urls .u{overflow-wrap:anywhere}ul.urls .m
 .btn.primary{background:var(--ink);color:var(--surface);border-color:var(--ink)}.btn.link{border:0;background:none;padding:0;color:var(--accent);font-weight:500;font-size:13px}
 .btn:disabled{opacity:.55;cursor:default}
 .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
-form.add{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end}
+form.add{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:end}
 form.add label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink-2)}
 input,select{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0}
 @media (max-width:700px){form.add{grid-template-columns:1fr}.issue summary{grid-template-columns:auto 1fr}.issue .count{grid-column:2}}

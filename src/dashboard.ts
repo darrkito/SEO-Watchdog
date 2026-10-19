@@ -6,6 +6,9 @@ import { openDb, addSite, type Site } from './db.ts';
 import { runSite } from './crawl.ts';
 import { alertText, sendAlert } from './alert.ts';
 import { ruleInfo, describeChange, RULES } from './catalog.ts';
+import { discover, activate, deactivate, addOwnCompetitor, candidates, type Candidate, type Profile } from './competitors.ts';
+import { findProperty } from './gsc.ts';
+import { hasLlm, MODEL } from './llm.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
 type Counts = { critical: number; warn: number; info: number };
@@ -14,7 +17,8 @@ type Group = { rule_id: string; severity: Sev; n: number; items: { id: number; s
 
 const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
-const running = new Set<number>();
+const running = new Set<number>(), discovering = new Set<number>();
+const discoveryError = new Map<number, string>();
 
 // ---------- queries ----------
 function counts(db: DatabaseSync, siteId: number): Counts {
@@ -56,7 +60,8 @@ const countChips = (c: Counts) => h`<div class="counts">
 
 // ---------- pages ----------
 function overviewPage(db: DatabaseSync, msg?: { error?: string; ok?: string }): string {
-  const sites = db.prepare('SELECT * FROM sites ORDER BY kind, id').all() as Site[];
+  const sites = db.prepare("SELECT * FROM sites WHERE kind = 'own' ORDER BY id").all() as Site[];
+  const rivals = (id: number) => (db.prepare("SELECT COUNT(*) n FROM competitor_candidates WHERE site_id = ? AND status IN ('active', 'pinned', 'user_added')").get(id) as { n: number }).n;
   const rows = sites.map((s) => { const c = counts(db, s.id), r = lastRun(db, s.id); return { s, c, r, v: verdict(db, s, c, r) }; });
   const own = rows.filter((x) => x.s.kind === 'own');
   const urgent = own.filter((x) => x.v.sev === 'critical').length;
@@ -67,18 +72,16 @@ function overviewPage(db: DatabaseSync, msg?: { error?: string; ok?: string }): 
     <div class="row"><span class="host">${host(x.s.url)}</span>${x.s.kind === 'competitor' ? h`<span class="chip info">Competitor</span>` : ''}</div>
     <div class="verdict">${chip(x.v.sev, x.v.sev === 'critical' ? 'Fix now' : x.v.sev === 'warn' ? 'Needs a look' : x.v.sev === 'good' ? 'Healthy' : 'Info')} ${x.v.text}</div>
     ${x.s.kind === 'own' && x.r && (x.c.critical || x.c.warn) ? countChips({ ...x.c, info: 0 }) : ''}
-    <div class="muted small">${x.r ? `Checked ${ago(x.r.finished_at)} · ${plural(x.r.stats.pages ?? 0, 'page')}` : 'Never checked'}</div></a>`;
+    <div class="muted small">${x.r ? `Checked ${ago(x.r.finished_at)} · ${plural(x.r.stats.pages ?? 0, 'page')}` : 'Never checked'} · ${rivals(x.s.id) ? `watching ${plural(rivals(x.s.id), 'competitor')}` : 'competitors not set up'}</div></a>`;
   return layout('Overview', h`
     <div class="hero"><h1>Your websites</h1><p class="headline">${headline}</p>
-      <p class="muted">${plural(own.length, 'site')} watched${rows.length > own.length ? ` · ${plural(rows.length - own.length, 'competitor')}` : ''}. Click a site to see what to fix and what changed.</p></div>
+      <p class="muted">${plural(own.length, 'site')} watched. Click a site to see what to fix, what changed, and what its competitors are doing.</p></div>
     ${msg?.error ? h`<div class="banner warn">${msg.error}</div>` : ''}${msg?.ok ? h`<div class="banner info">${msg.ok}</div>` : ''}
     ${sites.length ? h`<div class="grid-sites">${rows.map(card)}</div>` : ''}
     <h2>Watch a website</h2>
     <form class="add card" method="post" action="/sites">
       <label>Website address<input name="url" required placeholder="example.com" autocomplete="url" inputmode="url"></label>
       <label>Countries it sells to <input name="market" placeholder="MX or MX,US" maxlength="40"></label>
-      <label>Competitor of
-        <select name="competitorOf"><option value="">No, it's my site</option>${sites.filter((s) => s.kind === 'own').map((s) => h`<option value="${s.id}">${host(s.url)}</option>`)}</select></label>
       <button class="btn primary">Add site</button>
     </form>
     <p class="muted small">Countries are optional. They let the watchdog flag language tags that target the wrong country.</p>`, { refresh: running.size ? 8 : undefined });
@@ -88,15 +91,16 @@ function sitePage(db: DatabaseSync, site: Site, tab: string, showAll: boolean): 
   const c = counts(db, site.id), run = lastRun(db, site.id), v = verdict(db, site, c, run);
   const runs = (db.prepare("SELECT * FROM runs WHERE site_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 20").all(site.id) as any[]).reverse();
   const trend = runs.map((r) => ({ at: r.finished_at, ...JSON.parse(r.stats_json || '{}') })).filter((r) => r.open).map((r) => ({ at: r.at, critical: r.open.critical ?? 0, warn: r.open.warn ?? 0 }));
-  const isRunning = running.has(site.id);
-  const tabs = ['issues', 'changes', 'checks', 'pages'].filter((t) => site.kind === 'own' || t !== 'issues');
+  const isRunning = running.has(site.id) || discovering.has(site.id);
+  const parent = site.parent_site_id ? (db.prepare('SELECT * FROM sites WHERE id = ?').get(site.parent_site_id) as Site | undefined) : undefined;
+  const tabs = site.kind === 'own' ? ['issues', 'competitors', 'changes', 'checks', 'pages'] : ['changes', 'checks', 'pages'];
   const active = tabs.includes(tab) ? tab : tabs[0];
-  const label: Record<string, string> = { issues: 'What to fix', changes: 'What changed', checks: 'Site checks', pages: 'All pages' };
-  const body = active === 'issues' ? issuesTab(db, site, trend) : active === 'changes' ? changesTab(db, site, showAll) : active === 'checks' ? checksTab(db, site, run) : pagesTab(db, site);
+  const label: Record<string, string> = { issues: 'What to fix', competitors: 'Competitors', changes: 'What changed', checks: 'Site checks', pages: 'All pages' };
+  const body = active === 'issues' ? issuesTab(db, site, trend) : active === 'competitors' ? competitorsTab(db, site) : active === 'changes' ? changesTab(db, site, showAll) : active === 'checks' ? checksTab(db, site, run) : pagesTab(db, site);
   return layout(host(site.url), h`
-    <p class="small"><a href="/">← All sites</a></p>
+    ${parent ? h`<p class="small"><a href="/site/${parent.id}?tab=competitors">← ${host(parent.url)} competitors</a></p>` : h`<p class="small"><a href="/">← All sites</a></p>`}
     <div class="row"><div><h1>${host(site.url)}</h1>
-      <p class="muted small"><a href="${safeHref(site.url)}" target="_blank" rel="noopener">${site.url}</a>${site.kind === 'competitor' ? ' · competitor' : ''}${site.market ? ` · sells to ${site.market}` : ''}</p></div>
+      <p class="muted small"><a href="${safeHref(site.url)}" target="_blank" rel="noopener">${site.url}</a>${parent ? ` · competitor of ${host(parent.url)}` : ''}${site.market ? ` · sells to ${site.market}` : ''}</p></div>
       <form method="post" action="/site/${site.id}/run"><button class="btn primary" ${isRunning ? raw('disabled') : ''}>${isRunning ? 'Checking…' : 'Check now'}</button></form></div>
     <p class="headline">${chip(v.sev, v.sev === 'critical' ? 'Fix now' : v.sev === 'warn' ? 'Needs a look' : v.sev === 'good' ? 'Healthy' : 'Info')} ${v.text}</p>
     ${run ? h`<div class="stats">
@@ -145,6 +149,22 @@ function issueCard(site: Site, g: Group): Html {
       <div class="row" style="margin-top:10px"><span class="area">${info.area}</span>
         <form method="post" action="/site/${site.id}/mute"><input type="hidden" name="rule" value="${g.rule_id}"><button class="btn link" title="Hide this issue type for this site until you unmute it">Mute this issue</button></form></div>
     </div></details>`;
+}
+
+// ponytail: minimal read-only tab; the full version (buttons, profile edit, swaps) is pending — see CONTINUE.md.
+function competitorsTab(db: DatabaseSync, site: Site): Html {
+  const cs = candidates(db, site.id);
+  const watched = cs.filter((c) => ['active', 'pinned', 'user_added'].includes(c.status));
+  const alts = cs.filter((c) => c.status === 'suggested' && c.score > 0).slice(0, 7);
+  const dirs = cs.filter((c) => c.status === 'directory');
+  const row = (c: Candidate) => h`<li><span class="u"><b>${c.domain}</b>${c.competitor_site_id ? h` · <a href="/site/${c.competitor_site_id}">see their changes</a>` : ''}<br>
+    <span class="m">${c.evidence.overlap ? `Shows up for ${plural(c.evidence.overlap, 'of your searches', 'of your searches')}${c.evidence.best ? `, best position #${c.evidence.best}` : ''}. ` : ''}${c.evidence.reason ?? ''}</span>
+    ${c.evidence.quote ? h`<br><span class="m">“${c.evidence.quote}”</span>` : ''}</span></li>`;
+  if (!cs.length) return h`<div class="card empty">No competitors yet. ${hasLlm() ? h`Run <code>npm run wd -- discover ${host(site.url)}</code> to find the top 3.` : 'Set ANTHROPIC_API_KEY in SEO-Watchdog/.env to enable discovery.'}</div>`;
+  return h`<p class="muted small">The businesses that show up next to you when customers search. The watchdog checks their sites and records what they change.</p>
+    <h2>Watching</h2><div class="card"><ul class="urls">${watched.map(row)}</ul></div>
+    ${alts.length ? h`<h2>Other candidates</h2><div class="card"><ul class="urls">${alts.map(row)}</ul></div>` : ''}
+    ${dirs.length ? h`<h2>Directories that show up for your searches</h2><p class="muted small">Worth checking that you're listed.</p><div class="card"><ul class="urls">${dirs.map(row)}</ul></div>` : ''}`;
 }
 
 const NOISY = new Set(['content', 'faq_questions']);
@@ -243,13 +263,24 @@ function pageView(db: DatabaseSync, site: Site, url: string): string | null {
 }
 
 // ---------- server ----------
+// One job at a time: crawls and discoveries share a small machine (and its live trading bots).
+let queue: Promise<void> = Promise.resolve();
+function enqueue(id: number, set: Set<number>, job: () => Promise<void>) {
+  if (set.has(id)) return;
+  set.add(id);
+  queue = queue.then(job).catch((e) => console.error(e)).finally(() => set.delete(id));
+}
 function startRun(db: DatabaseSync, site: Site) {
-  if (running.has(site.id)) return;
-  running.add(site.id);
-  runSite(db, site)
-    .then(async (r) => { const t = alertText(r); if (t) await sendAlert(t); })
-    .catch((e) => console.error(`run ${site.url} failed:`, e))
-    .finally(() => running.delete(site.id));
+  enqueue(site.id, running, async () => { const r = await runSite(db, site); const t = alertText(r); if (t) await sendAlert(t); });
+}
+function startDiscovery(db: DatabaseSync, site: Site) {
+  discoveryError.delete(site.id);
+  enqueue(site.id, discovering, async () => {
+    try {
+      const r = await discover(db, site, (m) => console.log(`[discover ${host(site.url)}] ${m}`));
+      for (const d of r.stats.activated) { const c = db.prepare('SELECT s.* FROM competitor_candidates c JOIN sites s ON s.id = c.competitor_site_id WHERE c.site_id = ? AND c.domain = ?').get(site.id, d) as Site | undefined; if (c) startRun(db, c); }
+    } catch (e) { discoveryError.set(site.id, (e as Error).message); throw e; }
+  });
 }
 
 async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
@@ -276,7 +307,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         if ((origin && new URL(origin).host !== req.headers.host) || req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, 'Cross-site request refused');
         const form = await readForm(req);
         if (url.pathname === '/sites') {
-          const r = await addSite(db, { url: form.get('url') ?? '', market: form.get('market') ?? '', competitorOf: form.get('competitorOf') || undefined });
+          const r = await addSite(db, { url: form.get('url') ?? '', market: form.get('market') ?? '' });
           if (!r.ok) return send(res, 400, overviewPage(db, { error: r.error }));
           startRun(db, db.prepare('SELECT * FROM sites WHERE id = ?').get(r.id) as Site);
           return redirect(res, `/site/${r.id}`);

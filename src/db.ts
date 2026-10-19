@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS findings (
   message TEXT NOT NULL, evidence_json TEXT, ref TEXT,
   first_seen TEXT NOT NULL DEFAULT (datetime('now')), last_seen TEXT NOT NULL DEFAULT (datetime('now')),
   last_run_id INTEGER, UNIQUE (site_id, rule_id, subject));
+CREATE TABLE IF NOT EXISTS site_profiles (
+  site_id INTEGER PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE, data_json TEXT NOT NULL,
+  source TEXT NOT NULL CHECK (source IN ('auto','user')), updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS discoveries (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  at TEXT NOT NULL DEFAULT (datetime('now')), provider TEXT NOT NULL, model TEXT NOT NULL, keywords_json TEXT NOT NULL, stats_json TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS competitor_candidates (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  domain TEXT NOT NULL, url TEXT NOT NULL, score REAL NOT NULL DEFAULT 0, types_json TEXT, evidence_json TEXT,
+  status TEXT NOT NULL CHECK (status IN ('suggested','active','pinned','user_added','excluded','directory','rejected')),
+  discovery_id INTEGER REFERENCES discoveries(id) ON DELETE SET NULL,
+  competitor_site_id INTEGER REFERENCES sites(id) ON DELETE SET NULL, UNIQUE (site_id, domain));
 `;
 
 export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
@@ -47,11 +59,12 @@ export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   // ponytail: additive migrations by try/ALTER; adopt a migrations table when one needs data changes.
-  for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''", 'ALTER TABLE findings ADD COLUMN resolved_at TEXT']) try { db.exec(sql); } catch { /* already applied */ }
+  for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''", 'ALTER TABLE findings ADD COLUMN resolved_at TEXT',
+    'ALTER TABLE sites ADD COLUMN gsc_key TEXT', 'ALTER TABLE sites ADD COLUMN gsc_property TEXT']) try { db.exec(sql); } catch { /* already applied */ }
   return db;
 }
 
-export type Site = { id: number; url: string; kind: 'own' | 'competitor'; parent_site_id: number | null; market: string; page_limit: number; ua: string };
+export type Site = { id: number; url: string; kind: 'own' | 'competitor'; parent_site_id: number | null; market: string; page_limit: number; ua: string; gsc_key: string | null; gsc_property: string | null };
 
 /** Validate user input and add a site. Shared by the CLI and the dashboard so both accept the same inputs. */
 export async function addSite(db: DatabaseSync, input: { url: string; market?: string; limit?: number; competitorOf?: string; ua?: string }):
