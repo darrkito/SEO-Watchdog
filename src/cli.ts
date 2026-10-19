@@ -3,8 +3,7 @@
 import { parseArgs } from 'node:util';
 try { process.loadEnvFile(new URL('../.env', import.meta.url)); } catch { /* .env is optional */ }
 import { setPriority } from 'node:os';
-import { fetchRaw } from './vendor/claude-seo-ai/fetch.mjs';
-import { openDb, findSite, type Site } from './db.ts';
+import { openDb, findSite, addSite, type Site } from './db.ts';
 import { runSite } from './crawl.ts';
 import { alertText, sendAlert } from './alert.ts';
 
@@ -18,6 +17,7 @@ const HELP = `seo-watchdog <command>
                             crawl, snapshot, diff, update findings, alert on new criticals
   findings <site> [--severity critical|warn|info] [--status open|resolved|muted|all]
   changes <site> [--run <id>]   change events from a run (default: latest)
+  serve [port]              localhost dashboard (default http://127.0.0.1:4321)
   mute <finding-id> | unmute <finding-id>
   remove <site>
 
@@ -43,20 +43,9 @@ const posInt = (v: string | undefined, d: number, name: string) => {
 switch (cmd) {
   case 'add': {
     if (!arg) die('usage: add <url>');
-    let url: URL;
-    try { url = new URL(/^https?:\/\//i.test(arg!) ? arg! : 'https://' + arg); } catch { die(`not a URL: ${arg}`); }
-    if (!/^https?:$/.test(url!.protocol) || !url!.hostname.includes('.')) die(`not a public http(s) URL: ${arg}`);
-    const market = (opt.market ?? '').toUpperCase().split(',').map((s) => s.trim()).filter(Boolean);
-    if (market.some((m) => !/^[A-Z]{2}$/.test(m))) die('--market takes ISO country codes, e.g. MX or MX,US');
-    const parent = opt['competitor-of'] ? site(opt['competitor-of']) : null;
-    const probe = await fetchRaw(url!.href, { timeoutMs: 20_000 });
-    if (probe.status === 0) die(`unreachable: ${probe.error}`);
-    const home = new URL(probe.final_url);
-    const stored = home.origin + (home.pathname === '/' ? '/' : home.pathname);
-    if (findSite(db, stored)) die(`already watching ${home.hostname}`);
-    const id = db.prepare('INSERT INTO sites (url, kind, parent_site_id, market, page_limit, ua) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(stored, parent ? 'competitor' : 'own', parent?.id ?? null, market.join(','), posInt(opt.limit, 500, 'limit'), opt.ua ?? '').lastInsertRowid;
-    console.log(`#${id} ${stored} (${parent ? `competitor of ${parent.url}` : 'own'}, HTTP ${probe.status})`);
+    const r = await addSite(db, { url: arg!, market: opt.market, limit: posInt(opt.limit, 500, 'limit'), competitorOf: opt['competitor-of'], ua: opt.ua });
+    if (!r.ok) die(r.error);
+    else console.log(`#${r.id} ${r.url} (${r.note})`);
     break;
   }
   case 'sites': {
@@ -98,6 +87,11 @@ switch (cmd) {
     const clip = (v: string | null) => (v == null ? '∅' : v.length > 120 ? v.slice(0, 117) + '…' : v);
     for (const e of rows) console.log(`${e.type}${e.field ? `.${e.field}` : ''}  ${e.subject || '(site)'}${e.before != null || e.after != null ? `\n    ${clip(e.before)}  →  ${clip(e.after)}` : ''}`);
     console.log(`${rows.length} change(s) in run #${runId}`);
+    break;
+  }
+  case 'serve': {
+    const { startServer } = await import('./dashboard.ts');
+    startServer(arg ? posInt(arg, 4321, 'port') : undefined);
     break;
   }
   case 'mute':

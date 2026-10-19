@@ -127,7 +127,7 @@ before(async () => {
     if (u === '/loop-b') { res.writeHead(301, { location: '/loop-a' }).end(); return; }
     const title = { '/': 'Home', '/a': 'A', '/b': 'B', '/c': 'C', '/orphan': 'Orphan', '/private': 'P' }[u];
     if (!title) { res.writeHead(404).end(); return; }
-    const links = '<a href="/a">a</a><a href="/orphan">o</a><a href="/private">p</a><a href="/logo.png">i</a>';
+    const links = `<a href="/a">a</a>${mode === 'normal' ? '<a href="/orphan">o</a>' : ''}<a href="/private">p</a><a href="/logo.png">i</a>`;
     const robots = u === '/b' && mode === 'normal' ? '<meta name="robots" content="noindex">' : '';
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       .end(`<!doctype html><html lang="es"><head><title>${title} page</title><meta name="description" content="d">${robots}</head><body><nav>${links}</nav><main><h1>${title}</h1></main></body></html>`);
@@ -159,6 +159,7 @@ test('end-to-end: crawl, findings, resolve, suspect hold', async () => {
   const f2 = open();
   assert.ok(!f2.includes(`fetch.timeout ${base}/hang`) && !f2.includes(`indexability.noindex ${base}/b`), 'fixed issues resolve');
   assert.ok(r2.resolved.length >= 2 && r2.newFindings.length === 0);
+  assert.ok(!f2.includes(`sitemap.missing_indexable ${base}/orphan`), 'a page that left the site resolves its findings');
   const changes = db.prepare('SELECT field FROM events WHERE run_id = ? AND subject = ?').all(r2.runId, base + '/b') as { field: string }[];
   assert.ok(changes.some((c) => c.field === 'noindex'), 'noindex removal recorded as a change');
 
@@ -169,4 +170,5 @@ test('end-to-end: crawl, findings, resolve, suspect hold', async () => {
   const r4 = await runSite(db, site);
   assert.equal(r4.status, 'ok', 'second bad run in a row is believed');
   assert.ok(open().some((k) => k.startsWith('status.5xx')));
+  assert.ok(open().includes(`redirect.loop ${base}/loop-a`), 'an outage does not mark unreachable pages as fixed');
 });

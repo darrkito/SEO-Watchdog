@@ -221,6 +221,16 @@ Each phase ends with something we use on our 5 sites that day. **Dogfood before 
 - Fixtures live inline in `test/watchdog.test.ts`.
 - Bug #5 (SSR content missing) is detected without Playwright, using an empty-app-shell heuristic.
 
+### Status, 2026-10-19: Phase 2 done
+
+**Built:** a server-rendered dashboard (`npm run dashboard`) on zero-dependency `node:http`, so there's no React or build step.
+
+**Dogfooding found and fixed two tool bugs:**
+- Findings on pages that dropped out of a dynamic sitemap never resolved. They now resolve on a complete crawl, but never during an outage.
+- The changes list was a 12k-pixel wall. It's now grouped by kind of change.
+
+**Chart:** colors were validated with the dataviz palette checker. The first amber/red pair failed colorblind separation and was re-stepped.
+
 ### Phase 0: Skeleton (½ day)
 - `git init`, TypeScript, the `node:sqlite` schema, and `watchdog.config.json` with our 5 sites and 2-3 competitors each.
 - Vendor claude-seo-ai scripts with their LICENSE.

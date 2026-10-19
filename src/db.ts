@@ -47,11 +47,35 @@ export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   // ponytail: additive migrations by try/ALTER; adopt a migrations table when one needs data changes.
-  for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''"]) try { db.exec(sql); } catch { /* already applied */ }
+  for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''", 'ALTER TABLE findings ADD COLUMN resolved_at TEXT']) try { db.exec(sql); } catch { /* already applied */ }
   return db;
 }
 
 export type Site = { id: number; url: string; kind: 'own' | 'competitor'; parent_site_id: number | null; market: string; page_limit: number; ua: string };
+
+/** Validate user input and add a site. Shared by the CLI and the dashboard so both accept the same inputs. */
+export async function addSite(db: DatabaseSync, input: { url: string; market?: string; limit?: number; competitorOf?: string; ua?: string }):
+  Promise<{ ok: true; id: number; url: string; note: string } | { ok: false; error: string }> {
+  const raw = input.url.trim();
+  let url: URL;
+  try { url = new URL(/^https?:\/\//i.test(raw) ? raw : 'https://' + raw); } catch { return { ok: false, error: `Not a URL: ${raw}` }; }
+  if (!/^https?:$/.test(url.protocol) || !url.hostname.includes('.')) return { ok: false, error: `Not a public website address: ${raw}` };
+  const market = (input.market ?? '').toUpperCase().split(',').map((s) => s.trim()).filter(Boolean);
+  if (market.some((m) => !/^[A-Z]{2}$/.test(m))) return { ok: false, error: 'Market takes 2-letter country codes, e.g. MX or MX,US' };
+  const limit = input.limit ?? 500;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) return { ok: false, error: 'Page limit must be between 1 and 10000' };
+  let parent: Site | undefined;
+  if (input.competitorOf) { parent = findSite(db, input.competitorOf); if (!parent) return { ok: false, error: `Unknown site: ${input.competitorOf}` }; }
+  const { fetchRaw } = await import('./vendor/claude-seo-ai/fetch.mjs');
+  const probe = await fetchRaw(url.href, { timeoutMs: 20_000 });
+  if (probe.status === 0) return { ok: false, error: `Can't reach ${url.hostname}: ${probe.error}` };
+  const home = new URL(probe.final_url);
+  const stored = home.origin + home.pathname;
+  if (findSite(db, stored)) return { ok: false, error: `Already watching ${home.hostname}` };
+  const id = Number(db.prepare('INSERT INTO sites (url, kind, parent_site_id, market, page_limit, ua) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(stored, parent ? 'competitor' : 'own', parent?.id ?? null, market.join(','), limit, input.ua ?? '').lastInsertRowid);
+  return { ok: true, id, url: stored, note: `${parent ? `competitor of ${parent.url}` : 'own site'}, HTTP ${probe.status}` };
+}
 
 /** Accepts an id, a URL, or a bare host. */
 export function findSite(db: DatabaseSync, ref: string): Site | undefined {

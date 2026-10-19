@@ -152,17 +152,19 @@ export async function runSite(db: DatabaseSync, site: Site, { concurrency = 2, l
         if (reopen) newFindings.push(f);
       }
     }
-    // Resolve only what this run actually re-checked.
+    // Resolve what this run re-checked, plus pages that left the site (a complete crawl no longer reaches them:
+    // found live on Blockchains.click's dynamic sitemap). A crawl cut off by the page limit proves nothing about the rest.
     const stale = db.prepare("SELECT id, rule_id, subject FROM findings WHERE site_id = ? AND status = 'open' AND last_run_id != ?").all(site.id, runId) as { id: number; rule_id: string; subject: string }[];
-    for (const s of stale) if (s.subject === '' || curStatus.has(s.subject)) {
-      db.prepare("UPDATE findings SET status = 'resolved' WHERE id = ?").run(s.id);
+    const complete = !truncated && sm.found > 0 && home.status >= 200 && home.status < 400; // a down site "loses" every page
+    for (const s of stale) if (s.subject === '' || curStatus.has(s.subject) || complete) {
+      db.prepare("UPDATE findings SET status = 'resolved', resolved_at = datetime('now') WHERE id = ?").run(s.id);
       resolved.push(s);
     }
   }
   const open = Object.fromEntries((db.prepare("SELECT severity, COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' GROUP BY severity").all(site.id) as { severity: string; n: number }[]).map((r) => [r.severity, r.n]));
   const seconds = Math.round((Date.now() - t0) / 1000);
   db.prepare("UPDATE runs SET finished_at = datetime('now'), status = ?, stats_json = ? WHERE id = ?")
-    .run(status, JSON.stringify({ pages: pages.size, sitemap_urls: sitemap.size, truncated, events, new_findings: newFindings.length, resolved: resolved.length, seconds }), runId);
+    .run(status, JSON.stringify({ pages: pages.size, sitemap_urls: sitemap.size, truncated, events, new_findings: newFindings.length, resolved: resolved.length, seconds, open }), runId);
   db.exec('COMMIT');
   return { runId, site, status, pages: pages.size, truncated, events, newFindings, resolved, open, seconds };
   } catch (e) {

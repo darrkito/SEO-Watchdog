@@ -8,6 +8,7 @@
   "bin": { "seo-watchdog": "src/cli.ts" },
   "scripts": {
     "wd": "node src/cli.ts",
+    "dashboard": "node src/cli.ts serve",
     "test": "node --test test/*.test.ts"
   }
 }
