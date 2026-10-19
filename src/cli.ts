@@ -1,0 +1,118 @@
+#!/usr/bin/env node
+// SEO Watchdog CLI. Every site is user input; nothing here knows about any particular website.
+import { parseArgs } from 'node:util';
+try { process.loadEnvFile(new URL('../.env', import.meta.url)); } catch { /* .env is optional */ }
+import { setPriority } from 'node:os';
+import { fetchRaw } from './vendor/claude-seo-ai/fetch.mjs';
+import { openDb, findSite, type Site } from './db.ts';
+import { runSite } from './crawl.ts';
+import { alertText, sendAlert } from './alert.ts';
+
+const HELP = `seo-watchdog <command>
+
+  add <url> [--market MX,US] [--limit 500] [--competitor-of <site>] [--ua googlebot|bingbot|default|"<string>"]
+                            watch a site (own by default; --competitor-of marks it as a rival).
+                            Own sites are fetched as Googlebot unless --ua says otherwise.
+  sites                     list watched sites
+  run <site|all> [--concurrency 2] [--no-alert]
+                            crawl, snapshot, diff, update findings, alert on new criticals
+  findings <site> [--severity critical|warn|info] [--status open|resolved|muted|all]
+  changes <site> [--run <id>]   change events from a run (default: latest)
+  mute <finding-id> | unmute <finding-id>
+  remove <site>
+
+<site> = id, URL or host. Env: WATCHDOG_DATA, WATCHDOG_CONTACT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID`;
+
+const { positionals: [cmd, arg], values: opt } = parseArgs({
+  allowPositionals: true,
+  options: {
+    market: { type: 'string' }, limit: { type: 'string' }, 'competitor-of': { type: 'string' }, ua: { type: 'string' },
+    concurrency: { type: 'string' }, 'no-alert': { type: 'boolean' },
+    severity: { type: 'string' }, status: { type: 'string' }, run: { type: 'string' },
+  },
+});
+const db = openDb();
+const die = (m: string): never => { console.error(m); process.exit(1); };
+const site = (ref?: string): Site => findSite(db, ref ?? die('missing <site>')) ?? die(`unknown site: ${ref} (see: sites)`);
+const posInt = (v: string | undefined, d: number, name: string) => {
+  if (v == null) return d;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : die(`--${name} must be a positive integer`);
+};
+
+switch (cmd) {
+  case 'add': {
+    if (!arg) die('usage: add <url>');
+    let url: URL;
+    try { url = new URL(/^https?:\/\//i.test(arg!) ? arg! : 'https://' + arg); } catch { die(`not a URL: ${arg}`); }
+    if (!/^https?:$/.test(url!.protocol) || !url!.hostname.includes('.')) die(`not a public http(s) URL: ${arg}`);
+    const market = (opt.market ?? '').toUpperCase().split(',').map((s) => s.trim()).filter(Boolean);
+    if (market.some((m) => !/^[A-Z]{2}$/.test(m))) die('--market takes ISO country codes, e.g. MX or MX,US');
+    const parent = opt['competitor-of'] ? site(opt['competitor-of']) : null;
+    const probe = await fetchRaw(url!.href, { timeoutMs: 20_000 });
+    if (probe.status === 0) die(`unreachable: ${probe.error}`);
+    const home = new URL(probe.final_url);
+    const stored = home.origin + (home.pathname === '/' ? '/' : home.pathname);
+    if (findSite(db, stored)) die(`already watching ${home.hostname}`);
+    const id = db.prepare('INSERT INTO sites (url, kind, parent_site_id, market, page_limit, ua) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(stored, parent ? 'competitor' : 'own', parent?.id ?? null, market.join(','), posInt(opt.limit, 500, 'limit'), opt.ua ?? '').lastInsertRowid;
+    console.log(`#${id} ${stored} (${parent ? `competitor of ${parent.url}` : 'own'}, HTTP ${probe.status})`);
+    break;
+  }
+  case 'sites': {
+    const rows = db.prepare(`SELECT s.id, s.url, s.kind, s.market, s.page_limit,
+      (SELECT status || ' ' || COALESCE(finished_at, started_at) FROM runs WHERE site_id = s.id ORDER BY id DESC LIMIT 1) last_run,
+      (SELECT COUNT(*) FROM findings WHERE site_id = s.id AND status = 'open') open FROM sites s ORDER BY s.id`).all();
+    console.table(rows);
+    break;
+  }
+  case 'run': {
+    setPriority(19); // live trading bots share this machine
+    const targets = arg === 'all' ? (db.prepare('SELECT * FROM sites ORDER BY id').all() as Site[]) : [site(arg)];
+    for (const s of targets) {
+      console.log(`→ ${s.url}`);
+      const r = await runSite(db, s, { concurrency: posInt(opt.concurrency, 2, 'concurrency'), log: (m) => console.log('  ' + m) });
+      console.log(`  run #${r.runId} ${r.status}: ${r.pages} pages${r.truncated ? ' (limit hit)' : ''}, ${r.events} changes, ` +
+        `${r.newFindings.length} new / ${r.resolved.length} resolved findings, open ${JSON.stringify(r.open)}, ${r.seconds}s`);
+      const text = alertText(r);
+      if (text) { console.log(text); if (!opt['no-alert'] && !(await sendAlert(text))) console.log('  (no Telegram configured; alert printed only)'); }
+    }
+    break;
+  }
+  case 'findings': {
+    const s = site(arg);
+    const st = opt.status ?? 'open';
+    const rows = db.prepare(`SELECT id, severity sev, rule_id rule, message, subject, ref FROM findings
+      WHERE site_id = ? AND (? = 'all' OR status = ?) AND (? IS NULL OR severity = ?)
+      ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, rule_id, subject`)
+      .all(s.id, st, st, opt.severity ?? null, opt.severity ?? null) as any[];
+    for (const r of rows) console.log(`#${r.id} [${r.sev}] ${r.rule}: ${r.message}${r.subject ? `\n    ${r.subject}` : ''}${r.ref ? `  (${r.ref})` : ''}`);
+    console.log(`${rows.length} ${st} finding(s)`);
+    break;
+  }
+  case 'changes': {
+    const s = site(arg);
+    const runId = opt.run ? posInt(opt.run, 0, 'run') : (db.prepare('SELECT MAX(id) id FROM runs WHERE site_id = ?').get(s.id) as { id: number | null }).id;
+    if (!runId) die('no runs yet');
+    const rows = db.prepare('SELECT type, field, before, after, subject FROM events WHERE site_id = ? AND run_id = ? ORDER BY type, subject').all(s.id, runId) as any[];
+    const clip = (v: string | null) => (v == null ? '∅' : v.length > 120 ? v.slice(0, 117) + '…' : v);
+    for (const e of rows) console.log(`${e.type}${e.field ? `.${e.field}` : ''}  ${e.subject || '(site)'}${e.before != null || e.after != null ? `\n    ${clip(e.before)}  →  ${clip(e.after)}` : ''}`);
+    console.log(`${rows.length} change(s) in run #${runId}`);
+    break;
+  }
+  case 'mute':
+  case 'unmute': {
+    const id = posInt(arg, 0, 'finding-id');
+    const r = db.prepare('UPDATE findings SET status = ? WHERE id = ?').run(cmd === 'mute' ? 'muted' : 'open', id);
+    console.log(r.changes ? `#${id} ${cmd}d` : `no finding #${id}`);
+    break;
+  }
+  case 'remove': {
+    const s = site(arg);
+    db.prepare('DELETE FROM sites WHERE id = ?').run(s.id);
+    console.log(`removed #${s.id} ${s.url} and its history`);
+    break;
+  }
+  default:
+    console.log(HELP);
+}

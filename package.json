@@ -1,0 +1,13 @@
+{
+  "name": "seo-watchdog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SEO / GEO / agent-readiness watchdog for any website: snapshot, diff, findings, alerts.",
+  "engines": { "node": ">=24" },
+  "bin": { "seo-watchdog": "src/cli.ts" },
+  "scripts": {
+    "wd": "node src/cli.ts",
+    "test": "node --test test/*.test.ts"
+  }
+}
