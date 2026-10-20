@@ -72,7 +72,7 @@ All routes below are live and were exercised against a scratch DB copy (pin/unpi
 - Create `SEO-Watchdog/.env` by hand with `ANTHROPIC_API_KEY=...`. Claude can't write `.env` files, because the claude-seo-ai plugin blocks it. The CLI loads `.env` automatically.
 - **Optional but recommended:** sign up at serper.dev (free, 2,500 searches, no card) and add `SERPER_API_KEY=...`. That gives:
   - **Real Google positions plus Maps / local pack.** Local competitors get the "Local" badge; the Claude web-search fallback has no Maps data.
-  - **Far lower cost:** about $0.02 instead of about $1 per discovery, because web-search pages are about 12k input tokens each.
+  - **Far lower cost:** about $0.05–0.10 instead of about $1 per discovery (estimate; confirm on the first Serper run), because web-search pages are about 12k input tokens each.
 - 2026-10-20: Serper key obtained and field names verified live by curl (organic[].link/position, places[].title/website/rating/ratingCount all match). A full discovery through Serper hasn't run yet.
 - The Serper code path (`serper()` in `competitors.ts`) was written before that check. Test it on the first run with a key, and check the `organic[].link/position` and `places[].website/rating/ratingCount` field names.
 

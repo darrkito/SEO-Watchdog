@@ -152,7 +152,7 @@ function issueCard(site: Site, g: Group): Html {
 }
 
 const WATCHED = ['active', 'pinned', 'user_added'];
-const discoveryCost = () => (process.env.SERPER_API_KEY ? 'about $0.02 (Serper + Claude)' : 'about $1 (Claude web search; add SERPER_API_KEY to cut it to about $0.02)');
+const discoveryCost = () => (process.env.SERPER_API_KEY ? 'about $0.05–0.10 (Serper + Claude)' : 'about $1 (Claude web search; add SERPER_API_KEY to cut it to about $0.05–0.10)');
 
 function competitorsTab(db: DatabaseSync, site: Site): Html {
   const cs = candidates(db, site.id);

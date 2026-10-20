@@ -19,7 +19,7 @@ npm test                                            # replays real past bugs as 
 
 **Optional `.env` settings:**
 - `ANTHROPIC_API_KEY`: enables competitor discovery. `WATCHDOG_MODEL` overrides the model (default `claude-opus-5-5`).
-- `SERPER_API_KEY`: real Google positions plus Maps for discovery, and about $0.02 per run instead of about $1.
+- `SERPER_API_KEY`: real Google positions plus Maps for discovery, and about $0.05–0.10 per run instead of about $1.
 - `WATCHDOG_CONTACT`: added to the crawler User-Agent.
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`: instant alerts.
 - `WATCHDOG_DATA`: database and HTML location (default `./data`).
