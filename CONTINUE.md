@@ -125,6 +125,22 @@ Note: the rank counts own-site and platform hits as occupied SERP slots (correct
   - Track position changes between discoveries ("you moved #5 → #3").
   - Robots-blocked URLs shouldn't count toward the crawl page cap.
 
+## Using it on a real site: the loop (first run on Yume, 2026-10-20)
+
+1. Open **How to win** and read "Do these first".
+2. Before acting, check constraints in that site's memory (e.g. titles frozen for a CTR test).
+3. Check real demand (GSC; the watchdog's per-search figures are 90-day impressions).
+4. Fix the page with real facts only, re-crawl the own site (`npm run wd -- run <id>`), and confirm the action disappeared.
+
+What this caught on Yume:
+- The GDL guide was thin with no FAQ. It was expanded (Yume 8341b13).
+- A topic gap on "impresión de etiquetas" (agavestudio 13 pages vs 0) got a new guide (f7f968f).
+- Watchdog false advice: "add Article" when the site uses BlogPosting, plus junk types (QAPage/ItemPage). Fixed with the `USEFUL` schema whitelist in gaps.ts (f504d1d).
+- Not visible in the tab yet: Yume is absent from Maps. Discovery treated it as national, so it never searched Maps. It was checked by hand with Serper places.
+  - Possible fix: also search Maps for sites with a city in the profile, even when scope=national.
+
+Next site: Dizayn (`dizayn-web` repo; a peer session may have uncommitted work there, so check `git status` before editing).
+
 ## After 4a (from PLAN.md)
 
 - **pm2 + schedule:**
