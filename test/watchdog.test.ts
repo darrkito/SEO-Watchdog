@@ -203,6 +203,7 @@ test('competitor discovery: scoring, own/platform/directory split, quote + keywo
   assert.equal(c['facebook.com'], undefined, 'platforms dropped');
   assert.equal(c['bodas.net'].status, 'directory');
   assert.equal(c['liar.mx'].status, 'rejected', 'quote not on the page → not a competitor');
+  assert.deepEqual([c['rival.mx'].evidence.eligible, c['liar.mx'].evidence.eligible, c['bodas.net'].evidence.eligible], [true, false, false], 'verdict kept so watched rivals can be flagged later');
   assert.equal(c['rival.mx'].evidence.best, 2, 'own site still occupies the #1 slot');
   assert.equal(c['liar.mx'].evidence.best, 5, 'rank among distinct domains: rival.mx second hit does not push others down');
   assert.deepEqual([c['rival.mx'].status, c['other.mx'].status], ['active', 'active'], 'first discovery activates eligible top 3');

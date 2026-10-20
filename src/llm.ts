@@ -1,8 +1,8 @@
 // Claude calls used by competitor discovery: structured JSON answers and localized web search.
 import Anthropic from '@anthropic-ai/sdk';
 
-// Haiku: about a cent per discovery with Serper doing the searches. Set WATCHDOG_MODEL for a stronger model.
-export const MODEL = process.env.WATCHDOG_MODEL || 'claude-haiku-5-5';
+// Sonnet: ~$0.06 per discovery with Serper; judged same-customer rivals clearly better than Haiku ($0.0035) in a 4-site test.
+export const MODEL = process.env.WATCHDOG_MODEL || 'claude-sonnet-5-5';
 // Claude's own web search (the no-Serper path) needs Opus/Sonnet-class models.
 export const canWebSearch = /^claude-(opus|sonnet|fable)-/.test(MODEL);
 // $/MTok for cost reporting; unknown models report tokens only.

@@ -19,7 +19,7 @@ export type Profile = {
 };
 export type Candidate = {
   id: number; site_id: number; domain: string; url: string; score: number; types: string[]; status: string;
-  evidence: { keywords: { q: string; pos: number }[]; overlap: number; best: number; maps?: { rating: number | null; reviews: number | null; name: string }; reason?: string; quote?: string; kind?: string; national?: boolean };
+  evidence: { keywords: { q: string; pos: number }[]; overlap: number; best: number; maps?: { rating: number | null; reviews: number | null; name: string }; reason?: string; quote?: string; kind?: string; national?: boolean; eligible?: boolean };
   competitor_site_id: number | null;
 };
 
@@ -233,7 +233,7 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
     const eligible = !!v && v.kind === 'competitor' && v.same_service && v.same_market !== 'no' && v.quoted;
     const types = [c.kws.length ? 'search' : '', c.mapsHits ? 'local' : ''].filter(Boolean);
     upsert.run(site.id, c.domain, c.url, +c.score.toFixed(4), JSON.stringify(types),
-      JSON.stringify({ keywords: c.kws, overlap: c.kws.length, best: c.best === 99 ? null : c.best, maps: c.maps && { rating: c.maps.rating, reviews: c.maps.reviews, name: c.maps.name }, reason: v?.reason, quote: v?.quoted ? v.quote : undefined, kind: v?.kind, national: v?.national }),
+      JSON.stringify({ keywords: c.kws, overlap: c.kws.length, best: c.best === 99 ? null : c.best, maps: c.maps && { rating: c.maps.rating, reviews: c.maps.reviews, name: c.maps.name }, reason: v?.reason, quote: v?.quoted ? v.quote : undefined, kind: v?.kind, national: v?.national, eligible: !isDir && eligible }),
       isDir ? 'directory' : eligible ? 'suggested' : 'rejected', discId);
   }
   // First discovery for this site: switch the top 3 on with no clicks needed. Later ones only propose.

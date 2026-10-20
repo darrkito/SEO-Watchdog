@@ -180,7 +180,8 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
       : r ? h`<a href="/site/${c.competitor_site_id}?tab=changes">${plural(r.stats.events ?? 0, 'change')} in their last check</a> · ${ago(r.finished_at)}` : 'Not checked yet.';
     return h`<div class="card comp"><div class="row"><b>${c.domain}</b><span class="counts">
         ${c.types.includes('search') ? chip('info', 'Search') : ''}${c.types.includes('local') ? chip('info', 'Local') : ''}
-        ${c.status === 'user_added' ? chip('info', 'Added by you') : ''}${c.status === 'pinned' ? chip('good', 'Pinned') : ''}</span></div>
+        ${c.status === 'user_added' ? chip('info', 'Added by you') : ''}${c.status === 'pinned' ? chip('good', 'Pinned') : ''}
+        ${c.evidence.eligible === false ? chip('warn', 'Not a direct rival?') : ''}</span></div>
       <p class="small">${evidence(c)}</p><p class="small">${check}</p>
       <div class="row" style="justify-content:flex-start">
         ${c.status === 'active' ? act(c, 'pin', 'Pin', 'Keep watching it even if another site shows up more') : c.status === 'pinned' ? act(c, 'unpin', 'Unpin') : ''}
@@ -188,9 +189,12 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
         ${act(c, 'exclude', 'Never suggest', 'Stop watching and never suggest it again')}</div></div>`;
   };
 
-  // A later discovery only proposes: the strongest alternative vs the weakest watched site that isn't pinned or yours.
-  const weakest = watched.filter((c) => c.status === 'active').sort((a, b) => a.score - b.score)[0];
-  const swap = weakest && alts.find((c) => c.score > weakest.score);
+  // A later discovery only proposes. First choice to replace: a watched site the last check no longer judged a direct rival;
+  // otherwise the least visible one, if an alternative now shows up more. Pinned and user-added sites are never proposed.
+  const active = watched.filter((c) => c.status === 'active');
+  const doubtful = active.find((c) => c.evidence.eligible === false);
+  const weakest = doubtful ?? active.sort((a, b) => a.score - b.score)[0];
+  const swap = weakest && (doubtful ? alts[0] : alts.find((c) => c.score > weakest.score));
 
   const p = db.prepare('SELECT data_json, source, updated_at FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string; source: string; updated_at: string } | undefined;
   const prof: Partial<Profile> = p ? JSON.parse(p.data_json) : {};
@@ -199,7 +203,8 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
   return h`<p class="muted small">The businesses that show up next to you when customers search. The watchdog checks their sites and records what they change.</p>
     ${err ? h`<div class="banner warn">The last discovery failed: ${err}</div>` : ''}
     ${!cs.length ? h`<div class="card empty"><p>No competitors yet.</p>${discoverBtn('Find my top 3 competitors')}</div>` : h`
-      ${swap ? h`<div class="banner info row"><span><b>${swap.domain}</b> now shows up more than <b>${weakest.domain}</b> for your searches. Swap?</span>
+      ${swap ? h`<div class="banner info row"><span>${doubtful ? h`The last check doesn't think <b>${weakest.domain}</b> is a direct rival (${weakest.evidence.reason ?? 'different service or market'}). <b>${swap.domain}</b> looks like a closer match. Swap?`
+        : h`<b>${swap.domain}</b> now shows up more than <b>${weakest.domain}</b> for your searches. Swap?`}</span>
         <form method="post" action="/site/${site.id}/competitor"><input type="hidden" name="action" value="swap"><input type="hidden" name="cid" value="${swap.id}"><input type="hidden" name="replace" value="${weakest.id}"><button class="btn">Swap</button></form></div>` : ''}
       <h2>Watching</h2>
       ${watched.length ? h`<div class="grid-sites">${watched.map(watchCard)}</div>` : h`<div class="card empty">Not watching any competitor. Pick one below.</div>`}
