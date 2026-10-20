@@ -172,3 +172,50 @@ test('end-to-end: crawl, findings, resolve, suspect hold', async () => {
   assert.ok(open().some((k) => k.startsWith('status.5xx')));
   assert.ok(open().includes(`redirect.loop ${base}/loop-a`), 'an outage does not mark unreachable pages as fixed');
 });
+
+test('competitor discovery: scoring, own/platform/directory split, quote + keyword guards, statuses survive re-discovery', async () => {
+  const { discover, deactivate, candidates } = await import('../src/competitors.ts');
+  const db = openDb(join(dataDir, 'comp.db'));
+  const own = Number(db.prepare("INSERT INTO sites (url, kind, market, gsc_key, gsc_property) VALUES ('https://own.mx/', 'own', 'MX', '/k.json', 'sc-domain:own.mx')").run().lastInsertRowid);
+  db.prepare("INSERT INTO runs (site_id, status) VALUES (?, 'ok')").run(own);
+  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(own) as any;
+  const pages: Record<string, string> = { 'rival.mx': 'Renta de baños de lujo para bodas', 'liar.mx': 'Venta de llantas', 'other.mx': 'Sanitarios portátiles para eventos' };
+  const deps = {
+    topQueries: async () => [{ query: 'renta baños gdl', impressions: 100, clicks: 1, position: 3 }],
+    search: async () => ({ places: [], organic: ['https://own.mx/x', 'https://rival.mx/a', 'https://rival.mx/b', 'https://www.bodas.net/x', 'https://facebook.com/x', 'https://liar.mx/', 'https://other.mx/']
+      .map((url, i) => ({ url, position: i + 1 })) }),
+    fetchRaw: async (url: string) => ({ ok: true, status: 200, final_url: url, headers: { 'content-type': 'text/html' }, body: { text: `<html><body><main><p>${pages[new URL(url).hostname]}</p></main></body></html>` } }),
+    askJson: async (_u: any, _sys: string, _prompt: string, schema: any) => schema.required.includes('keywords')
+      ? { business_name: 'Own', industry: 'baños', services: ['renta'], city: 'Guadalajara', region: '', country: 'mx', scope: 'national', languages: ['es'], brand_terms: [], evidence: '',
+          keywords: [{ query: 'renta baños gdl', lang: 'es', from_gsc: true }, { query: 'invented query', lang: 'es', from_gsc: true }] }
+      : { candidates: [
+          { domain: 'rival.mx', kind: 'competitor', same_service: true, same_market: 'yes', national: false, reason: 'r', quote: 'baños de lujo' },
+          { domain: 'liar.mx', kind: 'competitor', same_service: true, same_market: 'yes', national: false, reason: 'r', quote: 'renta de sanitarios' }, // not on its page
+          { domain: 'other.mx', kind: 'competitor', same_service: true, same_market: 'unknown', national: false, reason: 'r', quote: 'portátiles para eventos' }] },
+  } as any;
+
+  const r1 = await discover(db, site, undefined, deps);
+  assert.deepEqual(r1.profile.keywords.map((k) => k.from_gsc), [true, false], 'a "Search Console" keyword not in the real list is flipped to generated');
+  assert.equal(r1.profile.country, 'MX');
+  const by = () => Object.fromEntries(candidates(db, own).map((c) => [c.domain, c]));
+  let c = by();
+  assert.equal(c['own.mx'], undefined, 'own domain excluded');
+  assert.equal(c['facebook.com'], undefined, 'platforms dropped');
+  assert.equal(c['bodas.net'].status, 'directory');
+  assert.equal(c['liar.mx'].status, 'rejected', 'quote not on the page → not a competitor');
+  assert.equal(c['rival.mx'].evidence.best, 2, 'own site still occupies the #1 slot');
+  assert.equal(c['liar.mx'].evidence.best, 5, 'rank among distinct domains: rival.mx second hit does not push others down');
+  assert.deepEqual([c['rival.mx'].status, c['other.mx'].status], ['active', 'active'], 'first discovery activates eligible top 3');
+  const comp = db.prepare('SELECT * FROM sites WHERE id = ?').get(c['rival.mx'].competitor_site_id) as any;
+  assert.deepEqual([comp.kind, comp.parent_site_id], ['competitor', own]);
+
+  db.prepare("UPDATE competitor_candidates SET status = 'pinned' WHERE id = ?").run(c['rival.mx'].id);
+  db.prepare("UPDATE competitor_candidates SET status = 'user_added' WHERE id = ?").run(c['liar.mx'].id);
+  deactivate(db, site, c['other.mx'].id, true);
+  assert.equal(db.prepare('SELECT 1 FROM sites WHERE id = ?').get(c['other.mx'].competitor_site_id), undefined, 'stop watching removes the competitor site');
+
+  const r2 = await discover(db, site, undefined, deps);
+  c = by();
+  assert.deepEqual([c['rival.mx'].status, c['liar.mx'].status, c['other.mx'].status], ['pinned', 'user_added', 'excluded'], 're-discovery keeps user choices; excluded never re-suggested');
+  assert.deepEqual(r2.stats.activated, [], 'later discoveries only propose');
+});

@@ -29,6 +29,10 @@ const DIRECTORIES = /(^|\.)(yelp|tripadvisor|bodas|zankyou|weddingwire|theknot|p
 const CTR = [0.3, 0.15, 0.1, 0.07, 0.05, 0.04, 0.03, 0.025, 0.02, 0.015];
 const UA = 'Mozilla/5.0 (compatible; SEOWatchdog/0.1)';
 
+/** Network/LLM calls discover() makes; tests swap them for fakes. */
+export type Deps = { askJson: typeof askJson; search: typeof search; fetchRaw: typeof fetchRaw; topQueries: typeof topQueries };
+const realDeps = (): Deps => ({ askJson, search, fetchRaw, topQueries });
+
 // ---------- site facts from the latest crawl ----------
 function siteFacts(db: DatabaseSync, site: Site) {
   const run = db.prepare("SELECT id FROM runs WHERE site_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1").get(site.id) as { id: number } | undefined;
@@ -71,7 +75,7 @@ const PROFILE_SCHEMA = {
   },
 };
 
-async function buildProfile(u: Usage, site: Site, facts: ReturnType<typeof siteFacts>, gsc: { query: string; impressions: number }[] | null): Promise<Profile> {
+async function buildProfile(d: Deps, u: Usage, site: Site, facts: ReturnType<typeof siteFacts>, gsc: { query: string; impressions: number }[] | null): Promise<Profile> {
   const system = 'You profile a business from its own website so its real competitors can be found. Use only facts supported by the material given. If something is not supported, leave it empty rather than guessing.';
   const prompt = `Website: ${site.url}
 Countries it sells to (owner input): ${site.market || 'not given'}
@@ -86,7 +90,7 @@ Return the business profile. For "keywords": choose 8-12 searches a potential cu
 - If fewer than 6 real queries qualify, add generated "service + location" queries (from_gsc=false) in the site's languages.
 - "scope": local if it serves a city/region, national if a whole country, online if location doesn't matter.
 - "evidence": one sentence quoted from the homepage text that shows what the business sells.`;
-  const p = await askJson<Profile>(u, system, prompt, PROFILE_SCHEMA, 'medium');
+  const p = await d.askJson<Profile>(u, system, prompt, PROFILE_SCHEMA, 'medium');
   // The model may only *select* GSC queries; anything not in the real list is marked generated.
   const real = new Set((gsc ?? []).map((q) => q.query.toLowerCase()));
   p.keywords = p.keywords.slice(0, 12).map((k) => ({ ...k, from_gsc: k.from_gsc && real.has(k.query.toLowerCase()) }));
@@ -132,9 +136,9 @@ const VERIFY_SCHEMA = {
 };
 type Verdict = { domain: string; kind: string; same_service: boolean; same_market: string; national: boolean; reason: string; quote: string };
 
-async function verify(u: Usage, p: Profile, cands: { domain: string; url: string }[]): Promise<Map<string, Verdict & { quoted: boolean }>> {
+async function verify(d: Deps, u: Usage, p: Profile, cands: { domain: string; url: string }[]): Promise<Map<string, Verdict & { quoted: boolean }>> {
   const pages = await Promise.all(cands.map(async (c) => {
-    const r = await fetchRaw(c.url, { ua: UA, timeoutMs: 15_000, retries: 0 });
+    const r = await d.fetchRaw(c.url, { ua: UA, timeoutMs: 15_000, retries: 0 });
     let text = '';
     if (r.ok && /html/i.test(r.headers['content-type'] || '')) {
       const doc = parseDocument(r.body.text, r.final_url);
@@ -142,7 +146,7 @@ async function verify(u: Usage, p: Profile, cands: { domain: string; url: string
     }
     return { ...c, text };
   }));
-  const res = await askJson<{ candidates: Verdict[] }>(u,
+  const res = await d.askJson<{ candidates: Verdict[] }>(u,
     'You decide which websites are direct competitors of a business. A direct competitor sells the same main service to the same kind of customer in the same market. Directories, marketplaces, review sites, news/blogs and unrelated sites are not competitors. Judge only from the text given.',
     `The business: ${p.business_name} — ${p.industry}. Services: ${p.services.join('; ')}. Market: ${[p.city, p.region, p.country].filter(Boolean).join(', ') || 'unknown'} (${p.scope}).
 
@@ -163,18 +167,19 @@ Return one entry per candidate, using the domain exactly as given. "quote" must 
 }
 
 // ---------- discovery ----------
-export async function discover(db: DatabaseSync, site: Site, log = (_: string) => {}) {
+export async function discover(db: DatabaseSync, site: Site, log = (_: string) => {}, deps: Partial<Deps> = {}) {
+  const d = { ...realDeps(), ...deps };
   if (site.kind !== 'own') throw new Error('Competitor discovery runs on your own sites.');
-  if (!hasLlm()) throw new Error('Set ANTHROPIC_API_KEY in SEO-Watchdog/.env to enable competitor discovery.');
+  if (!deps.askJson && !hasLlm()) throw new Error('Set ANTHROPIC_API_KEY in SEO-Watchdog/.env to enable competitor discovery.');
   const u = newUsage();
   const facts = siteFacts(db, site);
   let gsc: Awaited<ReturnType<typeof topQueries>> | null = null;
   if (site.gsc_key && site.gsc_property) {
-    try { gsc = await topQueries(site.gsc_key, site.gsc_property); log(`Search Console: ${gsc.length} real queries`); }
+    try { gsc = await d.topQueries(site.gsc_key, site.gsc_property); log(`Search Console: ${gsc.length} real queries`); }
     catch (e) { log(`Search Console unavailable (${(e as Error).message}); using generated keywords`); }
   }
   const saved = db.prepare('SELECT data_json, source FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string; source: string } | undefined;
-  const profile: Profile = saved?.source === 'user' ? JSON.parse(saved.data_json) : await buildProfile(u, site, facts, gsc);
+  const profile: Profile = saved?.source === 'user' ? JSON.parse(saved.data_json) : await buildProfile(d, u, site, facts, gsc);
   if (saved?.source !== 'user') db.prepare("INSERT INTO site_profiles (site_id, data_json, source, updated_at) VALUES (?, ?, 'auto', datetime('now')) ON CONFLICT(site_id) DO UPDATE SET data_json = excluded.data_json, source = 'auto', updated_at = excluded.updated_at").run(site.id, JSON.stringify(profile));
   log(`Profile: ${profile.industry} · ${[profile.city, profile.country].filter(Boolean).join(', ')} · ${profile.keywords.length} keywords`);
 
@@ -195,7 +200,7 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
   for (const [i, k] of profile.keywords.entries()) {
     log(`Searching ${i + 1}/${profile.keywords.length}: ${k.query}`);
     const weight = 0.5 + (impressions.get(k.query.toLowerCase()) ?? 0) / maxImp; // real demand counts more
-    const r = await search(u, k.query, loc, k.lang, profile.scope === 'local');
+    const r = await d.search(u, k.query, loc, k.lang, profile.scope === 'local');
     const seen = new Set<string>();
     let rank = 0;
     for (const hit of r.organic) { // position = rank among distinct domains, so one site's 3 results don't push others down
@@ -210,7 +215,7 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
   const directories = ranked.filter((c) => DIRECTORIES.test(c.domain));
   const toCheck = ranked.filter((c) => !DIRECTORIES.test(c.domain)).slice(0, 12);
   log(`Checking ${toCheck.length} candidate websites`);
-  const verdicts = toCheck.length ? await verify(u, profile, toCheck) : new Map();
+  const verdicts = toCheck.length ? await verify(d, u, profile, toCheck) : new Map();
 
   const discId = Number(db.prepare('INSERT INTO discoveries (site_id, provider, model, keywords_json, stats_json) VALUES (?, ?, ?, ?, ?)')
     .run(site.id, process.env.SERPER_API_KEY ? 'serper' : 'claude-web-search', MODEL, JSON.stringify(profile.keywords), '{}').lastInsertRowid);

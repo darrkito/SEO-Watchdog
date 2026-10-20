@@ -8,7 +8,7 @@ This is the pickup point for the next session. The long-term roadmap is in [PLAN
 |---|---|
 | 0-1 Watchdog core (crawl, snapshot, diff, findings, alerts) | ✅ done, pushed (`95e63cf`) |
 | 2 Dashboard (`npm run dashboard` → http://127.0.0.1:4321) | ✅ done, pushed (`2954229`) |
-| 4a Competitor discovery | 🟡 **engine done and tested live; Competitors tab done (2026-10-20)**; pending: .env/Serper, other sites, tests |
+| 4a Competitor discovery | 🟡 **engine, Competitors tab and tests done (2026-10-20)**; pending: `.env` key (+ Serper), discovery on the other 4 sites + owner review |
 
 Separate fix on the blockchains.click site: the NFT pages' noindex fallback is fixed and live (BetweenChain `7788478`, `lib/nft/metadataFallback.ts`). It was verified with 0 noindex pages in 2 parallel crawls.
 
@@ -81,7 +81,9 @@ All routes below are live and were exercised against a scratch DB copy (pin/unpi
 - **The owner reviews the top 3 per site.** It passes if at least 2 of 3 are real rivals on at least 4 of 5 sites, with no directories among them. Each correction becomes a blocklist or prompt fix in `competitors.ts` (`PLATFORMS`, `DIRECTORIES`, or the verify prompt), not a one-off override.
 - Then crawl the competitors: `npm run wd -- run all`, or "Check now" on each competitor page.
 
-### 4. Tests for 4a (`test/watchdog.test.ts`)
+### 4. ✅ DONE 2026-10-20: tests for 4a (`test/watchdog.test.ts`, last test; `discover(db, site, log, deps)` takes fakes)
+
+Note: the rank counts own-site and platform hits as occupied SERP slots (correct: they really are above the rival).
 
 - Scoring and aggregation with a fake `search()`: inject results, and check that the distinct-domain rank, own-domain exclusion and the platform/directory split behave.
 - The quote guard: a verdict whose quote isn't on the page must not become `suggested`.
