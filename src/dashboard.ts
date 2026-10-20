@@ -1,6 +1,7 @@
 // Localhost dashboard: plain-language health per site, issues ranked by urgency, changes as sentences.
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { setPriority } from 'node:os';
+import { domainToUnicode } from 'node:url';
 import type { DatabaseSync } from 'node:sqlite';
 import { openDb, addSite, type Site } from './db.ts';
 import { runSite } from './crawl.ts';
@@ -15,7 +16,9 @@ type Counts = { critical: number; warn: number; info: number };
 type Run = { id: number; status: string; started_at: string; finished_at: string | null; stats: any };
 type Group = { rule_id: string; severity: Sev; n: number; items: { id: number; subject: string; message: string }[] };
 
-const host = (u: string) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return u; } };
+// Punycode (xn--…) shown as people type it: diseñodepaginas-web.com.
+const uni = (d: string) => domainToUnicode(d) || d;
+const host = (u: string) => { try { return uni(new URL(u).hostname.replace(/^www\./, '')); } catch { return u; } };
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 const running = new Set<number>(), discovering = new Set<number>();
 const discoveryError = new Map<number, string>();
@@ -178,7 +181,7 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
     const r = c.competitor_site_id ? lastRun(db, c.competitor_site_id) : undefined;
     const check = c.competitor_site_id && running.has(c.competitor_site_id) ? 'Checking their site now…'
       : r ? h`<a href="/site/${c.competitor_site_id}?tab=changes">${plural(r.stats.events ?? 0, 'change')} in their last check</a> · ${ago(r.finished_at)}` : 'Not checked yet.';
-    return h`<div class="card comp"><div class="row"><b>${c.domain}</b><span class="counts">
+    return h`<div class="card comp"><div class="row"><b>${uni(c.domain)}</b><span class="counts">
         ${c.types.includes('search') ? chip('info', 'Search') : ''}${c.types.includes('local') ? chip('info', 'Local') : ''}
         ${c.status === 'user_added' ? chip('info', 'Added by you') : ''}${c.status === 'pinned' ? chip('good', 'Pinned') : ''}
         ${c.evidence.eligible === false ? chip('warn', 'Not a direct rival?') : ''}</span></div>
@@ -203,15 +206,15 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
   return h`<p class="muted small">The businesses that show up next to you when customers search. The watchdog checks their sites and records what they change.</p>
     ${err ? h`<div class="banner warn">The last discovery failed: ${err}</div>` : ''}
     ${!cs.length ? h`<div class="card empty"><p>No competitors yet.</p>${discoverBtn('Find my top 3 competitors')}</div>` : h`
-      ${swap ? h`<div class="banner info row"><span>${doubtful ? h`The last check doesn't think <b>${weakest.domain}</b> is a direct rival (${weakest.evidence.reason ?? 'different service or market'}). <b>${swap.domain}</b> looks like a closer match. Swap?`
-        : h`<b>${swap.domain}</b> now shows up more than <b>${weakest.domain}</b> for your searches. Swap?`}</span>
+      ${swap ? h`<div class="banner info row"><span>${doubtful ? h`The last check doesn't think <b>${uni(weakest.domain)}</b> is a direct rival (${weakest.evidence.reason ?? 'different service or market'}). <b>${uni(swap.domain)}</b> looks like a closer match. Swap?`
+        : h`<b>${uni(swap.domain)}</b> now shows up more than <b>${uni(weakest.domain)}</b> for your searches. Swap?`}</span>
         <form method="post" action="/site/${site.id}/competitor"><input type="hidden" name="action" value="swap"><input type="hidden" name="cid" value="${swap.id}"><input type="hidden" name="replace" value="${weakest.id}"><button class="btn">Swap</button></form></div>` : ''}
       <h2>Watching</h2>
       ${watched.length ? h`<div class="grid-sites">${watched.map(watchCard)}</div>` : h`<div class="card empty">Not watching any competitor. Pick one below.</div>`}
-      ${alts.length ? h`<h2>Alternatives</h2><div class="card"><ul class="urls">${alts.map((c) => h`<li><span class="u"><b>${c.domain}</b><br>${evidence(c)}</span>
+      ${alts.length ? h`<h2>Alternatives</h2><div class="card"><ul class="urls">${alts.map((c) => h`<li><span class="u"><b>${uni(c.domain)}</b><br>${evidence(c)}</span>
         <span class="acts">${act(c, 'watch', 'Watch')}${watched.length ? h`<form method="post" action="/site/${site.id}/competitor" class="inline"><input type="hidden" name="action" value="swap"><input type="hidden" name="cid" value="${c.id}">
-          <button class="btn link">Watch instead of</button> <select name="replace" aria-label="Competitor to replace">${watched.map((w) => h`<option value="${w.id}">${w.domain}</option>`)}</select></form>` : ''}</span></li>`)}</ul></div>` : ''}
-      ${dirs.length ? h`<h2>Directories that show up for your searches</h2><p class="muted small">Worth checking that you're listed.</p><div class="card"><ul class="urls">${dirs.map((c) => h`<li><span class="u"><b>${c.domain}</b><br>${evidence(c)}</span></li>`)}</ul></div>` : ''}`}
+          <button class="btn link">Watch instead of</button> <select name="replace" aria-label="Competitor to replace">${watched.map((w) => h`<option value="${w.id}">${uni(w.domain)}</option>`)}</select></form>` : ''}</span></li>`)}</ul></div>` : ''}
+      ${dirs.length ? h`<h2>Directories that show up for your searches</h2><p class="muted small">Worth checking that you're listed.</p><div class="card"><ul class="urls">${dirs.map((c) => h`<li><span class="u"><b>${uni(c.domain)}</b><br>${evidence(c)}</span></li>`)}</ul></div>` : ''}`}
 
     <h2>Add your own competitor</h2>
     <form class="add card" method="post" action="/site/${site.id}/competitor-add" style="grid-template-columns:1fr auto">
