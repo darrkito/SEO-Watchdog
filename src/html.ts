@@ -91,7 +91,7 @@ const CSS = `
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 .top{border-bottom:1px solid var(--line);background:var(--surface)}
 .brand{display:flex;align-items:center;gap:8px;max-width:1080px;margin:0 auto;padding:14px 16px;font-weight:650;color:var(--ink)}
 .brand svg{width:20px;height:20px}
@@ -135,7 +135,7 @@ ul.urls li:first-child{border-top:0}ul.urls .u{overflow-wrap:anywhere}ul.urls .m
 .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
 form.add{display:grid;grid-template-columns:2fr 1fr auto;gap:8px;align-items:end}
 form.add label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink-2)}
-input,select{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0}
+input,select,textarea{font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--surface);color:var(--ink);min-width:0}
 @media (max-width:700px){form.add{grid-template-columns:1fr}.issue summary{grid-template-columns:auto 1fr}.issue .count{grid-column:2}}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:24px 0 16px;overflow-x:auto}
 .tabs a{padding:8px 12px;color:var(--ink-2);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
@@ -150,5 +150,10 @@ svg.trend .hit{fill:transparent}svg.trend .hit:hover{fill:var(--ring)}
 table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}th,td{text-align:left;padding:6px 8px;border-top:1px solid var(--line)}th{color:var(--muted);font-weight:500}
 details>summary{cursor:pointer}
 .empty{padding:32px 16px;text-align:center;color:var(--ink-2)}
+.comp{display:flex;flex-direction:column;gap:6px}.comp form,.acts form{display:inline}.acts{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:flex-end}
+form.inline select{padding:4px 6px;font-size:13px;max-width:180px}
+form.stack{display:flex;flex-direction:column;gap:10px;margin-top:10px}form.stack label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink-2)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}textarea{resize:vertical}
+.kw{display:inline-flex;align-items:center;gap:4px;margin:0 10px 4px 0}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:14px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}
 `;

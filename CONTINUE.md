@@ -8,7 +8,7 @@ This is the pickup point for the next session. The long-term roadmap is in [PLAN
 |---|---|
 | 0-1 Watchdog core (crawl, snapshot, diff, findings, alerts) | ✅ done, pushed (`95e63cf`) |
 | 2 Dashboard (`npm run dashboard` → http://127.0.0.1:4321) | ✅ done, pushed (`2954229`) |
-| 4a Competitor discovery | 🟡 **engine done and tested live; dashboard UI half done** (this commit) |
+| 4a Competitor discovery | 🟡 **engine done and tested live; Competitors tab done (2026-10-20)**; pending: .env/Serper, other sites, tests |
 
 Separate fix on the blockchains.click site: the NFT pages' noindex fallback is fixed and live (BetweenChain `7788478`, `lib/nft/metadataFallback.ts`). It was verified with 0 noindex pages in 2 parallel crawls.
 
@@ -33,7 +33,9 @@ Separate fix on the blockchains.click site: the NFT pages' noindex fallback is f
 
 ## Pending, in order
 
-### 1. Finish the Competitors tab (`src/dashboard.ts` → `competitorsTab`, replacing the stub)
+### 1. ✅ DONE 2026-10-20: Competitors tab (`competitorsTab` + `competitorPost` in `src/dashboard.ts`)
+
+All routes below are live and were exercised against a scratch DB copy (pin/unpin, swap, exclude, profile save keeps GSC badges only for real queries, GSC path errors, bad ids → 400, cross-site → 403). Not built: an "undo Never suggest" list. The original spec is kept for reference:
 
 **Already imported in `dashboard.ts`, waiting to be used:** `activate`, `deactivate`, `addOwnCompetitor`, `findProperty`, `MODEL`, `startDiscovery`.
 
