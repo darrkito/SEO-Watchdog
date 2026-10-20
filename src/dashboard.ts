@@ -9,6 +9,7 @@ import { alertText, sendAlert } from './alert.ts';
 import { ruleInfo, describeChange, RULES } from './catalog.ts';
 import { discover, activate, deactivate, addOwnCompetitor, candidates, type Candidate, type Profile } from './competitors.ts';
 import { findProperty } from './gsc.ts';
+import { battle } from './gaps.ts';
 import { hasLlm, canWebSearch, MODEL } from './llm.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
@@ -96,10 +97,10 @@ function sitePage(db: DatabaseSync, site: Site, tab: string, showAll: boolean, e
   const trend = runs.map((r) => ({ at: r.finished_at, ...JSON.parse(r.stats_json || '{}') })).filter((r) => r.open).map((r) => ({ at: r.at, critical: r.open.critical ?? 0, warn: r.open.warn ?? 0 }));
   const isRunning = running.has(site.id) || discovering.has(site.id);
   const parent = site.parent_site_id ? (db.prepare('SELECT * FROM sites WHERE id = ?').get(site.parent_site_id) as Site | undefined) : undefined;
-  const tabs = site.kind === 'own' ? ['issues', 'competitors', 'changes', 'checks', 'pages'] : ['changes', 'checks', 'pages'];
+  const tabs = site.kind === 'own' ? ['issues', 'win', 'competitors', 'changes', 'checks', 'pages'] : ['changes', 'checks', 'pages'];
   const active = tabs.includes(tab) ? tab : tabs[0];
-  const label: Record<string, string> = { issues: 'What to fix', competitors: 'Competitors', changes: 'What changed', checks: 'Site checks', pages: 'All pages' };
-  const body = active === 'issues' ? issuesTab(db, site, trend) : active === 'competitors' ? competitorsTab(db, site) : active === 'changes' ? changesTab(db, site, showAll) : active === 'checks' ? checksTab(db, site, run) : pagesTab(db, site);
+  const label: Record<string, string> = { issues: 'What to fix', win: 'How to win', competitors: 'Competitors', changes: 'What changed', checks: 'Site checks', pages: 'All pages' };
+  const body = active === 'issues' ? issuesTab(db, site, trend) : active === 'win' ? winTab(db, site) : active === 'competitors' ? competitorsTab(db, site) : active === 'changes' ? changesTab(db, site, showAll) : active === 'checks' ? checksTab(db, site, run) : pagesTab(db, site);
   return layout(host(site.url), h`
     ${parent ? h`<p class="small"><a href="/site/${parent.id}?tab=competitors">← ${host(parent.url)} competitors</a></p>` : h`<p class="small"><a href="/">← All sites</a></p>`}
     <div class="row"><div><h1>${host(site.url)}</h1>
@@ -248,6 +249,34 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
     ${cs.length ? h`<h2>Discovery</h2><div class="card">
       ${last ? h`<p class="small">Last run ${ago(last.at)} · ${last.provider} · ${last.model} · ${stats.cost_usd != null ? `$${stats.cost_usd}` : 'cost unknown'} · ${plural(stats.keywords ?? 0, 'search', 'searches')}, ${stats.gsc_keywords ?? 0} from Search Console.</p>` : ''}
       ${discoverBtn('Find competitors again')}<p class="muted small">Running it again only proposes swaps; it never changes who you watch on its own.</p></div>` : ''}`;
+}
+
+function winTab(db: DatabaseSync, site: Site): Html {
+  const b = battle(db, site);
+  if (!b) return h`<div class="card empty">Run competitor discovery again to collect where you rank for each search. <a href="?tab=competitors">Go to Competitors</a></div>`;
+  const ranked = b.keywords.filter((k) => k.ownRank);
+  const first = b.keywords.filter((k) => k.ownRank === 1).length;
+  return h`<p class="muted small">What to change to rank above your competitors. Built from the Google results of ${ago(b.at)}, the latest check of your site and of each competitor, and your Search Console data. Nothing here is guessed.</p>
+    <div class="stats">
+      <div class="card stat"><div class="v">${first}</div><div class="k">searches where you're #1</div></div>
+      <div class="card stat"><div class="v">${ranked.length - first}</div><div class="k">where you're on page 1, not first</div></div>
+      <div class="card stat"><div class="v">${b.keywords.length - ranked.length}</div><div class="k">where you're not in the top 10</div></div></div>
+    <h2>Do these first</h2>
+    ${b.actions.length ? h`<ol class="actions">${b.actions.map((a) => h`<li class="card"><div>${a.text}</div><div class="fix"><b>Do:</b> ${a.fix}</div>${a.query ? h`<div class="muted small">For the search “${a.query}”</div>` : ''}</li>`)}</ol>`
+      : h`<div class="card empty">${chip('good')} You lead every tracked search. Keep an eye on the changes tab.</div>`}
+    <h2>Your searches</h2>
+    <div class="card" style="overflow-x:auto"><table><thead><tr><th>Search</th><th>You</th><th>Search Console (90 days)</th><th>Ahead of you</th></tr></thead><tbody>
+      ${b.keywords.map((k) => h`<tr><td>${k.query}</td>
+        <td>${k.ownRank ? h`<a href="${safeHref(k.ownUrl!)}" target="_blank" rel="noopener">#${k.ownRank}</a>` : h`<span class="muted">not in top 10</span>`}</td>
+        <td class="small">${k.gsc ? `${k.gsc.impressions} views · ${k.gsc.clicks} clicks · avg #${k.gsc.position}` : h`<span class="muted">no data</span>`}</td>
+        <td class="small">${k.ownRank === 1 ? chip('good', 'Nobody') : k.above.slice(0, 3).map((a, i) => h`${i ? ', ' : ''}<a href="${safeHref(a.url)}" target="_blank" rel="noopener">${a.watched ? h`<b>${uni(a.domain)}</b>` : uni(a.domain)}</a> #${a.rank}`)}</td></tr>`)}
+    </tbody></table><p class="muted small">Positions count each website once. Bold = a competitor you watch, so its page can be compared with yours.</p></div>
+    ${b.reviews ? h`<h2>Google Maps reviews</h2><div class="card"><table><thead><tr><th>Business</th><th class="num">Rating</th><th class="num">Reviews</th></tr></thead><tbody>
+      <tr><td><b>You</b></td><td class="num">${b.reviews.own?.rating ?? '—'}</td><td class="num">${b.reviews.own ? (b.reviews.own.reviews ?? 0) : 'not shown'}</td></tr>
+      ${b.reviews.rivals.map((r) => h`<tr><td>${r.name} <span class="muted small">${uni(r.domain)}</span></td><td class="num">${r.rating ?? '—'}</td><td class="num">${r.reviews ?? 0}</td></tr>`)}</tbody></table></div>` : ''}
+    ${b.topicGaps.length ? h`<h2>Topics where they have more pages</h2><p class="muted small">Competitor pages grouped by the search words in their titles, counted against your pages on the same words. Each is content you could add.</p>
+      <div class="card"><ul class="urls">${b.topicGaps.map((t) => h`<li><span class="u">${t.title}<br><span class="m">${uni(t.domain)} · ${plural(t.theirs, 'page')} on this topic, you have ${t.ours}</span></span><a class="small" href="${safeHref(t.url)}" target="_blank" rel="noopener">See it ↗</a></li>`)}</ul></div>` : ''}
+    ${b.schemaGaps.length ? h`<h2>Structured data they use and you don't</h2><div class="card"><ul class="urls">${b.schemaGaps.map((g) => h`<li><span class="u">${g.type}</span><span class="m">${g.domains.map(uni).join(', ')}</span></li>`)}</ul></div>` : ''}`;
 }
 
 const NOISY = new Set(['content', 'faq_questions']);

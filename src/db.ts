@@ -60,7 +60,8 @@ export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
   db.exec(SCHEMA);
   // ponytail: additive migrations by try/ALTER; adopt a migrations table when one needs data changes.
   for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''", 'ALTER TABLE findings ADD COLUMN resolved_at TEXT',
-    'ALTER TABLE sites ADD COLUMN gsc_key TEXT', 'ALTER TABLE sites ADD COLUMN gsc_property TEXT']) try { db.exec(sql); } catch { /* already applied */ }
+    'ALTER TABLE sites ADD COLUMN gsc_key TEXT', 'ALTER TABLE sites ADD COLUMN gsc_property TEXT',
+    'ALTER TABLE discoveries ADD COLUMN serp_json TEXT']) try { db.exec(sql); } catch { /* already applied */ }
   return db;
 }
 

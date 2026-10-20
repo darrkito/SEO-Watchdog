@@ -220,3 +220,16 @@ test('competitor discovery: scoring, own/platform/directory split, quote + keywo
   assert.deepEqual([c['rival.mx'].status, c['liar.mx'].status, c['other.mx'].status], ['pinned', 'user_added', 'excluded'], 're-discovery keeps user choices; excluded never re-suggested');
   assert.deepEqual(r2.stats.activated, [], 'later discoveries only propose');
 });
+
+test('"How to win" page comparison: missing search words, thin content, schema/FAQ gaps, no page', async () => {
+  const { comparePages, coverage, terms } = await import('../src/gaps.ts');
+  assert.equal(coverage('Renta de Baños Portátiles de Lujo', terms('baños portatiles de lujo')), 1, 'accents, case and plurals do not matter');
+  const mk = (o: any) => ({ ...page('https://x.mx/p', html('', '<p>x</p>')), key: 'k', ...o });
+  const own = mk({ title: 'Baños portátiles', h1: ['Baños portátiles'], meta_description: 'Renta de baños', word_count: 300, jsonld_types: ['WebPage'], faq_questions: [] });
+  const rival = mk({ title: 'Baños portátiles de lujo', h1: ['Baños de lujo'], meta_description: 'Baños portátiles de lujo', word_count: 1200, jsonld_types: ['FAQPage', 'WebPage'], faq_questions: ['¿Q?'] });
+  const out = comparePages('baños portatiles de lujo', own, rival, 'rival.mx').map((i) => i.text).join('\n');
+  for (const want of ['title is missing “lujo”', 'description is missing', '1200 words; yours has 300', 'structured data you don\'t: FAQPage', 'no FAQ']) assert.ok(out.includes(want), want);
+  assert.ok(!out.includes('WebPage'), 'trivial schema types are not advice');
+  assert.match(comparePages('baños vip', undefined, rival, 'rival.mx')[0].text, /no page aimed at “baños vip”/);
+  assert.deepEqual(comparePages('baños portatiles de lujo', rival, own, 'x.mx'), [], 'a page that already beats the rival gets no advice');
+});

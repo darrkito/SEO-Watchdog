@@ -155,5 +155,7 @@ form.inline select{padding:4px 6px;font-size:13px;max-width:180px}
 form.stack{display:flex;flex-direction:column;gap:10px;margin-top:10px}form.stack label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--ink-2)}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}textarea{resize:vertical}
 .kw{display:inline-flex;align-items:center;gap:4px;margin:0 10px 4px 0}
+ol.actions{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px;counter-reset:a}ol.actions li{counter-increment:a;position:relative;padding-left:48px}
+ol.actions li::before{content:counter(a);position:absolute;left:16px;top:16px;font-weight:650;color:var(--muted)}ol.actions .fix{margin:8px 0 4px}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:14px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}
 `;

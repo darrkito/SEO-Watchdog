@@ -17,6 +17,12 @@ export type Profile = {
   scope: 'local' | 'national' | 'online'; languages: string[]; brand_terms: string[];
   keywords: { query: string; lang: string; from_gsc: boolean }[]; evidence: string;
 };
+/** What one search showed, kept whole (own site and platforms included) for the "How to win" view. */
+export type Serp = Record<string, {
+  organic: { rank: number; url: string; domain: string }[];
+  places: { domain: string; name: string; rating: number | null; reviews: number | null }[];
+  gsc?: { impressions: number; clicks: number; position: number };
+}>;
 export type Candidate = {
   id: number; site_id: number; domain: string; url: string; score: number; types: string[]; status: string;
   evidence: { keywords: { q: string; pos: number }[]; overlap: number; best: number; maps?: { rating: number | null; reviews: number | null; name: string }; reason?: string; quote?: string; kind?: string; national?: boolean; eligible?: boolean };
@@ -198,18 +204,25 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
     else if (!a.kws.some((k) => k.q === kw)) { a.kws.push({ q: kw, pos }); a.score += weight * (CTR[pos - 1] ?? 0.01); a.best = Math.min(a.best, pos); }
     agg.set(d, a);
   };
+  const serp: Serp = {};
+  const gscBy = new Map((gsc ?? []).map((q) => [q.query.toLowerCase(), q]));
   for (const [i, k] of profile.keywords.entries()) {
     log(`Searching ${i + 1}/${profile.keywords.length}: ${k.query}`);
     const weight = 0.5 + (impressions.get(k.query.toLowerCase()) ?? 0) / maxImp; // real demand counts more
     const r = await d.search(u, k.query, loc, k.lang, profile.scope === 'local');
     const seen = new Set<string>();
+    const g = gscBy.get(k.query.toLowerCase());
+    const s: Serp[string] = serp[k.query] = { organic: [], places: [], ...(g && { gsc: { impressions: g.impressions, clicks: g.clicks, position: +g.position.toFixed(1) } }) };
     let rank = 0;
     for (const hit of r.organic) { // position = rank among distinct domains, so one site's 3 results don't push others down
-      let d: string; try { d = registrableDomain(new URL(hit.url).hostname); } catch { continue; }
-      if (seen.has(d)) continue;
-      seen.add(d); add(hit.url, k.query, ++rank, weight);
+      let dom: string; try { dom = registrableDomain(new URL(hit.url).hostname); } catch { continue; }
+      if (seen.has(dom)) continue;
+      seen.add(dom); s.organic.push({ rank: ++rank, url: hit.url, domain: dom }); add(hit.url, k.query, rank, weight);
     }
-    for (const pl of r.places) add(pl.website, k.query, 0, weight, pl);
+    for (const pl of r.places) {
+      try { s.places.push({ domain: registrableDomain(new URL(pl.website).hostname), name: pl.name, rating: pl.rating, reviews: pl.reviews }); } catch { /* not a URL */ }
+      add(pl.website, k.query, 0, weight, pl);
+    }
   }
 
   const ranked = [...agg.values()].sort((a, b) => b.score - a.score);
@@ -218,8 +231,8 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
   log(`Checking ${toCheck.length} candidate websites`);
   const verdicts = toCheck.length ? await verify(d, u, profile, toCheck) : new Map();
 
-  const discId = Number(db.prepare('INSERT INTO discoveries (site_id, provider, model, keywords_json, stats_json) VALUES (?, ?, ?, ?, ?)')
-    .run(site.id, process.env.SERPER_API_KEY ? 'serper' : 'claude-web-search', MODEL, JSON.stringify(profile.keywords), '{}').lastInsertRowid);
+  const discId = Number(db.prepare('INSERT INTO discoveries (site_id, provider, model, keywords_json, stats_json, serp_json) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(site.id, process.env.SERPER_API_KEY ? 'serper' : 'claude-web-search', MODEL, JSON.stringify(profile.keywords), '{}', JSON.stringify(serp)).lastInsertRowid);
   const upsert = db.prepare(`INSERT INTO competitor_candidates (site_id, domain, url, score, types_json, evidence_json, status, discovery_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(site_id, domain) DO UPDATE SET url = excluded.url, score = excluded.score, types_json = excluded.types_json,
     evidence_json = excluded.evidence_json, discovery_id = excluded.discovery_id,

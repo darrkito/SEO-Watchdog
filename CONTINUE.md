@@ -111,6 +111,20 @@ Note: the rank counts own-site and platform hits as occupied SERP slots (correct
 - Commit with the attribution line and push to `origin main` (github.com/darrkito/SEO-Watchdog).
 - Update `PLAN.md` status and README: the "Competitors" section, `.env` keys, and the `gsc` / `discover` commands.
 
+## 4d (part): "How to win" tab, done 2026-10-20
+
+- `discover` now keeps the full search results per keyword (`discoveries.serp_json`): own position and URL, every result's URL, Maps places (own included), and Search Console figures.
+- `src/gaps.ts` → `battle(db, site)` builds the tab from that, plus the latest own/competitor crawls. Everything is deterministic, with no LLM.
+- Choices made after looking at real output:
+  - Maps reviews compare only against candidates (Maps also lists wedding venues).
+  - Topics are page counts per set of search words, theirs vs ours ("they have 71, you have 7"), never "you have none".
+  - Identical advice is merged across searches.
+- It needs a discovery that ran after the change; all 4 sites (not blockchains) were re-run on 2026-10-20.
+- Possible next steps:
+  - An LLM pass that drafts the actual new title/description text for each action (Sonnet, a few cents).
+  - Track position changes between discoveries ("you moved #5 → #3").
+  - Robots-blocked URLs shouldn't count toward the crawl page cap.
+
 ## After 4a (from PLAN.md)
 
 - **pm2 + schedule:**
