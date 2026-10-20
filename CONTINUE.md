@@ -76,7 +76,21 @@ All routes below are live and were exercised against a scratch DB copy (pin/unpi
 - 2026-10-20: Serper key obtained and field names verified live by curl (organic[].link/position, places[].title/website/rating/ratingCount all match). A full discovery through Serper hasn't run yet.
 - The Serper code path (`serper()` in `competitors.ts`) was written before that check. Test it on the first run with a key, and check the `organic[].link/position` and `places[].website/rating/ratingCount` field names.
 
-### 3. Run discovery on the other sites and review the results (acceptance test from PLAN §6)
+### 3. 🟡 Discovery run on all 5 sites (2026-10-20, Haiku 5.5 + Serper); waiting on the owner's review
+
+Total cost for all 5 sites was about $0.017 (each $0.003-0.004, 30 s), versus $1.02 for one Opus run. Results to review:
+
+| Site | Top 3 now watched | Notes |
+|---|---|---|
+| luvory (re-run, proposals only) | saniglobal, berentoilet, blueplanetgdl (kept from run 1) | Haiku rejected tronorent/saniprime (CDMX, not GDL). Maps found luxusc4, moviban, rentarsanitariosportatiles, sanijal. Swap banner proposes luxusc4 for blueplanetgdl (score 0 this run). |
+| studioyume | agavestudio.com.mx, personalizadosgdl.com, garinetiquetas.com | alts: etiquetasyformasgdl, creatify.mx |
+| dizayn | diseñodepaginas-web.com (punycode xn--…), autenticoseo.com, paginaswebenguadalajara.com.mx | alts: kerneldigital, alphapro, solucionse |
+| blockchains.click | changenow.io, simpleswap.io, 1inch.com | scope online, only 3 of 10 keywords from GSC; alts okx, tradeport.xyz, changelly |
+| vexon | cvsolucionesmoviles.com, atcoespaciomovil.com, remobras.mx | no GSC; inmuebles24/habitissimo/oficinasvirtuales correctly in directories |
+
+The new competitor sites were **not crawled yet** (the CLI `discover` doesn't start checks). Crawling 15 sites × 300 pages is heavy on the Pi, so ask before running `npm run wd -- run all`. Possible fix: punycode domains should be shown decoded in the UI.
+
+Original step text:
 
 - Run `npm run wd -- discover <site>` for studioyume.mx, dizayn.com.mx (market MX,US), blockchains.click (scope probably "online") and vexonmexico.com.mx (no Search Console, so generated keywords).
 - **The owner reviews the top 3 per site.** It passes if at least 2 of 3 are real rivals on at least 4 of 5 sites, with no directories among them. Each correction becomes a blocklist or prompt fix in `competitors.ts` (`PLATFORMS`, `DIRECTORIES`, or the verify prompt), not a one-off override.
