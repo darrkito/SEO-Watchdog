@@ -20,7 +20,11 @@ export const coverage = (text: string | null | undefined, want: string[]) => {
 const missing = (text: string | null | undefined, want: string[]) => { const have = new Set(terms(text)); return want.filter((w) => !have.has(w)); };
 const urlKey = (u: string) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/$/, '')).toLowerCase(); } catch { return u; } };
 const firstPart = (t: string | null) => (t ?? '').split(/\s[|–—-]\s/)[0].trim(); // drop "| Brand" suffixes
-const TRIVIAL = new Set(['WebPage', 'WebSite', 'ListItem', 'Thing', 'ImageObject', 'SiteNavigationElement', 'EntryPoint', 'SearchAction', 'ReadAction', 'PostalAddress', 'GeoCoordinates', 'ContactPoint', 'Person', 'Organization', 'CollectionPage', 'ItemList', 'WPHeader', 'WPFooter', 'Place', 'City', 'Country', 'State', 'AdministrativeArea']);
+// Only schema types that earn something in Google count as advice; the Article family is one type (BlogPosting = Article).
+// Found live: "add Article" to a blog full of BlogPosting, and QAPage/ItemPage/WebApplication suggestions.
+const USEFUL = new Set(['FAQPage', 'Product', 'Offer', 'AggregateRating', 'Review', 'LocalBusiness', 'Store', 'Service', 'HowTo', 'VideoObject', 'Event', 'Article', 'BreadcrumbList']);
+const kind = (t: string) => (/^(Article|BlogPosting|NewsArticle|TechArticle|Report)$/.test(t) ? 'Article' : t);
+const useful = (types: string[]) => new Set(types.map(kind).filter((t) => USEFUL.has(t)));
 
 export type Page = Extract & { key: string };
 export function latestPages(db: DatabaseSync, siteId: number): Page[] {
@@ -55,7 +59,8 @@ export function comparePages(query: string, own: Page | undefined, rival: Page |
     if (mine < 1 && mine < theirs) out.push({ text: `Your ${label} is missing “${missing(a, want).join(', ')}” for “${query}”; ${rivalLabel}'s has ${theirs === 1 ? 'every word' : 'more of them'}${b ? `: “${b}”` : ''}.`, fix: field === 'meta' ? `Rewrite the description to include “${query}” naturally.` : `Put “${query}” in your ${label}.` });
   }
   if (rival.word_count > 300 && own.word_count < rival.word_count * 0.6) out.push({ text: `${rivalLabel}'s page has ${rival.word_count} words; yours has ${own.word_count}.`, fix: 'Add useful detail: prices or what is included, coverage area, process, photos with captions, FAQs.' });
-  const extra = rival.jsonld_types.filter((t) => !TRIVIAL.has(t) && !own.jsonld_types.includes(t));
+  const ownSchema = useful(own.jsonld_types);
+  const extra = [...useful(rival.jsonld_types)].filter((t) => !ownSchema.has(t));
   if (extra.length) out.push({ text: `${rivalLabel}'s page has structured data you don't: ${extra.join(', ')}.`, fix: `Add ${extra.join(', ')} JSON-LD to your page (only for content that is really on it).` });
   if (rival.faq_questions.length && !own.faq_questions.length) out.push({ text: `${rivalLabel} answers ${rival.faq_questions.length} questions on that page; yours has no FAQ.`, fix: 'Add a short FAQ with the questions customers really ask, visible on the page and marked up as FAQPage.' });
   return out;
@@ -103,9 +108,9 @@ export function battle(db: DatabaseSync, site: Site): Battle | null {
     reviews = { own: own ? { rating: own.rating, reviews: own.reviews } : null, rivals: [...best.values()].filter((p) => p.domain !== ownDomain).sort((a, b) => (b.reviews ?? 0) - (a.reviews ?? 0)).slice(0, 6) };
   }
 
-  const ownTypes = new Set(ownPages.flatMap((p) => p.jsonld_types));
+  const ownTypes = useful(ownPages.flatMap((p) => p.jsonld_types));
   const typeDomains = new Map<string, Set<string>>();
-  for (const [domain, ps] of rivalPages) for (const t of ps.flatMap((p) => p.jsonld_types)) if (!TRIVIAL.has(t) && !ownTypes.has(t)) typeDomains.set(t, (typeDomains.get(t) ?? new Set()).add(domain));
+  for (const [domain, ps] of rivalPages) for (const t of useful(ps.flatMap((p) => p.jsonld_types))) if (!ownTypes.has(t)) typeDomains.set(t, (typeDomains.get(t) ?? new Set()).add(domain));
   const schemaGaps = [...typeDomains].map(([type, ds]) => ({ type, domains: [...ds] })).sort((a, b) => b.domains.length - a.domains.length);
 
   // Topics = the search words a page title uses. Counting pages per topic, theirs vs ours, shows where a rival
