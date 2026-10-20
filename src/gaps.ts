@@ -22,7 +22,8 @@ const urlKey = (u: string) => { try { const x = new URL(u); return (x.hostname.r
 const firstPart = (t: string | null) => (t ?? '').split(/\s[|–—-]\s/)[0].trim(); // drop "| Brand" suffixes
 // Only schema types that earn something in Google count as advice; the Article family is one type (BlogPosting = Article).
 // Found live: "add Article" to a blog full of BlogPosting, and QAPage/ItemPage/WebApplication suggestions.
-const USEFUL = new Set(['FAQPage', 'Product', 'Offer', 'AggregateRating', 'Review', 'LocalBusiness', 'Store', 'Service', 'HowTo', 'VideoObject', 'Event', 'Article', 'BreadcrumbList']);
+// HowTo left out: Google stopped showing HowTo rich results in 2023.
+const USEFUL = new Set(['FAQPage', 'Product', 'Offer', 'AggregateRating', 'Review', 'LocalBusiness', 'Store', 'Service', 'VideoObject', 'Event', 'Article', 'BreadcrumbList']);
 const kind = (t: string) => (/^(Article|BlogPosting|NewsArticle|TechArticle|Report)$/.test(t) ? 'Article' : t);
 const useful = (types: string[]) => new Set(types.map(kind).filter((t) => USEFUL.has(t)));
 

@@ -139,7 +139,11 @@ What this caught on Yume:
 - Not visible in the tab yet: Yume is absent from Maps. Discovery treated it as national, so it never searched Maps. It was checked by hand with Serper places.
   - Possible fix: also search Maps for sites with a city in the profile, even when scope=national.
 
-Next site: Dizayn (`dizayn-web` repo; a peer session may have uncommitted work there, so check `git status` before editing).
+Dizayn (2026-10-20, dizayn-web df1dc7e): 12 actions went down to 7 after one change. The SEO page title/H1 and description now carry "posicionamiento web" and "agencia SEO en Guadalajara", plus 4 real FAQs (1,051 words). The store page title is now "Diseño de tiendas en línea".
+- What's left is the real gap: Dizayn sits at GSC positions 80-95 on every search, it isn't in Maps (rivals have 11-100 reviews), and the content volume is small. Those need authority (GBP, reviews, links), which titles can't fix.
+- Watchdog gaps found:
+  - The own page is picked by title coverage when the site isn't in the top 10, with ties going to the page with more words. Before the fix it picked a blog guide over `/servicios/seo`, even though GSC shows `/servicios/seo` getting most impressions. Fix: store the GSC page per query at discovery and prefer it.
+  - HowTo was removed from `USEFUL`.
 
 ## After 4a (from PLAN.md)
 
