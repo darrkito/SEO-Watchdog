@@ -9,7 +9,7 @@ import { fetchRaw } from './vendor/claude-seo-ai/fetch.mjs';
 import { DATA_DIR, type Site } from './db.ts';
 import { registrableDomain } from './crawl.ts';
 import { textKey } from './extract.ts';
-import { askJson, webSearch, newUsage, costUsd, hasLlm, MODEL, type Usage, type Loc } from './llm.ts';
+import { askJson, webSearch, newUsage, costUsd, hasLlm, canWebSearch, MODEL, type Usage, type Loc } from './llm.ts';
 import { topQueries } from './gsc.ts';
 
 export type Profile = {
@@ -171,6 +171,7 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
   const d = { ...realDeps(), ...deps };
   if (site.kind !== 'own') throw new Error('Competitor discovery runs on your own sites.');
   if (!deps.askJson && !hasLlm()) throw new Error('Set ANTHROPIC_API_KEY in SEO-Watchdog/.env to enable competitor discovery.');
+  if (!deps.search && !process.env.SERPER_API_KEY && !canWebSearch) throw new Error(`Set SERPER_API_KEY in SEO-Watchdog/.env: ${MODEL} can't search the web itself.`);
   const u = newUsage();
   const facts = siteFacts(db, site);
   let gsc: Awaited<ReturnType<typeof topQueries>> | null = null;

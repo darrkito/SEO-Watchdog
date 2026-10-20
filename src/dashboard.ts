@@ -8,7 +8,7 @@ import { alertText, sendAlert } from './alert.ts';
 import { ruleInfo, describeChange, RULES } from './catalog.ts';
 import { discover, activate, deactivate, addOwnCompetitor, candidates, type Candidate, type Profile } from './competitors.ts';
 import { findProperty } from './gsc.ts';
-import { hasLlm, MODEL } from './llm.ts';
+import { hasLlm, canWebSearch, MODEL } from './llm.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
 type Counts = { critical: number; warn: number; info: number };
@@ -152,7 +152,8 @@ function issueCard(site: Site, g: Group): Html {
 }
 
 const WATCHED = ['active', 'pinned', 'user_added'];
-const discoveryCost = () => (process.env.SERPER_API_KEY ? 'about $0.05–0.10 (Serper + Claude)' : 'about $1 (Claude web search; add SERPER_API_KEY to cut it to about $0.05–0.10)');
+const discoveryCost = () => !process.env.SERPER_API_KEY ? 'about $1 (Claude web search; add SERPER_API_KEY to cut it to cents)'
+  : canWebSearch ? `about $0.05–0.10 (Serper + ${MODEL})` : `about $0.01 (Serper + ${MODEL})`;
 
 function competitorsTab(db: DatabaseSync, site: Site): Html {
   const cs = candidates(db, site.id);
@@ -163,7 +164,9 @@ function competitorsTab(db: DatabaseSync, site: Site): Html {
   const busy = discovering.has(site.id);
   const err = discoveryError.get(site.id);
   const gscNote = site.gsc_property ? `real Search Console queries (${site.gsc_property})` : 'generated keywords (Search Console not connected)';
-  const discoverBtn = (label: string) => !hasLlm()
+  const discoverBtn = (label: string) => !process.env.SERPER_API_KEY && !canWebSearch
+    ? h`<p class="muted small">Set <code>SERPER_API_KEY</code> in <code>SEO-Watchdog/.env</code> and restart the dashboard: ${MODEL} can't search the web itself.</p>`
+    : !hasLlm()
     ? h`<p class="muted small">Set <code>ANTHROPIC_API_KEY</code> in <code>SEO-Watchdog/.env</code> and restart the dashboard to enable discovery.</p>`
     : h`<form method="post" action="/site/${site.id}/discover"><button class="btn ${cs.length ? '' : 'primary'}" ${busy ? raw('disabled') : ''}>${busy ? 'Finding competitors…' : label}</button></form>
       <p class="muted small">Uses ${gscNote}, ~12 searches, ${discoveryCost()}.</p>`;

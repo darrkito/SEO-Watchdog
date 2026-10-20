@@ -1,7 +1,10 @@
 // Claude calls used by competitor discovery: structured JSON answers and localized web search.
 import Anthropic from '@anthropic-ai/sdk';
 
-export const MODEL = process.env.WATCHDOG_MODEL || 'claude-opus-5-5';
+// Haiku: about a cent per discovery with Serper doing the searches. Set WATCHDOG_MODEL for a stronger model.
+export const MODEL = process.env.WATCHDOG_MODEL || 'claude-haiku-5-5';
+// Claude's own web search (the no-Serper path) needs Opus/Sonnet-class models.
+export const canWebSearch = /^claude-(opus|sonnet|fable)-/.test(MODEL);
 // $/MTok for cost reporting; unknown models report tokens only.
 const PRICE: Record<string, [number, number]> = { 'claude-opus-5-5': [4, 20], 'claude-sonnet-5-5': [2, 10], 'claude-haiku-5-5': [0.1, 0.5] };
 const SEARCH_USD = 0.01;
@@ -17,8 +20,10 @@ let client: Anthropic | null = null;
 export const hasLlm = () => !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 const claude = () => (client ??= new Anthropic());
 
-// Server-side fallback re-runs a declined request on another model inside the same call.
-const BASE = { model: MODEL, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } as const;
+// Server-side fallback re-runs a declined request on another model inside the same call. Haiku has none.
+const BASE = /^claude-(opus-5|sonnet-5-5|fable-5-1)/.test(MODEL)
+  ? { model: MODEL, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }
+  : { model: MODEL };
 
 function track(u: Usage, res: any) {
   u.input += (res.usage?.input_tokens ?? 0) + (res.usage?.cache_read_input_tokens ?? 0) + (res.usage?.cache_creation_input_tokens ?? 0);
@@ -47,6 +52,7 @@ export type Loc = { city?: string; region?: string; country?: string };
  * web_search_result blocks themselves, never from model-written text.
  */
 export async function webSearch(u: Usage, query: string, loc: Loc): Promise<{ url: string; title: string; position: number }[]> {
+  if (!canWebSearch) throw new Error(`${MODEL} can't run web search: set SERPER_API_KEY, or WATCHDOG_MODEL=claude-sonnet-5-5`);
   const user_location = loc.country ? { type: 'approximate', country: loc.country, ...(loc.city && { city: loc.city }), ...(loc.region && { region: loc.region }) } : undefined;
   const messages: any[] = [{ role: 'user', content: `Search the web for exactly this query and nothing else: ${query}\nThen reply "done".` }];
   const tools = [{ type: 'web_search_20260209', name: 'web_search', max_uses: 1, ...(user_location && { user_location }) }];

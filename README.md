@@ -18,8 +18,8 @@ npm test                                            # replays real past bugs as 
 ```
 
 **Optional `.env` settings:**
-- `ANTHROPIC_API_KEY`: enables competitor discovery. `WATCHDOG_MODEL` overrides the model (default `claude-opus-5-5`).
-- `SERPER_API_KEY`: real Google positions plus Maps for discovery, and about $0.05–0.10 per run instead of about $1.
+- `ANTHROPIC_API_KEY`: enables competitor discovery. `WATCHDOG_MODEL` overrides the model (default `claude-haiku-5-5`; Opus/Sonnet work too and can search without Serper).
+- `SERPER_API_KEY`: real Google positions plus Maps for discovery, required with the default Haiku model. About $0.01 per run with Haiku, versus about $1 for Opus doing its own web search.
 - `WATCHDOG_CONTACT`: added to the crawler User-Agent.
 - `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`: instant alerts.
 - `WATCHDOG_DATA`: database and HTML location (default `./data`).

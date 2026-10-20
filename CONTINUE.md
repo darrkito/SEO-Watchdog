@@ -22,7 +22,7 @@ Separate fix on the blockchains.click site: the NFT pages' noindex fallback is f
   5. Filters out platforms and directories, then has the LLM verify the top 12 against each candidate's real homepage text. A verdict whose quote isn't actually on the page is rejected (anti-hallucination guard).
   6. On the first discovery, the top 3 are activated automatically as competitor sites (`kind='competitor'`, `parent_site_id`, 300-page limit).
 - **Search Console** (`src/gsc.ts`): service-account JWT with zero dependencies. The property (URL-prefix or `sc-domain:`) is auto-detected from the key. Connected for luvory, studioyume, dizayn and blockchains via `npm run wd -- gsc <site> <key.json>`. Vexon has no key.
-- **LLM** (`src/llm.ts`): official `@anthropic-ai/sdk` (the only npm dependency), model `claude-opus-5-5`, overridable with `WATCHDOG_MODEL`. Server-side refusal fallback (`fallbacks: "default"`) is enabled. It produces structured JSON via `output_config.format`, and runs web search via `web_search_20260209` with `user_location`.
+- **LLM** (`src/llm.ts`): official `@anthropic-ai/sdk` (the only npm dependency), model `claude-haiku-5-5` by default since 2026-10-20 (owner chose cost: about $0.01 per discovery vs $1.02 on Opus), overridable with `WATCHDOG_MODEL`. Haiku needs SERPER_API_KEY (no `web_search_20260209`) and gets no server-side fallback; Opus 5.5 / Sonnet 5.5 / Fable 5.1 still send `fallbacks: "default"`. First Haiku run: compare Luvory top 3 against the Opus result. It produces structured JSON via `output_config.format`, and runs web search via `web_search_20260209` with `user_location`.
 - **CLI:** `discover <site>`, `competitors <site>`, `gsc <site> <key>`.
 - **Live result on Luvory (discovery #1, cost $1.02):**
   - Watching saniglobal.com.mx, berentoilet.com and blueplanetgdl.com.mx.
@@ -72,7 +72,7 @@ All routes below are live and were exercised against a scratch DB copy (pin/unpi
 - Create `SEO-Watchdog/.env` by hand with `ANTHROPIC_API_KEY=...`. Claude can't write `.env` files, because the claude-seo-ai plugin blocks it. The CLI loads `.env` automatically.
 - **Optional but recommended:** sign up at serper.dev (free, 2,500 searches, no card) and add `SERPER_API_KEY=...`. That gives:
   - **Real Google positions plus Maps / local pack.** Local competitors get the "Local" badge; the Claude web-search fallback has no Maps data.
-  - **Far lower cost:** about $0.05–0.10 instead of about $1 per discovery (estimate; confirm on the first Serper run), because web-search pages are about 12k input tokens each.
+  - **Far lower cost:** about $0.01 (Haiku) instead of about $1 per discovery (estimate; confirm on the first run), because web-search pages are about 12k input tokens each.
 - 2026-10-20: Serper key obtained and field names verified live by curl (organic[].link/position, places[].title/website/rating/ratingCount all match). A full discovery through Serper hasn't run yet.
 - The Serper code path (`serper()` in `competitors.ts`) was written before that check. Test it on the first run with a key, and check the `organic[].link/position` and `places[].website/rating/ratingCount` field names.
 
