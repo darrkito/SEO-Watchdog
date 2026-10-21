@@ -85,7 +85,9 @@ export async function addSite(db: DatabaseSync, input: { url: string; market?: s
   if (probe.status === 0) return { ok: false, error: `Can't reach ${url.hostname}: ${probe.error}` };
   const home = new URL(probe.final_url);
   const stored = home.origin + home.pathname;
-  if (findSite(db, stored)) return { ok: false, error: `Already watching ${home.hostname}` };
+  // Same host is fine with a different path: https://x.mx/us is its own site (a market section).
+  const key = (u: URL) => u.hostname.replace(/^www\./, '') + u.pathname.replace(/\/$/, '');
+  if ((db.prepare('SELECT url FROM sites').all() as { url: string }[]).some((s) => key(new URL(s.url)) === key(home))) return { ok: false, error: `Already watching ${key(home)}` };
   const id = Number(db.prepare('INSERT INTO sites (url, kind, parent_site_id, market, page_limit, ua) VALUES (?, ?, ?, ?, ?, ?)')
     .run(stored, parent ? 'competitor' : 'own', parent?.id ?? null, market.join(','), limit, input.ua ?? '').lastInsertRowid);
   return { ok: true, id, url: stored, note: `${parent ? `competitor of ${parent.url}` : 'own site'}, HTTP ${probe.status}` };

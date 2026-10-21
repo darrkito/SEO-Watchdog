@@ -45,7 +45,7 @@ export async function runSite(db: DatabaseSync, site: Site, { concurrency = 2, l
   log(`robots: ${robots.mode}; sitemaps…`);
   const sm = await discoverSitemaps(origin, robots, (u: string, o: object) => get(u, o), { maxUrls: 50_000 });
   const sitemap = new Map<string, string>();
-  for (const u of sm.urls) { const k = norm(u.loc); if (k && hostKey(k) === hostKey(origin)) sitemap.set(k, u.loc); }
+  for (const u of sm.urls) { const k = norm(u.loc); if (k && hostKey(k) === hostKey(origin) && inScope(site.url, k)) sitemap.set(k, u.loc); }
   const https = origin.startsWith('https:');
   const [ssl, domainDaysLeft] = https ? await Promise.all([sslCheck(host), domainExpiry(host)]) : [{ error: 'not https' } as Tls, null];
 
@@ -69,7 +69,7 @@ export async function runSite(db: DatabaseSync, site: Site, { concurrency = 2, l
       if (ex.is_html && f.body.sha256) { saveHtml(f.body.sha256, f.body.text); htmlHash.set(key, f.body.sha256); }
       for (const l of ex.links) {
         const k = norm(l)!;
-        if (seen.has(k)) continue;
+        if (seen.has(k) || !inScope(site.url, k)) continue;
         if (seen.size >= site.page_limit) { truncated = true; break; }
         seen.add(k); queue.push(l);
       }
@@ -206,6 +206,13 @@ function sslCheck(host: string): Promise<Tls> {
     s.on('error', (e) => resolve({ error: e.message }));
     s.on('timeout', () => { s.destroy(); resolve({ error: 'timeout' }); });
   });
+}
+
+/** A site added with a path (https://x.mx/us) covers only that section; a root URL covers the whole host. */
+export function inScope(siteUrl: string, url: string): boolean {
+  const p = new URL(siteUrl).pathname.replace(/\/$/, '');
+  if (!p) return true;
+  try { const q = new URL(url).pathname; return q === p || q.startsWith(p + '/'); } catch { return false; }
 }
 
 // ponytail: 2-label registrable domain + common second-level ccTLDs (com.mx); swap for a PSL lib if a TLD misparses.

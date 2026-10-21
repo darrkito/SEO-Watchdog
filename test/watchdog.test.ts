@@ -233,3 +233,15 @@ test('"How to win" page comparison: missing search words, thin content, schema/F
   assert.match(comparePages('baños vip', undefined, rival, 'rival.mx')[0].text, /no page aimed at “baños vip”/);
   assert.deepEqual(comparePages('baños portatiles de lujo', rival, own, 'x.mx'), [], 'a page that already beats the rival gets no advice');
 });
+
+test('a site added with a path (Dizayn /us) stays in that section; GSC counts only searches landing there', async () => {
+  const { inScope } = await import('../src/crawl.ts');
+  const { pageFilter } = await import('../src/gsc.ts');
+  assert.ok(inScope('https://d.mx/us', 'https://d.mx/us') && inScope('https://d.mx/us/', 'https://d.mx/us/en/blog'));
+  assert.ok(!inScope('https://d.mx/us', 'https://d.mx/') && !inScope('https://d.mx/us', 'https://d.mx/usuarios'));
+  assert.ok(inScope('https://d.mx/', 'https://d.mx/anything'), 'root sites crawl the whole host as before');
+  assert.equal(pageFilter('https://d.mx/'), undefined, 'root sites: no filter');
+  const re = new RegExp(pageFilter('https://www.d.mx/us')![0].filters[0].expression);
+  assert.ok(re.test('https://d.mx/us') && re.test('https://www.d.mx/us/en/services') && re.test('https://d.mx/us?x=1'));
+  assert.ok(!re.test('https://d.mx/') && !re.test('https://d.mx/usuarios') && !re.test('https://dXmx/us'));
+});

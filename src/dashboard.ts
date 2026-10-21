@@ -19,7 +19,7 @@ type Group = { rule_id: string; severity: Sev; n: number; items: { id: number; s
 
 // Punycode (xn--…) shown as people type it: diseñodepaginas-web.com.
 const uni = (d: string) => domainToUnicode(d) || d;
-const host = (u: string) => { try { return uni(new URL(u).hostname.replace(/^www\./, '')); } catch { return u; } };
+const host = (u: string) => { try { const x = new URL(u); return uni(x.hostname.replace(/^www\./, '')) + x.pathname.replace(/\/$/, ''); } catch { return u; } }; // a section site shows its path (dizayn.com.mx/us)
 const plural = (n: number, one: string, many = one + 's') => `${n} ${n === 1 ? one : many}`;
 const running = new Set<number>(), discovering = new Set<number>();
 const discoveryError = new Map<number, string>();

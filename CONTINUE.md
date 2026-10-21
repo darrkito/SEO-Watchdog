@@ -163,3 +163,8 @@ Dizayn (2026-10-20, dizayn-web df1dc7e): 12 actions went down to 7 after one cha
 - **Fetching as Googlebot:** own sites are fetched with the Googlebot UA by default, because Next.js streams `<title>` to unknown UAs. Use `--ua` on `add` if a CDN blocks it.
 - **Stopping the dashboard:** stop it by port (`ss -ltnp | grep :4321`). `pkill -f "cli.ts serve"` kills the calling shell.
 - **Untouched files:** `blockchains.click-Coverage-2026-08-10.xlsx` is untracked in the BetweenChain repo; it isn't ours.
+
+## Market sections as their own site (Dizayn US, 2026-10-21)
+
+- A site whose URL has a path (`npm run wd -- add https://dizayn.com.mx/us --market US,MX`) is its own own-site: the crawl stays inside that path (`inScope` in crawl.ts), and Search Console only counts queries whose landing page is in that path (`pageFilter` in gsc.ts). Root sites behave as before. Any page of the domain that ranks still counts as own (registrable domain), and `ownUrl` says which one.
+- Dizayn US is site **#21** (market `US,MX`: with `US` alone its hreflang alternates to the MX pages were flagged as 14 false findings). Profile is a `user` profile (country US, national, es+en, 11 keywords, 4 from US-section GSC). Discovery #16 (Sonnet + Serper, $0.034) watches agenciaseousa.com, brimaronlinemarketing.com, ljrankingseo.com (sites 22-24, crawled). Dizayn is not in the US top 10 for any of the 11 searches.

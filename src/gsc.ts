@@ -31,13 +31,22 @@ export async function findProperty(keyFile: string, siteUrl: string): Promise<st
   return match;
 }
 
+/** A site added with a path (https://x.mx/us) only counts searches that landed on that section. */
+export function pageFilter(siteUrl?: string) {
+  const u = siteUrl ? new URL(siteUrl) : null;
+  const p = u?.pathname.replace(/\/$/, '');
+  if (!u || !p) return undefined;
+  const esc = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [{ filters: [{ dimension: 'page', operator: 'includingRegex', expression: `^https?://(www\\.)?${esc(u.hostname.replace(/^www\./, ''))}${esc(p)}([/?#]|$)` }] }];
+}
+
 /** Top queries by impressions over the last `days` (excluding the 3 most recent days, which GSC hasn't settled yet). */
-export async function topQueries(keyFile: string, property: string, days = 90, limit = 250): Promise<{ query: string; impressions: number; clicks: number; position: number }[]> {
+export async function topQueries(keyFile: string, property: string, siteUrl?: string, days = 90, limit = 250): Promise<{ query: string; impressions: number; clicks: number; position: number }[]> {
   const t = await token(keyFile);
   const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
   const r = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(property)}/searchAnalytics/query`, {
     method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ startDate: day(days + 3), endDate: day(3), dimensions: ['query'], rowLimit: limit }),
+    body: JSON.stringify({ startDate: day(days + 3), endDate: day(3), dimensions: ['query'], rowLimit: limit, dimensionFilterGroups: pageFilter(siteUrl) }),
   });
   const j: any = await r.json();
   if (!r.ok) throw new Error(`Search Console: ${j.error?.message ?? r.status}`);

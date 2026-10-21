@@ -182,7 +182,7 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
   const facts = siteFacts(db, site);
   let gsc: Awaited<ReturnType<typeof topQueries>> | null = null;
   if (site.gsc_key && site.gsc_property) {
-    try { gsc = await d.topQueries(site.gsc_key, site.gsc_property); log(`Search Console: ${gsc.length} real queries`); }
+    try { gsc = await d.topQueries(site.gsc_key, site.gsc_property, site.url); log(`Search Console: ${gsc.length} real queries`); }
     catch (e) { log(`Search Console unavailable (${(e as Error).message}); using generated keywords`); }
   }
   const saved = db.prepare('SELECT data_json, source FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string; source: string } | undefined;
