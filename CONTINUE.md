@@ -168,3 +168,8 @@ Dizayn (2026-10-20, dizayn-web df1dc7e): 12 actions went down to 7 after one cha
 
 - A site whose URL has a path (`npm run wd -- add https://dizayn.com.mx/us --market US,MX`) is its own own-site: the crawl stays inside that path (`inScope` in crawl.ts), and Search Console only counts queries whose landing page is in that path (`pageFilter` in gsc.ts). Root sites behave as before. Any page of the domain that ranks still counts as own (registrable domain), and `ownUrl` says which one.
 - Dizayn US is site **#21** (market `US,MX`: with `US` alone its hreflang alternates to the MX pages were flagged as 14 false findings). Profile is a `user` profile (country US, national, es+en, 11 keywords, 4 from US-section GSC). Discovery #16 (Sonnet + Serper, $0.034) watches agenciaseousa.com, brimaronlinemarketing.com, ljrankingseo.com (sites 22-24, crawled). Dizayn is not in the US top 10 for any of the 11 searches.
+
+## dizaynseo.com (www) as site #25 (2026-10-25)
+
+- Added with `add https://www.dizaynseo.com --market US,MX`; 43 pages crawled. Discovery #17 ($0.048, no GSC) watches thriveagency.com, percepture.com, mapranking.com (crawled, 300 pages each); suggested: mediaspearhead.com, brimaronlinemarketing.com, webfx.com.
+- Pending: verify the GSC property for www.dizaynseo.com and connect with `gsc 25 <key.json>`, then re-run `discover 25` on real queries. Known gap: "How to win" can compare against the wrong own page (see seo-ai-search-playbook §36).
