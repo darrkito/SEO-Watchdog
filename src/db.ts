@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS approvals (
   payload_json TEXT NOT NULL, diff TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','published','failed')),
   note TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), decided_at TEXT);
+-- Clicked-but-not-finished agent jobs, so a restart re-queues them instead of silently dropping them.
+CREATE TABLE IF NOT EXISTS agent_queue (
+  id INTEGER PRIMARY KEY, agent TEXT NOT NULL, site_id INTEGER NOT NULL, slug TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (agent, site_id, slug));
 CREATE TABLE IF NOT EXISTS metrics (
   site_id INTEGER NOT NULL, source TEXT NOT NULL, date TEXT NOT NULL, query TEXT NOT NULL DEFAULT '', page TEXT NOT NULL DEFAULT '',
   clicks REAL NOT NULL DEFAULT 0, impressions REAL NOT NULL DEFAULT 0, position REAL NOT NULL DEFAULT 0,
