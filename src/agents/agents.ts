@@ -46,7 +46,7 @@ async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; ma
 
 const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname);
 /** Ranking used to pick the next topic: the owner's target customers first, bulk/industrial last. */
-export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corporate-event' THEN 3 WHEN 'bulk' THEN -4 ELSE 0 END)";
+export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corporate-event' THEN 3 WHEN 'planner' THEN 3 WHEN 'bulk' THEN -4 ELSE 0 END)";
 
 // ---------- worktree ----------
 /** A clean checkout of origin/main on `branch`, in the agents' own worktree (the owner's checkout is never touched). */
@@ -172,7 +172,7 @@ Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo 
 - Posts que YA existen (no los dupliques; si un tema se parece, usa action "merge:<slug-existente>" para ampliarlo): ${JSON.stringify(posts)}
 - Slugs ya en el backlog (no repetir): ${JSON.stringify(backlog)}
 Puedes leer el repo (src/content/products.ts, blog.ts) y buscar en la web para validar demanda y qué responde la competencia. El tema debe conectar con productos o servicios reales de Yume.
-Prioridad: al menos 6 de los 8 temas deben hablarle al cliente ideal del brief (bodas primero; luego baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, y eventos de empresa como posadas). Máximo 1 tema de etiquetas/stickers y solo con ángulo de evento o regalo. Considera la temporada (hoy es ${mxNow().date}). Solo temas que Yume pueda cumplir con lo que de verdad produce.
+Prioridad: al menos 6 de los 8 temas deben hablarle al cliente ideal del brief (bodas primero; luego contenido para wedding/event planners, que son los mejores aliados; luego baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, regalos o sorpresas de cualquier persona para un ser querido, y eventos de empresa como posadas). Incluye al menos 1 tema pensado para planners. Máximo 1 tema de etiquetas/stickers y solo con ángulo de evento o regalo. Considera la temporada (hoy es ${mxNow().date}). Solo temas que Yume pueda cumplir con lo que de verdad produce.
 ${audience(c)}
 Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case-es","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras","score":1-10}]
 ${c.cfg.rules}\n${c.cfg.writerRules}`,

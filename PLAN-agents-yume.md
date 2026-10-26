@@ -154,3 +154,7 @@ El dueño pidió reorientar el SEO hacia personas de alto poder adquisitivo que 
 - Dashboard: columna "Speaks to" en Blog quality y botón "Improve the 3 lowest event posts".
 - Límite de honestidad: solo se ofrece lo que Yume produce (8 productos en `products.ts` más los servicios por cotización existentes). No hay productos de boda en el catálogo: los posts de bodas llevan a cotizar por WhatsApp y marcan en `claims` lo pendiente de confirmar con el dueño.
 - Pendiente del dueño: lista exacta de lo que Yume puede hacer para bodas y eventos (invitaciones, menús, tarjetas, etiquetas de copa, souvenirs...), y si quiere páginas de servicio dedicadas (/bodas, /eventos). Las páginas son código y pasarían por aprobación.
+
+### 10.3 Aclaración del dueño (2026-10-26)
+
+El cliente individual no tiene que dedicarse a organizar fiestas: puede ser cualquier mamá, papá o persona de a pie con alto poder adquisitivo que quiere hacerle algo bonito a un ser querido. Los **planners** (wedding planners, event planners) son los mejores aliados y ahora son un segmento propio (`planner`) con prioridad como los demás objetivos. El investigador debe incluir al menos 1 tema para planners por corrida. Primer tema en el backlog: guía para planners sobre cómo trabajar con un proveedor de detalles personalizados.

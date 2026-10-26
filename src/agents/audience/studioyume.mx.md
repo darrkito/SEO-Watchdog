@@ -4,8 +4,9 @@ Fuente: tres notas de voz del dueño (carpeta `/home/darrkito/YumePhotos/Notes`)
 
 ## Cliente ideal
 
-1. **Personas con alto poder adquisitivo que organizan celebraciones.** Con estudios, gastan sin pensar en el precio para que una fiesta se vea cuidada y personal. Madres y familias que organizan baby showers, cumpleaños, bautizos, primeras comuniones, XV años, graduaciones y, sobre todo, **bodas**. Compran por estética, detalle y experiencia, no por el precio más bajo.
-2. **Empresas que organizan eventos**: posadas, eventos corporativos y empresariales, aniversarios, lanzamientos, kits de bienvenida, eventos con clientes. Piden piezas para un evento concreto (decenas o cientos), personalizadas, no producción en serie.
+1. **Personas de a pie con alto poder adquisitivo.** No tienen que dedicarse a organizar fiestas: puede ser una mamá, un papá o cualquier persona que quiere hacerle algo bonito a un ser querido (cumpleaños, baby shower, bautizo, primera comunión, XV años, graduación, aniversario, sorpresa, boda propia o de un familiar). Lo que importa es que tienen presupuesto alto y compran por estética, detalle y experiencia, no por el precio más bajo. **Bodas** es el nicho que más se quiere abrir.
+2. **Planners: nuestros mejores aliados.** Event planners, wedding planners y organizadoras de eventos. Compran a menudo, recomiendan y repiten. Hablarles como proveedor confiable de detalles personalizados para sus clientes (calidad constante, tiempos claros, diseño con prueba digital, trato directo por WhatsApp). Su volumen es por evento, no producción industrial.
+3. **Empresas que organizan eventos**: posadas, eventos corporativos y empresariales, aniversarios, lanzamientos, kits de bienvenida, eventos con clientes. Piden piezas para un evento concreto, personalizadas.
 
 ## Lo que NO queremos que sea el eje del negocio
 
@@ -30,7 +31,8 @@ Solo se puede ofrecer lo que Yume realmente produce: los productos de `src/conte
 ## Prioridad de temas
 
 1. Bodas y todo lo que las rodea (souvenirs, menús, invitaciones, detalles de mesa, mesa de dulces).
-2. Baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación.
-3. Eventos de empresa: posadas, aniversarios, lanzamientos, eventos con clientes.
-4. Stickers y etiquetas con ángulo de evento o de regalo.
-5. Etiquetas/stickers con ángulo industrial o de volumen: no crear contenido nuevo.
+2. Planners: contenido pensado para wedding y event planners (cómo trabajar con un proveedor de detalles personalizados, tiempos, pruebas digitales, cantidades por evento).
+3. Baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, y regalos o sorpresas para un ser querido.
+4. Eventos de empresa: posadas, aniversarios, lanzamientos, eventos con clientes.
+5. Stickers y etiquetas con ángulo de evento o de regalo.
+6. Etiquetas/stickers con ángulo industrial o de volumen: no crear contenido nuevo.

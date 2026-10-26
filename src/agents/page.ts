@@ -13,7 +13,7 @@ const LABEL: Record<string, string> = { improver: 'Post improver', crawl: 'Site 
 /** Slugs already being reworked (draft waiting) or reworked in the last 14 days: don't queue them again. */
 const recentlyImproved = (db: DatabaseSync, siteId: number): Set<string> => new Set((db.prepare("SELECT json_extract(payload_json, '$.slug') slug FROM approvals WHERE site_id = ? AND title LIKE 'Improve:%' AND status != 'rejected' AND created_at >= datetime('now', '-14 days')").all(siteId) as { slug: string }[]).map((r) => r.slug));
 
-const SEG: Record<Segment, string> = { event: 'Event (target)', 'corporate-event': 'Company event (target)', bulk: 'Bulk / industrial', labels: 'Labels & stickers', other: '-' };
+const SEG: Record<Segment, string> = { event: 'Event (target)', planner: 'Planners (target)', 'corporate-event': 'Company event (target)', bulk: 'Bulk / industrial', labels: 'Labels & stickers', other: '-' };
 const blogSection = (db: DatabaseSync, s: Site, all: boolean): Html => {
   const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
   const working = new Set(inFlight().filter((k) => k.startsWith(`improver:${s.id}:`)).map((k) => k.split(':').slice(2).join(':')));

@@ -112,3 +112,15 @@ test('blog score: thin post with no FAQ scores low with plain reasons; a complet
   assert.equal(good.score, 100); assert.deepEqual(good.reasons, []);
   assert.equal(scorePost({ title: 'Un título de longitud adecuada para buscadores', meta_description: 'd'.repeat(140), h1: ['a'], word_count: 1600, faq_questions: ['q'], jsonld_types: ['BlogPosting'], links: link(10) }, null, 'x.mx').score, 100, 'without Search Console the structure score is scaled to 100');
 });
+
+test('audience segments: planners and individuals are targets; bulk wins over generic event words', async () => {
+  const { segmentOf, TARGET } = await import('../src/agents/audience.ts');
+  assert.equal(segmentOf('proveedores para wedding planner guadalajara'), 'planner');
+  assert.equal(segmentOf('souvenirs de boda personalizados'), 'event');
+  assert.equal(segmentOf('regalo sorpresa para mi mamá'), 'event');
+  assert.equal(segmentOf('detalles de posada para empresa'), 'corporate-event');
+  assert.equal(segmentOf('etiquetas para producto shampoo por mayoreo'), 'bulk');
+  assert.equal(segmentOf('stickers vinil impermeable'), 'labels');
+  for (const t of ['event', 'planner', 'corporate-event'] as const) assert.ok(TARGET.has(t));
+  assert.ok(!TARGET.has('bulk') && !TARGET.has('labels'));
+});
