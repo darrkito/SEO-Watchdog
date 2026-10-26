@@ -101,3 +101,14 @@ test('worktree + publish plumbing on a throwaway repo: draft stays off main unti
   assert.equal(g(root, '--git-dir=remote.git', 'show', 'main:blog.ts'), 'one\nOWNER\n', 'main untouched by the failed publish');
   assert.equal(g(wt2, 'status', '--porcelain'), '', 'rebase aborted, worktree clean');
 });
+
+test('blog score: thin post with no FAQ scores low with plain reasons; a complete post scores high', async () => {
+  const { scorePost } = await import('../src/agents/blogscore.ts');
+  const link = (n: number) => Array.from({ length: n }, (_, i) => `https://x.mx/blog/p${i}`);
+  const thin = scorePost({ title: 'Corto', meta_description: 'x', h1: ['a'], word_count: 380, faq_questions: [], jsonld_types: ['BlogPosting'], links: link(2) }, { impressions: 0, clicks: 0, position: 0 }, 'x.mx');
+  assert.ok(thin.score < 35, String(thin.score));
+  assert.ok(thin.reasons.some((r) => /380 palabras/.test(r)) && thin.reasons.includes('sin FAQ visible') && thin.reasons.includes('sin clics en 90 días'));
+  const good = scorePost({ title: 'Un título de longitud adecuada para buscadores', meta_description: 'd'.repeat(140), h1: ['a'], word_count: 1600, faq_questions: ['q'], jsonld_types: ['BlogPosting'], links: link(10) }, { impressions: 80, clicks: 4, position: 6 }, 'x.mx');
+  assert.equal(good.score, 100); assert.deepEqual(good.reasons, []);
+  assert.equal(scorePost({ title: 'Un título de longitud adecuada para buscadores', meta_description: 'd'.repeat(140), h1: ['a'], word_count: 1600, faq_questions: ['q'], jsonld_types: ['BlogPosting'], links: link(10) }, null, 'x.mx').score, 100, 'without Search Console the structure score is scaled to 100');
+});

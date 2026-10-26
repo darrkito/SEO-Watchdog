@@ -9,11 +9,12 @@ import { runSite } from '../crawl.ts';
 import { alertText, sendAlert } from '../alert.ts';
 import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
+import { blogScores } from './blogscore.ts';
 import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
 export class LimitError extends Error {}
-export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void };
+export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string } };
 export type AgentFn = (c: Ctx) => Promise<string>;
 
 // Never touched by an agent push, whatever the prompt says.
@@ -183,18 +184,34 @@ function approvalFor(c: Ctx, kind: string, title: string, payload: object, diff:
   return Number(c.db.prepare('INSERT INTO approvals (site_id, agent, kind, title, payload_json, diff) VALUES (?, ?, ?, ?, ?, ?)').run(c.site.id, kind === 'post' ? 'writer' : 'fixer', kind, title, JSON.stringify(payload), diff).lastInsertRowid);
 }
 
+type Draftable = { id: number | null; title: string; slug: string; query: string; why: string; action: string; improve?: boolean };
+
 export const writerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
-  const cfg = c.cfg;
   const pending = c.db.prepare("SELECT COUNT(*) n FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'pending'").get(c.site.id) as { n: number };
   if (pending.n >= 2) return `skipped: ${pending.n} drafts already waiting for approval`;
-  const topic = c.db.prepare("SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY score DESC, id LIMIT 1").get(c.site.id) as any;
+  const topic = c.db.prepare("SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY score DESC, id LIMIT 1").get(c.site.id) as Draftable | undefined;
   if (!topic) return 'skipped: no topics in the backlog (the researcher runs Sundays)';
-  const publishAt = nextPublishDate();
-  const branch = `agent/post-${topic.slug}`;
+  return draftTopic(c, topic, nextPublishDate());
+};
+
+/** One click on a low-scoring post: the writer reworks that post, driven by the measured reasons for its score. */
+export const improverAgent: AgentFn = async (c) => {
+  const slug = c.args?.slug;
+  if (!slug) throw new Error('improver needs a post slug');
+  if (c.db.prepare("SELECT 1 FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'pending' AND json_extract(payload_json, '$.slug') = ?").get(c.site.id, slug)) return `skipped: ${slug} already has a draft waiting`;
+  const row = blogScores(c.db, c.site).find((r) => r.slug === slug);
+  if (!row) throw new Error(`no crawled blog post with slug ${slug}`);
+  return draftTopic(c, { id: null, title: row.title || slug, slug, query: row.topQuery ?? '', action: `merge:${slug}`, improve: true,
+    why: `${row.reasons.join('; ')}${row.impressions ? `. Search Console 90d: ${row.impressions} impresiones, ${row.clicks} clics, posición media ${row.position}` : '. Sin datos de búsqueda aún'}` }, mxNow().date);
+};
+
+async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
+  const cfg = c.cfg!;
+  const branch = `agent/post-${topic.slug}${topic.improve ? '-' + publishAt : ''}`;
   const wt = prepareWorktree(cfg, branch);
   const merge = String(topic.action).startsWith('merge:') ? String(topic.action).slice(6) : null;
-  const brief = `Tema: "${topic.title}" (búsqueda principal: "${topic.query}"). Por qué: ${topic.why}
+  const brief = topic.improve ? `Mejora el post EXISTENTE "${merge}" (no cambies su slug, URL ni publishedAt; pon modifiedAt a ${publishAt}). Su puntaje de calidad es bajo por estas razones medidas: ${topic.why}. Corrige exactamente eso: amplía con contenido útil y verificable, agrega respuestas directas de 40-60 palabras al inicio de cada H2, FAQ visible con hechos reales, enlaces internos a posts y productos reales, y mejora title/description si están fuera de rango. Conserva lo que ya funciona y aplica los cambios en ES y en EN.` : `Tema: "${topic.title}" (búsqueda principal: "${topic.query}"). Por qué: ${topic.why}
 ${merge ? `Este tema se FUSIONA: amplía el post existente "${merge}" (secciones/FAQ nuevas, actualiza modifiedAt a ${publishAt}), no crees un post nuevo.` : `Crea un post NUEVO con slug "${topic.slug}", publishedAt "${publishAt}", en ES (blog.ts) y EN (blog.en.ts) + entrada en BLOG_SLUG_EN. Si el tema es de dulceros, usa los archivos blog-dulceros*.`}`;
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
@@ -215,11 +232,12 @@ ${extra}`,
   commit(wt, `content(blog): ${topic.title} (ES+EN)`);
   const slug = merge ?? meta.slug ?? topic.slug;
   const enSlug = enSlugFor(cfg, slug, meta.enSlug);
-  const id = approvalFor(c, 'post', `${merge ? 'Update' : 'New post'}: ${topic.title}`, { branch, slug, enSlug, topicId: topic.id, publishAt, files, claims: meta.claims ?? [], urls: cfg.blogUrl(slug, enSlug), marker: pickMarker(diff) }, diff);
-  c.db.prepare("UPDATE topics SET status = 'drafted' WHERE id = ?").run(topic.id);
-  await sendAlert(`✍️ Borrador listo para aprobar: ${topic.title} (publicar ${publishAt}). Revisa en el dashboard: /agents`);
+  const id = approvalFor(c, 'post', `${topic.improve ? 'Improve' : merge ? 'Update' : 'New post'}: ${topic.title}`, { branch, slug, enSlug, topicId: topic.id ?? null, publishAt, files, claims: meta.claims ?? [], urls: cfg.blogUrl(slug, enSlug), marker: pickMarker(diff) }, diff);
+  if (topic.id) c.db.prepare("UPDATE topics SET status = 'drafted' WHERE id = ?").run(topic.id);
+  await sendAlert(`✍️ Borrador listo para aprobar: ${topic.title} (${topic.improve ? 'mejora de post existente' : 'publicar ' + publishAt}). Revisa en el dashboard: /agents`);
   return `draft #${id} "${topic.title}" for ${publishAt}: ${files.length} files`;
 };
+
 
 // ---------- fixer ----------
 export const fixerAgent: AgentFn = async (c) => {
@@ -301,5 +319,5 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
   }
 }
 
-export const AGENTS: Record<string, AgentFn> = { crawl: crawlAgent, collect: collectAgent, analyst: analystAgent, researcher: researcherAgent, writer: writerAgent, fixer: fixerAgent };
-export const LLM_AGENTS = new Set(['analyst', 'researcher', 'writer', 'fixer']);
+export const AGENTS: Record<string, AgentFn> = { crawl: crawlAgent, collect: collectAgent, analyst: analystAgent, researcher: researcherAgent, writer: writerAgent, fixer: fixerAgent, improver: improverAgent };
+export const LLM_AGENTS = new Set(['analyst', 'researcher', 'writer', 'fixer', 'improver']);

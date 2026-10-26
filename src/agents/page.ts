@@ -1,12 +1,33 @@
 // Dashboard "Agents" tab: what each agent did, what waits for approval, and the controls (pause, autonomy, run now, kill switch).
 import type { DatabaseSync } from 'node:sqlite';
-import { h, raw, layout, chip, ago, type Sev } from '../html.ts';
+import { h, raw, layout, chip, ago, type Html, type Sev } from '../html.ts';
 import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent } from './scheduler.ts';
 import { LLM_AGENTS } from './agents.ts';
+import { blogScores } from './blogscore.ts';
+import type { Site } from '../db.ts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const when = (a: string) => { const e = SCHEDULE.find((s) => s.agent === a)!; return `${e.days.length === 7 ? 'daily' : e.days.map((d) => DAYS[d]).join(' + ')} ${e.at} (Mexico City)`; };
-const LABEL: Record<string, string> = { crawl: 'Site check', collect: 'Data collector (Search Console + Bing)', analyst: 'Analyst', fixer: 'Fixer', researcher: 'Topic researcher', writer: 'Writer (Mon + Wed posts)' };
+const LABEL: Record<string, string> = { improver: 'Post improver', crawl: 'Site check', collect: 'Data collector (Search Console + Bing)', analyst: 'Analyst', fixer: 'Fixer', researcher: 'Topic researcher', writer: 'Writer (Mon + Wed posts)' };
+/** Slugs already being reworked (draft waiting) or reworked in the last 14 days: don't queue them again. */
+const recentlyImproved = (db: DatabaseSync, siteId: number): Set<string> => new Set((db.prepare("SELECT json_extract(payload_json, '$.slug') slug FROM approvals WHERE site_id = ? AND title LIKE 'Improve:%' AND status != 'rejected' AND created_at >= datetime('now', '-14 days')").all(siteId) as { slug: string }[]).map((r) => r.slug));
+
+const blogSection = (db: DatabaseSync, s: Site): Html => {
+  const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
+  if (!rows.length) return h`<p class="muted small">No blog posts crawled yet.</p>`;
+  const tone = (n: number): Sev => (n >= 75 ? 'good' : n >= 55 ? 'warn' : 'critical');
+  const avg = Math.round(rows.reduce((a, r) => a + r.score, 0) / rows.length);
+  return h`<h2>Blog quality · ${new URL(s.url).hostname}</h2>
+    <p class="muted small">Score 0-100 per post: structure (length, FAQ, schema, title, description, H1, internal links) and Google visibility. Average ${avg}. One click sends a post to the writer, which fixes exactly the listed reasons and leaves a draft for you to approve.</p>
+    <form method="post" action="/agents/improve-low" style="margin-bottom:10px"><input type="hidden" name="site" value="${s.id}"><button class="btn primary">Improve the 3 lowest</button></form>
+    <div class="card" style="overflow-x:auto"><table><thead><tr><th class="num">Score</th><th>Post</th><th>Why it scores low</th><th class="num">Google 90d</th><th></th></tr></thead><tbody>
+    ${rows.slice(0, 25).map((r) => h`<tr><td class="num">${chip(tone(r.score), String(r.score))}</td>
+      <td><a href="${r.url}" target="_blank" rel="noopener">${r.title}</a></td><td class="small">${r.reasons.join('. ') || 'Nothing to fix'}</td>
+      <td class="num small">${r.impressions ? `${r.impressions} views · ${r.clicks} clicks` : '-'}</td>
+      <td>${done.has(r.slug) ? h`<span class="muted small">In progress / done</span>` : h`<form method="post" action="/agents/improve"><input type="hidden" name="site" value="${s.id}"><input type="hidden" name="slug" value="${r.slug}"><button class="btn link">Improve</button></form>`}</td></tr>`)}
+    </tbody></table>${rows.length > 25 ? h`<p class="muted small">Showing the 25 lowest of ${rows.length}.</p>` : ''}</div>`;
+};
+
 const sev = (s: string): Sev => (s === 'ok' ? 'good' : s === 'failed' ? 'critical' : s === 'limited' ? 'warn' : 'info');
 
 export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string }): string {
@@ -49,7 +70,7 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
     <h2>Waiting for you${pending.length ? ` (${pending.length})` : ''}</h2>
     ${pending.length ? pending.map(approval) : h`<div class="card empty">Nothing to approve.</div>`}
     ${sites.map((s) => h`<h2>${new URL(s.url).hostname}</h2><div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Last run</th><th>Status</th><th>Autonomy</th><th></th></tr></thead><tbody>
-      ${ALL_AGENTS.map((a) => agentRow(s.id, a))}</tbody></table></div>`)}
+      ${ALL_AGENTS.map((a) => agentRow(s.id, a))}</tbody></table></div>${blogSection(db, s)}`)}
     <h2>Usage, last 7 days</h2>
     <div class="card" style="overflow-x:auto">${week.length ? h`<table><thead><tr><th>Agent</th><th class="num">Runs</th><th class="num">Tokens in</th><th class="num">Tokens out</th><th class="num">List-price value</th><th class="num">Not ok</th></tr></thead><tbody>
       ${week.map((w) => h`<tr><td>${LABEL[w.agent] ?? w.agent}</td><td class="num">${w.runs}</td><td class="num">${fmt(w.tin)}</td><td class="num">${fmt(w.tout)}</td><td class="num">${LLM_AGENTS.has(w.agent) ? `$${w.cost}` : '-'}</td><td class="num">${w.bad || ''}</td></tr>`)}</tbody></table>
@@ -68,11 +89,19 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
   const known = () => { if (!ALL_AGENTS.includes(agent) || !agentSites(db).some((s) => s.id === site)) throw new Error('Unknown agent or site.'); };
   if (action === 'kill') { db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, ?) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = excluded.enabled").run(form.get('enabled') === '1' ? 1 : 0); return form.get('enabled') === '1' ? 'Agents resumed.' : 'All agents stopped.'; }
   if (action === 'decide') { const id = Number(form.get('id')), a = form.get('action'); if (a !== 'approve' && a !== 'reject') throw new Error('Bad action.'); decide(db, id, a); return a === 'approve' ? 'Approved. Publishing now: it goes live after the deploy is confirmed.' : 'Rejected.'; }
-  known();
+  if (action !== 'improve' && action !== 'improve-low') known();
   if (action === 'toggle') { db.prepare('UPDATE agent_settings SET enabled = ? WHERE agent = ? AND site_id = ?').run(form.get('enabled') === '1' ? 1 : 0, agent, site); return `${LABEL[agent]} ${form.get('enabled') === '1' ? 'resumed' : 'paused'}.`; }
   if (action === 'autonomy') {
     const v = form.get('autonomy'); if (agent !== 'fixer' || (v !== 'approve' && v !== 'auto')) throw new Error('Only the fixer has an autonomy setting.');
     db.prepare('UPDATE agent_settings SET autonomy = ? WHERE agent = ? AND site_id = ?').run(v, agent, site); return `Fixer: ${v === 'auto' ? 'auto-publishes low-risk content fixes' : 'asks you first'}.`;
+  }
+  if (action === 'improve' || action === 'improve-low') {
+    const s = agentSites(db).find((x) => x.id === site); if (!s) throw new Error('Unknown site.');
+    const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
+    const slugs = action === 'improve' ? [form.get('slug') ?? ''] : rows.filter((r) => !done.has(r.slug)).slice(0, 3).map((r) => r.slug);
+    if (slugs.some((x) => !rows.some((r) => r.slug === x))) throw new Error('That post is not in the latest crawl.');
+    for (const slug of slugs) void runAgent(db, 'improver', s, null, { slug });
+    return `Queued ${slugs.length} post${slugs.length === 1 ? '' : 's'} for the writer. Each draft shows up under "Waiting for you" in a few minutes.`;
   }
   if (action === 'run') { void runAgent(db, agent, db.prepare('SELECT * FROM sites WHERE id = ?').get(site) as any); return `${LABEL[agent]} queued.`; }
   throw new Error('Unknown action.');

@@ -138,3 +138,7 @@ Diferencias con el plan original:
 - Los agentes escriben en un worktree propio (`/home/darrkito/yume-agent-wt`); el checkout del dueño nunca se toca.
 
 Pendiente del dueño: `BING_WEBMASTER_API_KEY` y tokens de Telegram en `.env`, aprobar o rechazar los 3 elementos en cola (los 2 posts están fechados 2026-10-28), y la lista de límites extra de Yume.
+
+### 10.1 Mejora de posts con un clic (2026-10-26)
+
+Pestaña `/agents`, sección "Blog quality": puntaje 0-100 por post (estructura 70 pts: palabras, FAQ visible, schema, title, description, H1, enlaces internos; visibilidad en Google 30 pts) con la razón de cada punto perdido. Botón "Improve" por post y "Improve the 3 lowest". Cada clic manda el post al agente `improver` (el redactor en modo mejora, guiado por esas razones medidas); deja un borrador en "Waiting for you" y no se publica sin aprobación. No se vuelve a encolar un post con borrador pendiente o mejorado en los últimos 14 días. Primer caso real: `dulceros-para-graduacion` (puntaje más bajo) con borrador #4.
