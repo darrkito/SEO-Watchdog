@@ -15,7 +15,7 @@ import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
 export class LimitError extends Error {}
-export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string } };
+export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[] } };
 export type AgentFn = (c: Ctx) => Promise<string>;
 
 // Never touched by an agent push, whatever the prompt says.
@@ -262,17 +262,21 @@ ${extra}`,
 export const fixerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
   const cfg = c.cfg;
-  const list = c.db.prepare("SELECT id, rule_id, severity, subject, message FROM findings WHERE site_id = ? AND status = 'open' AND severity IN ('critical','warn') ORDER BY CASE severity WHEN 'critical' THEN 0 ELSE 1 END, id LIMIT 25").all(c.site.id) as any[];
-  if (!list.length) return 'no open critical/warn findings';
-  if ((c.db.prepare("SELECT COUNT(*) n FROM approvals WHERE site_id = ? AND kind = 'fix' AND status = 'pending'").get(c.site.id) as { n: number }).n >= 1) return 'skipped: a fix batch is still waiting for approval';
+  const ids = c.args?.ids; // set when the owner picked findings in the dashboard ("Fix now"); the scheduled run takes the worst 25
+  const cols = 'id, rule_id, severity, subject, message', order = "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, id";
+  const list = (ids?.length
+    ? c.db.prepare(`SELECT ${cols} FROM findings WHERE site_id = ? AND status = 'open' AND id IN (${ids.map(() => '?').join(',')}) ${order} LIMIT 40`).all(c.site.id, ...ids)
+    : c.db.prepare(`SELECT ${cols} FROM findings WHERE site_id = ? AND status = 'open' AND severity IN ('critical','warn') ${order} LIMIT 25`).all(c.site.id)) as any[];
+  if (!list.length) return ids ? 'those findings are no longer open' : 'no open critical/warn findings';
+  if (!ids && (c.db.prepare("SELECT COUNT(*) n FROM approvals WHERE site_id = ? AND kind = 'fix' AND status = 'pending'").get(c.site.id) as { n: number }).n >= 1) return 'skipped: a fix batch is still waiting for approval';
   const autonomy = (c.db.prepare("SELECT autonomy FROM agent_settings WHERE agent = 'fixer' AND site_id = ?").get(c.site.id) as { autonomy: string } | undefined)?.autonomy ?? 'approve';
-  const branch = `agent/fix-${mxNow().date}`;
+  const branch = ids ? `agent/fix-${mxNow().date}-${Date.now().toString(36)}` : `agent/fix-${mxNow().date}`; // a picked batch never overwrites an earlier pending branch
   const wt = prepareWorktree(cfg, branch);
   const text = await ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write'], maxTurns: 40, timeoutMs: 1_800_000,
     prompt: `Eres el agente corrector SEO de ${c.site.url}. Estos son los hallazgos abiertos del Watchdog (datos reales, cada uno con la URL afectada):
 ${JSON.stringify(list)}
-Corrige en el código de este repo hasta 5 de ellos, empezando por los críticos. Prefiere cambios en contenido (src/content/**). Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (hace falta dato que no tienes, o toca pagos/checkout/emails/rutas), sáltalo y di por qué. No ejecutes comandos.
+${ids ? 'El dueño eligió estos hallazgos: corrige TODOS los que se puedan arreglar con seguridad, empezando por los críticos.' : 'Corrige en el código de este repo hasta 5 de ellos, empezando por los críticos.'} Prefiere cambios en contenido (src/content/**). Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (hace falta dato que no tienes, o toca pagos/checkout/emails/rutas), sáltalo y di por qué. No ejecutes comandos.
 ${cfg.rules}
 Respeta el posicionamiento del brief (no cambies el enfoque de la marca, solo corrige lo técnico/SEO).${audience(c)}
 Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,

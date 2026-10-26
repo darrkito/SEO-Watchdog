@@ -34,6 +34,18 @@ const blogSection = (db: DatabaseSync, s: Site, all: boolean): Html => {
     </tbody></table>${rows.length > 25 ? h`<p class="muted small">${all ? `Showing all ${rows.length}.` : `Showing the 25 lowest of ${rows.length}.`} <a href="/agents?${all ? '' : 'all=1'}#blogs">${all ? 'Show only the 25 lowest' : `Show all ${rows.length}`}</a></p>` : ''}</div>`;
 };
 
+/** "Fix now": queue the fixer for the picked findings (or every open critical/warn one). It prepares a change; approval still decides what goes live. */
+export function queueFix(db: DatabaseSync, siteId: number, picked: number[] | 'all'): string {
+  const site = agentSites(db).find((x) => x.id === siteId);
+  if (!site) throw new Error('The fix agents are not set up for this site yet.');
+  const open = db.prepare("SELECT id, severity FROM findings WHERE site_id = ? AND status = 'open' ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, id").all(siteId) as { id: number; severity: string }[];
+  const ids = (picked === 'all' ? open.filter((f) => f.severity !== 'info') : open.filter((f) => picked.includes(f.id))).map((f) => f.id);
+  if (!ids.length) throw new Error(picked === 'all' ? 'There is nothing to fix: no open critical or warning issues.' : 'Select at least one open issue first.');
+  const batch = ids.slice(0, 40);
+  void runAgent(db, 'fixer', site, null, { ids: batch });
+  return `Fixer queued for ${batch.length} issue${batch.length === 1 ? '' : 's'}${ids.length > batch.length ? ` (the first 40 of ${ids.length}: click again when it finishes)` : ''}. It prepares the change in about 2 to 3 minutes and shows it under "Waiting for you" for you to approve.`;
+}
+
 const sev = (s: string): Sev => (s === 'ok' ? 'good' : s === 'failed' ? 'critical' : s === 'limited' ? 'warn' : 'info');
 
 export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string }, showAll = false): string {
@@ -47,7 +59,7 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
   const fmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n ?? 0));
 
   const approval = (a: any) => { const p = JSON.parse(a.payload_json); return h`<div class="card" id="approval-${a.id}" style="margin-bottom:12px">
-    <div class="row"><h3>${chip('info', a.kind === 'post' ? 'Post' : 'Fix')} ${a.title}</h3><span class="muted small">#${a.id} · ${ago(a.created_at)}</span></div>
+    <div class="row"><h3>${chip('info', a.kind === 'post' ? 'Post' : a.kind === 'page' ? 'Page' : 'Fix')} ${a.title}</h3><span class="muted small">#${a.id} · ${ago(a.created_at)}</span></div>
     ${p.urls?.[0] ? h`<p class="small">Post being changed: <a href="${p.urls[0]}" target="_blank" rel="noopener">${p.urls[0]}</a></p>` : ''}
     ${p.publishAt ? h`<p class="small">Scheduled for <b>${p.publishAt}</b>. Files: ${(p.files ?? []).join(', ')}</p>` : h`<p class="small">Files: ${(p.files ?? []).join(', ')}</p>`}
     ${p.claims?.length ? h`<details><summary class="small">Facts the writer relied on (${p.claims.length})</summary><ul class="urls">${p.claims.map((c: any) => h`<li><span class="u">${c.claim}<br><span class="m">${c.source}</span></span></li>`)}</ul></details>` : ''}
@@ -72,13 +84,15 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
     <h1>Agents</h1>
     <p class="muted">Run on your Claude subscription, never the API. One job at a time, lowest CPU priority.</p>
     ${msg?.error ? h`<div class="banner warn">${msg.error}</div>` : ''}${msg?.ok ? h`<div class="banner info">${msg.ok}</div>` : ''}
-    ${inFlight().length ? h`<div class="banner info"><b>Working now:</b> ${inFlight().map((k) => { const [agent, siteId, ...d] = k.split(':'); const slug = d.join(':'); const row = slug ? blogScores(db, agentSites(db).find((x) => x.id === Number(siteId))!).find((r) => r.slug === slug) : null; return `${LABEL[agent] ?? agent}${slug ? `: ${row?.title ?? slug}` : ''}`; }).join(' · ')}. A post takes about 2 minutes; this page refreshes by itself and the draft appears under "Waiting for you" (newest first).</div>` : ''}
+    ${inFlight().length ? h`<div class="banner info"><b>Working now:</b> ${inFlight().map((k) => { const [agent, siteId, ...d] = k.split(':'); const slug = d.join(':'); const row = slug && !slug.startsWith('ids:') ? blogScores(db, agentSites(db).find((x) => x.id === Number(siteId))!).find((r) => r.slug === slug) : null; return `${LABEL[agent] ?? agent}${slug.startsWith('ids:') ? `: ${slug.slice(4).split(',').length} issue(s)` : slug ? `: ${row?.title ?? slug}` : ''}`; }).join(' · ')}. A post takes about 2 minutes; this page refreshes by itself and the draft appears under "Waiting for you" (newest first).</div>` : ''}
     <div class="card row">${killed ? h`<span>${chip('critical', 'All agents stopped')}</span>` : h`<span>${chip('good', 'Fleet running')}</span>`}
       <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${killed ? 1 : 0}"><button class="btn ${killed ? 'primary' : ''}">${killed ? 'Resume all agents' : 'Stop all agents'}</button></form></div>
     <h2>Waiting for you${pending.length ? ` (${pending.length})` : ''}</h2>
     ${pending.length ? pending.map(approval) : h`<div class="card empty">Nothing to approve.</div>`}
-    ${sites.map((s) => h`<h2>${new URL(s.url).hostname}</h2><div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Last run</th><th>Status</th><th>Autonomy</th><th></th></tr></thead><tbody>
-      ${ALL_AGENTS.map((a) => agentRow(s.id, a))}</tbody></table></div>${blogSection(db, s, showAll)}`)}
+    ${sites.map((s) => { const n = (db.prepare("SELECT COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' AND severity != 'info'").get(s.id) as { n: number }).n; return h`<h2>${new URL(s.url).hostname}</h2>
+      <div class="row" style="justify-content:flex-start;margin-bottom:10px"><form method="post" action="/agents/fix-all"><input type="hidden" name="site" value="${s.id}"><button class="btn primary" ${n ? '' : raw('disabled')}>Fix all issues now${n ? ` (${n})` : ''}</button></form>
+        <a class="small" href="/site/${s.id}?tab=issues">Pick which ones to fix →</a></div><div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Last run</th><th>Status</th><th>Autonomy</th><th></th></tr></thead><tbody>
+      ${ALL_AGENTS.map((a) => agentRow(s.id, a))}</tbody></table></div>${blogSection(db, s, showAll)}`; })}
     <h2>Usage, last 7 days</h2>
     <div class="card" style="overflow-x:auto">${week.length ? h`<table><thead><tr><th>Agent</th><th class="num">Runs</th><th class="num">Tokens in</th><th class="num">Tokens out</th><th class="num">List-price value</th><th class="num">Not ok</th></tr></thead><tbody>
       ${week.map((w) => h`<tr><td>${LABEL[w.agent] ?? w.agent}</td><td class="num">${w.runs}</td><td class="num">${fmt(w.tin)}</td><td class="num">${fmt(w.tout)}</td><td class="num">${LLM_AGENTS.has(w.agent) ? `$${w.cost}` : '-'}</td><td class="num">${w.bad || ''}</td></tr>`)}</tbody></table>
@@ -97,6 +111,7 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
   const known = () => { if (!ALL_AGENTS.includes(agent) || !agentSites(db).some((s) => s.id === site)) throw new Error('Unknown agent or site.'); };
   if (action === 'kill') { db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, ?) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = excluded.enabled").run(form.get('enabled') === '1' ? 1 : 0); return form.get('enabled') === '1' ? 'Agents resumed.' : 'All agents stopped.'; }
   if (action === 'decide') { const id = Number(form.get('id')), a = form.get('action'); if (a !== 'approve' && a !== 'reject') throw new Error('Bad action.'); decide(db, id, a); return a === 'approve' ? 'Approved. Publishing now: it goes live after the deploy is confirmed.' : 'Rejected.'; }
+  if (action === 'fix-all') return queueFix(db, site, 'all');
   if (action !== 'improve' && action !== 'improve-low') known();
   if (action === 'toggle') { db.prepare('UPDATE agent_settings SET enabled = ? WHERE agent = ? AND site_id = ?').run(form.get('enabled') === '1' ? 1 : 0, agent, site); return `${LABEL[agent]} ${form.get('enabled') === '1' ? 'resumed' : 'paused'}.`; }
   if (action === 'autonomy') {

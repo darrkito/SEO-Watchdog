@@ -11,7 +11,8 @@ import { discover, activate, deactivate, addOwnCompetitor, candidates, type Cand
 import { findProperty } from './gsc.ts';
 import { battle } from './gaps.ts';
 import { hasLlm, canWebSearch, MODEL } from './llm.ts';
-import { agentsPage, agentsPost } from './agents/page.ts';
+import { agentsPage, agentsPost, queueFix } from './agents/page.ts';
+import { agentSites } from './agents/scheduler.ts';
 import { serial, startScheduler } from './agents/scheduler.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
@@ -125,31 +126,37 @@ function issuesTab(db: DatabaseSync, site: Site, trend: { at: string; critical: 
   const section = (sev: Sev, title: string, intro: string) => {
     const list = gs.filter((g) => g.severity === sev);
     if (!list.length) return '';
-    return h`<h2>${title}</h2><p class="muted small">${intro}</p>${list.map((g) => issueCard(site, g))}`;
+    return h`<h2>${title}</h2><p class="muted small">${intro}</p>${list.map((g) => issueCard(site, g, canFix))}`;
   };
   const fixed = db.prepare("SELECT rule_id, subject, resolved_at FROM findings WHERE site_id = ? AND status = 'resolved' AND resolved_at >= datetime('now', '-14 days') ORDER BY resolved_at DESC LIMIT 15").all(site.id) as any[];
   const muted = groups(db, site.id, 'muted');
+  const canFix = site.kind === 'own' && agentSites(db).some((x) => x.id === site.id);
+  const openFixable = gs.filter((g) => g.severity !== 'info').reduce((a, g) => a + g.n, 0);
   return h`
     ${trend.length ? h`<div class="card">${trendChart(trend)}</div>` : ''}
+    ${canFix && gs.length ? h`<form id="fixform" method="post" action="/site/${site.id}/fix"></form>
+      <div class="card row" style="position:sticky;top:0;z-index:5;margin-top:12px"><span class="small"><b>Fix with the agent.</b> Tick the issues you want, or fix everything. The agent prepares the change and you approve it before anything goes live.</span>
+        <span class="row" style="justify-content:flex-end;gap:8px"><button class="btn" form="fixform" name="mode" value="selected">Fix selected now</button>
+        <button class="btn primary" form="fixform" name="mode" value="all" ${openFixable ? '' : raw('disabled')}>Fix all now (${openFixable})</button></span></div>` : ''}
     ${!gs.length ? h`<div class="card empty">${chip('good')} Nothing to fix. The watchdog will tell you as soon as something breaks.</div>` : ''}
     ${section('critical', 'Fix now', 'These stop pages from showing up in Google, or break the site for visitors.')}
     ${section('warn', 'Worth improving', 'Not urgent, but each one costs you some visibility in search or AI answers.')}
     ${gs.some((g) => g.severity === 'info') ? h`<details><summary><h2 style="display:inline">Notes</h2> <span class="muted small">small things, when you have time</span></summary>
-      ${gs.filter((g) => g.severity === 'info').map((g) => issueCard(site, g))}</details>` : ''}
+      ${gs.filter((g) => g.severity === 'info').map((g) => issueCard(site, g, canFix))}</details>` : ''}
     ${fixed.length ? h`<h2>Recently fixed</h2><div class="card"><ul class="urls">${fixed.map((f) => h`<li><span class="u">${chip('good', 'Fixed')} ${ruleInfo(f.rule_id).title}${f.subject ? h` · <a href="/site/${site.id}/page?url=${encodeURIComponent(f.subject)}">${pathOf(f.subject)}</a>` : ''}</span><span class="m">${ago(f.resolved_at)}</span></li>`)}</ul></div>` : ''}
     ${muted.length ? h`<h2>Muted</h2><div class="card"><ul class="urls">${muted.map((g) => h`<li><span class="u">${ruleInfo(g.rule_id).title} · ${plural(g.n, 'page')}</span>
       <form method="post" action="/site/${site.id}/unmute"><input type="hidden" name="rule" value="${g.rule_id}"><button class="btn link">Unmute</button></form></li>`)}</ul></div>` : ''}`;
 }
 
-function issueCard(site: Site, g: Group): Html {
+function issueCard(site: Site, g: Group, canFix = false): Html {
   const info = ruleInfo(g.rule_id);
   const siteWide = g.items.length === 1 && g.items[0].subject === '';
   const shown = g.items.slice(0, 50);
   return h`<details class="card issue"${g.severity === 'critical' ? raw(' open') : ''}>
-    <summary>${chip(g.severity)}<div><h3>${info.title}</h3><div class="why">${info.why}</div></div><span class="count">${siteWide ? 'whole site' : plural(g.n, 'page')}</span></summary>
+    <summary>${canFix ? h`<input type="checkbox" form="fixform" aria-label="Select every page with this issue" onclick="event.stopPropagation();this.closest('details').querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked)">` : ''}${chip(g.severity)}<div><h3>${info.title}</h3><div class="why">${info.why}</div></div><span class="count">${siteWide ? 'whole site' : plural(g.n, 'page')}</span></summary>
     <div class="body">
       ${info.fix ? h`<div class="fix"><b>How to fix:</b> ${info.fix}</div>` : ''}
-      <ul class="urls">${shown.map((it) => h`<li><span class="u">${it.subject
+      <ul class="urls">${shown.map((it) => h`<li>${canFix ? h`<input type="checkbox" form="fixform" name="ids" value="${it.id}" aria-label="Select this page">` : ''}<span class="u">${it.subject
         ? h`<a href="/site/${site.id}/page?url=${encodeURIComponent(it.subject)}">${pathOf(it.subject)}</a>` : 'Whole site'}<br><span class="m">${it.message}</span></span>
         ${it.subject ? h`<a class="small" href="${safeHref(it.subject)}" target="_blank" rel="noopener" aria-label="Open live page">Open ↗</a>` : ''}</li>`)}</ul>
       ${g.n > shown.length ? h`<p class="muted small">…and ${g.n - shown.length} more.</p>` : ''}
@@ -501,6 +508,10 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         }
         if (!site) return notFound(res);
         const rule = form.get('rule') ?? '';
+        if (siteMatch![2] === '/fix') {
+          try { return redirect(res, `/agents?ok=${encodeURIComponent(queueFix(db, site.id, form.get('mode') === 'all' ? 'all' : form.getAll('ids').map(Number).filter(Number.isInteger)))}`); }
+          catch (e) { return redirect(res, `/agents?err=${encodeURIComponent((e as Error).message)}`); }
+        }
         if (siteMatch![2] === '/run') { startRun(db, site); return redirect(res, `/site/${site.id}`); }
         if (['/discover', '/competitor', '/competitor-add', '/profile', '/gsc'].includes(siteMatch![2])) {
           try { await competitorPost(db, site, siteMatch![2], form); }

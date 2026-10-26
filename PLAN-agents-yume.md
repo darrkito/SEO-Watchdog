@@ -158,3 +158,9 @@ El dueño pidió reorientar el SEO hacia personas de alto poder adquisitivo que 
 ### 10.3 Aclaración del dueño (2026-10-26)
 
 El cliente individual no tiene que dedicarse a organizar fiestas: puede ser cualquier mamá, papá o persona de a pie con alto poder adquisitivo que quiere hacerle algo bonito a un ser querido. Los **planners** (wedding planners, event planners) son los mejores aliados y ahora son un segmento propio (`planner`) con prioridad como los demás objetivos. El investigador debe incluir al menos 1 tema para planners por corrida. Primer tema en el backlog: guía para planners sobre cómo trabajar con un proveedor de detalles personalizados.
+
+### 10.4 Página /planners y botones "Fix now" (2026-10-26)
+
+- **/planners (ES) y /en/planners**: preparada en la rama `agent/page-planners` del repo de Yume (`PlannersPage.tsx`, dos rutas, mapa de rutas ES/EN, sitemap y enlace en el footer). Todo precio y tiempo sale de las constantes del catálogo. No ofrece descuentos ni comisiones para planners porque no hay condiciones definidas por el dueño. Typecheck y biome limpios; renderizada en un servidor de pruebas (200, canonical, hreflang, 3 bloques JSON-LD, precios correctos). Espera aprobación en `/agents` como tipo "Page".
+- **Fix now**: en la pestaña "What to fix" de cada sitio configurado hay casillas por página y por tipo de problema, "Fix selected now" y "Fix all now (N)". En `/agents` hay "Fix all issues now (N)" por sitio. El clic encola al fixer con esos hallazgos (hasta 40 por corrida); el cambio queda como lote para aprobar, o se publica solo si el fixer está en "Auto-publish low-risk" y solo toca contenido del blog.
+- Los trabajos del dashboard comparten un único worktree de agentes (`yume-agent-wt`): el trabajo manual en el repo de Yume debe hacerse en otro worktree.
