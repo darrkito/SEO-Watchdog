@@ -11,8 +11,8 @@ import { discover, activate, deactivate, addOwnCompetitor, candidates, type Cand
 import { findProperty } from './gsc.ts';
 import { battle } from './gaps.ts';
 import { hasLlm, canWebSearch, MODEL } from './llm.ts';
-import { agentsPage, agentsPost, queueFix } from './agents/page.ts';
-import { agentSites } from './agents/scheduler.ts';
+import { agentsPage, agentsPost, queueFix, siteAgentsPage } from './agents/page.ts';
+import { agentSites, capable, cfgOf } from './agents/scheduler.ts';
 import { serial, startScheduler } from './agents/scheduler.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
@@ -130,7 +130,7 @@ function issuesTab(db: DatabaseSync, site: Site, trend: { at: string; critical: 
   };
   const fixed = db.prepare("SELECT rule_id, subject, resolved_at FROM findings WHERE site_id = ? AND status = 'resolved' AND resolved_at >= datetime('now', '-14 days') ORDER BY resolved_at DESC LIMIT 15").all(site.id) as any[];
   const muted = groups(db, site.id, 'muted');
-  const canFix = site.kind === 'own' && agentSites(db).some((x) => x.id === site.id);
+  const canFix = site.kind === 'own' && capable(site, 'fixer');
   const openFixable = gs.filter((g) => g.severity !== 'info').reduce((a, g) => a + g.n, 0);
   return h`
     ${trend.length ? h`<div class="card">${trendChart(trend)}</div>` : ''}
@@ -497,8 +497,9 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         const form = await readForm(req);
         if (url.pathname.startsWith('/agents/')) {
           // Post/redirect/get: the page then refreshes safely while an agent works, and a reload never re-submits the click.
-          try { return redirect(res, `/agents?ok=${encodeURIComponent(agentsPost(db, url.pathname.slice(8), form))}`); }
-          catch (e) { return redirect(res, `/agents?err=${encodeURIComponent((e as Error).message)}`); }
+          const back = (() => { try { const p = new URL(req.headers.referer ?? '').pathname; return /^\/agents(\/[a-z]+)?$/.test(p) ? p : '/agents'; } catch { return '/agents'; } })();
+          try { return redirect(res, `${back}?ok=${encodeURIComponent(agentsPost(db, url.pathname.slice(8), form))}`); }
+          catch (e) { return redirect(res, `${back}?err=${encodeURIComponent((e as Error).message)}`); }
         }
         if (url.pathname === '/sites') {
           const r = await addSite(db, { url: form.get('url') ?? '', market: form.get('market') ?? '' });
@@ -509,7 +510,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         if (!site) return notFound(res);
         const rule = form.get('rule') ?? '';
         if (siteMatch![2] === '/fix') {
-          try { return redirect(res, `/agents?ok=${encodeURIComponent(queueFix(db, site.id, form.get('mode') === 'all' ? 'all' : form.getAll('ids').map(Number).filter(Number.isInteger)))}`); }
+          try { return redirect(res, `/agents/${cfgOf(site)?.short ?? ''}?ok=${encodeURIComponent(queueFix(db, site.id, form.get('mode') === 'all' ? 'all' : form.getAll('ids').map(Number).filter(Number.isInteger)))}`); }
           catch (e) { return redirect(res, `/agents?err=${encodeURIComponent((e as Error).message)}`); }
         }
         if (siteMatch![2] === '/run') { startRun(db, site); return redirect(res, `/site/${site.id}`); }
@@ -524,7 +525,10 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         return redirect(res, `/site/${site.id}?tab=issues`);
       }
       if (url.pathname === '/') return send(res, 200, overviewPage(db));
-      if (url.pathname === '/agents') return send(res, 200, agentsPage(db, { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined }, url.searchParams.has('all')));
+      const flash = { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined };
+      if (url.pathname === '/agents') return send(res, 200, agentsPage(db, flash));
+      const agentSite = url.pathname.match(/^\/agents\/([a-z]+)$/);
+      if (agentSite) { const p = siteAgentsPage(db, agentSite[1], flash, url.searchParams.has('all')); return p ? send(res, 200, p) : notFound(res); }
       if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);

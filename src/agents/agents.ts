@@ -10,7 +10,7 @@ import { alertText, sendAlert } from '../alert.ts';
 import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
-import { audienceBrief, segmentOf, TARGET } from './audience.ts';
+import { audienceBrief, seoPlaybook, segmentOf, TARGET } from './audience.ts';
 import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
@@ -44,7 +44,7 @@ async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; ma
   return r.text;
 }
 
-const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname);
+const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname) + seoPlaybook();
 /** Ranking used to pick the next topic: the owner's target customers first, bulk/industrial last. */
 export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corporate-event' THEN 3 WHEN 'planner' THEN 3 WHEN 'bulk' THEN -4 ELSE 0 END)";
 
@@ -89,7 +89,7 @@ const dayAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString(
 const r1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Everything the analyst needs, computed in SQL so the model only interprets (cheap, and numbers are never invented). */
-export function weeklySummary(db: DatabaseSync, siteId: number) {
+export function weeklySummary(db: DatabaseSync, siteId: number, segments = true) {
   const cur = win(db, siteId, dayAgo(8), dayAgo(2)), prev = win(db, siteId, dayAgo(15), dayAgo(9));
   const agg = (by: 'query' | 'page', from: string, to: string) => new Map((db.prepare(`SELECT ${by} k, SUM(clicks) c, SUM(impressions) i, SUM(position*impressions)/NULLIF(SUM(impressions),0) p FROM metrics WHERE site_id = ? AND source = 'gsc' AND date BETWEEN ? AND ? GROUP BY ${by}`).all(siteId, from, to) as any[]).map((r) => [r.k, r]));
   const movers = (by: 'query' | 'page') => {
@@ -105,7 +105,7 @@ export function weeklySummary(db: DatabaseSync, siteId: number) {
   const findings = db.prepare("SELECT rule_id, severity, COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' AND severity != 'info' GROUP BY rule_id, severity ORDER BY n DESC LIMIT 12").all(siteId);
   const bing = db.prepare("SELECT query, SUM(clicks) clicks, SUM(impressions) impressions, ROUND(AVG(position),1) position FROM metrics WHERE site_id = ? AND source = 'bing' AND date >= ? GROUP BY query ORDER BY impressions DESC LIMIT 10").all(siteId, dayAgo(35));
   return { period: { now: `${dayAgo(8)}..${dayAgo(2)}`, before: `${dayAgo(15)}..${dayAgo(9)}` }, totals: { now: { ...cur, p: r1(cur.p) }, before: { ...prev, p: r1(prev.p) } },
-    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing, audienceSegments: segmentShare(db, siteId) };
+    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing, ...(segments ? { audienceSegments: segmentShare(db, siteId) } : {}) };
 }
 
 /** Share of Google impressions/clicks (28d) going to each customer segment: the number that shows whether the SEO turn is working. */
@@ -126,7 +126,7 @@ export function dropAlert(s: ReturnType<typeof weeklySummary>): string | null {
 }
 
 export const analystAgent: AgentFn = async (c) => {
-  const s = weeklySummary(c.db, c.site.id);
+  const s = weeklySummary(c.db, c.site.id, !!c.cfg?.segments);
   if (!s.totals.now.i && !s.totals.before.i) return 'no Search Console data yet; run collect first';
   const alert = dropAlert(s);
   if (alert) await sendAlert(`${new URL(c.site.url).hostname}: ${alert}`);
@@ -135,7 +135,7 @@ export const analystAgent: AgentFn = async (c) => {
     prompt: `Eres el analista SEO de ${c.site.url}. Abajo hay datos reales y ya calculados (Search Console y Bing, semana contra semana). Escribe en español un informe breve (máx 220 palabras) para el dueño:
 1) Qué funciona, 2) Qué no funciona o cae, 3) Hasta 4 acciones concretas, cada una con el agente que debe hacerla (fixer = corrige en el sitio, researcher = busca temas, writer = escribe posts, owner = solo el dueño).
 Usa solo estos números; si algo no se puede concluir con tan pocos datos, dilo. No inventes volúmenes ni causas.
-Incluye una línea sobre audienceSegments: qué parte de las impresiones viene de eventos/bodas (cliente ideal) frente a etiquetas/volumen, según el brief.
+${c.cfg?.segments ? 'Incluye una línea sobre audienceSegments: qué parte de las impresiones viene de eventos/bodas (cliente ideal) frente a etiquetas/volumen, según el brief.' : ''}
 ${audience(c)}
 
 ${JSON.stringify(s)}`,
@@ -144,37 +144,27 @@ ${JSON.stringify(s)}`,
 };
 
 // ---------- researcher ----------
-function existingPosts(cfg: AgentSite): { slug: string; title: string }[] {
-  const out: { slug: string; title: string }[] = [];
-  for (const f of ['blog.ts', 'blog-dulceros.ts']) {
-    const p = join(cfg.repo, 'src/content', f); if (!existsSync(p)) continue;
-    const src = readFileSync(p, 'utf8');
-    const slugs = [...src.matchAll(/^\s{4}slug:\s*"([^"]+)"/gm)].map((m) => m[1]), titles = [...src.matchAll(/^\s{4}title:\s*\n?\s*"([^"]+)"/gm)].map((m) => m[1]);
-    slugs.forEach((slug, i) => out.push({ slug, title: titles[i] ?? '' }));
-  }
-  return out;
-}
 type Topic = { title: string; slug: string; query: string; action: string; why: string; score: number };
 
 export const researcherAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
-  const posts = existingPosts(c.cfg), s = weeklySummary(c.db, c.site.id), b = battle(c.db, c.site);
+  const posts = c.cfg.listPosts(c.cfg.repo), s = weeklySummary(c.db, c.site.id, !!c.cfg.segments), b = battle(c.db, c.site);
   const top = c.db.prepare("SELECT query, SUM(clicks) clicks, SUM(impressions) impressions, ROUND(SUM(position*impressions)/NULLIF(SUM(impressions),0),1) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= ? GROUP BY query ORDER BY impressions DESC LIMIT 40").all(c.site.id, dayAgo(60));
   const backlog = c.db.prepare("SELECT slug FROM topics WHERE site_id = ?").all(c.site.id).map((r: any) => r.slug);
   const wt = prepareWorktree(c.cfg, 'agent/research');
   const text = await ask(c, {
     cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000,
-    prompt: `Eres el investigador de temas SEO y GEO de ${c.site.url}. Propón hasta 8 temas de blog NUEVOS que aún no cubrimos y que pueden traer búsquedas reales o ser citados por buscadores con IA.
+    prompt: `Eres el investigador de temas SEO y GEO de ${c.site.url}. Escribe los temas, el campo query y el slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}. Propón hasta 8 temas de blog NUEVOS que aún no cubrimos y que pueden traer búsquedas reales o ser citados por buscadores con IA.
 Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo que verifiques en la web):
 - Consultas de Search Console (60 días): ${JSON.stringify(top)}
 - Consultas cerca de la primera página (posición 8-20): ${JSON.stringify(s.strikingDistance)}
 - Temas donde la competencia tiene más páginas que nosotros: ${JSON.stringify(b?.topicGaps?.slice(0, 12) ?? [])}
 - Posts que YA existen (no los dupliques; si un tema se parece, usa action "merge:<slug-existente>" para ampliarlo): ${JSON.stringify(posts)}
 - Slugs ya en el backlog (no repetir): ${JSON.stringify(backlog)}
-Puedes leer el repo (src/content/products.ts, blog.ts) y buscar en la web para validar demanda y qué responde la competencia. El tema debe conectar con productos o servicios reales de Yume.
-Prioridad: al menos 6 de los 8 temas deben hablarle al cliente ideal del brief (bodas primero; luego contenido para wedding/event planners, que son los mejores aliados; luego baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, regalos o sorpresas de cualquier persona para un ser querido, y eventos de empresa como posadas). Incluye al menos 1 tema pensado para planners. Máximo 1 tema de etiquetas/stickers y solo con ángulo de evento o regalo. Considera la temporada (hoy es ${mxNow().date}). Solo temas que Yume pueda cumplir con lo que de verdad produce.
+${c.cfg.research.context}
+${c.cfg.research.priority} Considera la temporada (hoy es ${mxNow().date}).
 ${audience(c)}
-Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case-es","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras","score":1-10}]
+Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras","score":1-10}]
 ${c.cfg.rules}\n${c.cfg.writerRules}`,
   });
   const topics = extractJson<Topic[]>(text).filter((t) => t.title && /^[a-z0-9-]+$/.test(t.slug));
@@ -217,7 +207,7 @@ export const writerAgent: AgentFn = async (c) => {
 export const improverAgent: AgentFn = async (c) => {
   const slug = c.args?.slug;
   if (!slug) throw new Error('improver needs a post slug');
-  if (c.db.prepare("SELECT 1 FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'pending' AND json_extract(payload_json, '$.slug') = ?").get(c.site.id, slug)) return `skipped: ${slug} already has a draft waiting`;
+  if (c.db.prepare("SELECT 1 FROM approvals WHERE site_id = ? AND kind = 'post' AND status IN ('pending', 'approved') AND json_extract(payload_json, '$.slug') = ?").get(c.site.id, slug)) return `skipped: ${slug} already has a draft waiting or being published`;
   const row = blogScores(c.db, c.site).find((r) => r.slug === slug);
   if (!row) throw new Error(`no crawled blog post with slug ${slug}`);
   return draftTopic(c, { id: null, title: row.title || slug, slug, query: row.topQuery ?? '', action: `merge:${slug}`, improve: true,
@@ -226,7 +216,8 @@ export const improverAgent: AgentFn = async (c) => {
 
 async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
   const cfg = c.cfg!;
-  const branch = `agent/post-${topic.slug}${topic.improve ? '-' + publishAt : ''}`;
+  // unique per run: a re-run (restart, retry) must never reset the branch of a draft that is still waiting for approval
+  const branch = `agent/post-${topic.slug}${topic.improve ? '-' + publishAt : ''}-${Date.now().toString(36)}`;
   const wt = prepareWorktree(cfg, branch);
   const merge = String(topic.action).startsWith('merge:') ? String(topic.action).slice(6) : null;
   const brief = topic.improve ? `Mejora el post EXISTENTE "${merge}" (no cambies su slug, URL ni publishedAt; pon modifiedAt a ${publishAt}). Su puntaje de calidad es bajo por estas razones medidas: ${topic.why}. Corrige exactamente eso: amplía con contenido útil y verificable, agrega respuestas directas de 40-60 palabras al inicio de cada H2, FAQ visible con hechos reales, enlaces internos a posts y productos reales, y mejora title/description si están fuera de rango. Conserva lo que ya funciona y aplica los cambios en ES y en EN.` : `Tema: "${topic.title}" (búsqueda principal: "${topic.query}"). Por qué: ${topic.why}
@@ -322,20 +313,29 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(a.site_id) as Site;
   const cfg = AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')];
   const p = JSON.parse(a.payload_json);
+  console.log(`[publish #${a.id}] start: ${a.title}`);
   try {
     if (!cfg) throw new Error('no agent config for this site');
     git(cfg.worktree, 'checkout', p.branch);
     pushAndVerify(cfg, p.urls);
-    let note = 'pushed';
-    if (p.urls?.length) {
-      const live = await waitLive(p.urls.slice(0, 1), p.marker); // the ES page carries the marker; EN follows the same deploy
-      note = live ? 'live (200)' : 'pushed, but the deploy was not live after 15 min: check Vercel';
-      if (live && cfg.indexnow) { try { sh(cfg.worktree, cfg.indexnow[0], [...cfg.indexnow.slice(1), ...p.urls]); note += ', IndexNow sent'; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
-    }
-    db.prepare("UPDATE approvals SET status = 'published', note = ?, decided_at = datetime('now') WHERE id = ?").run(note, a.id);
-    if (p.topicId) db.prepare("UPDATE topics SET status = 'published' WHERE id = ?").run(p.topicId);
-    await sendAlert(`✅ Publicado: ${a.title} (${note})`);
-    return note;
+    console.log(`[publish #${a.id}] pushed; confirming the deploy in the background`);
+    // The push is the only step that needs the shared worktree. Waiting for Vercel (minutes) must not hold up the next publish,
+    // so the live check, IndexNow and the final status run detached. A restart before it finishes simply repeats it (the push is a no-op).
+    void (async () => {
+      let note = 'pushed';
+      try {
+        if (p.urls?.length) {
+          const live = await waitLive(p.urls.slice(0, 1), p.marker); // the ES page carries the marker; EN follows the same deploy
+          note = live ? 'live (200)' : 'pushed, but the deploy was not live after 15 min: check Vercel';
+          if (live && cfg.indexnow) { try { sh(cfg.worktree, cfg.indexnow[0], [...cfg.indexnow.slice(1), ...p.urls]); note += ', IndexNow sent'; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
+        }
+        db.prepare("UPDATE approvals SET status = 'published', note = ?, decided_at = datetime('now') WHERE id = ?").run(note, a.id);
+        if (p.topicId) db.prepare("UPDATE topics SET status = 'published' WHERE id = ?").run(p.topicId);
+        console.log(`[publish #${a.id}] ${note}`);
+        await sendAlert(`✅ Publicado: ${a.title} (${note})`);
+      } catch (e) { console.error(`[publish #${a.id}] finalize failed:`, e); }
+    })();
+    return 'pushed';
   } catch (e) {
     db.prepare("UPDATE approvals SET status = 'failed', note = ? WHERE id = ?").run(String(e).slice(0, 500), a.id);
     await sendAlert(`❌ Falló la publicación #${a.id}: ${String(e).slice(0, 200)}`);

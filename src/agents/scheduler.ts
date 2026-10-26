@@ -3,7 +3,10 @@ import type { DatabaseSync } from 'node:sqlite';
 import { findSite, type Site } from '../db.ts';
 import { sendAlert } from '../alert.ts';
 import { AGENTS, LimitError, mxNow, publish, type Ctx } from './agents.ts';
-import { AGENT_SITES } from './sites.ts';
+import { AGENT_SITES, type AgentSite } from './sites.ts';
+
+export const cfgOf = (site: Site): AgentSite | undefined => AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')];
+export const capable = (site: Site, agent: string): boolean => !!cfgOf(site)?.capabilities.includes(agent);
 
 // Mexico City time. dow: 0 = Sunday.
 export const SCHEDULE: { agent: string; days: number[]; at: string }[] = [
@@ -46,7 +49,7 @@ export function agentSites(db: DatabaseSync): Site[] {
 
 export function seedSettings(db: DatabaseSync): void {
   db.prepare("INSERT OR IGNORE INTO agent_settings (agent, site_id, enabled, autonomy) VALUES ('*', 0, 1, 'approve')").run();
-  for (const s of agentSites(db)) for (const a of ALL_AGENTS) db.prepare('INSERT OR IGNORE INTO agent_settings (agent, site_id, enabled, autonomy) VALUES (?, ?, 1, ?)').run(a, s.id, 'approve');
+  for (const s of agentSites(db)) for (const a of ALL_AGENTS.filter((x) => capable(s, x))) db.prepare('INSERT OR IGNORE INTO agent_settings (agent, site_id, enabled, autonomy) VALUES (?, ?, 1, ?)').run(a, s.id, 'approve');
   db.prepare("UPDATE agent_runs SET status = 'failed', error = 'interrupted by restart', finished_at = datetime('now') WHERE status = 'running'").run();
 }
 
@@ -62,7 +65,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   if (slot === null) db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail); // manual click: survives a restart
   return serial(async () => {
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
-    const ctx: Ctx = { db, site, cfg: AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')], usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
+    const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
     let status = 'ok', output = '', error: string | null = null;
     try { output = await AGENTS[agent](ctx); }
     catch (e) { status = e instanceof LimitError ? 'limited' : 'failed'; error = String((e as Error).message ?? e).slice(0, 1000); }
@@ -75,7 +78,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
 
 export function tick(db: DatabaseSync, now = mxNow(), nowMs = Date.now()): void {
   for (const site of agentSites(db)) for (const e of SCHEDULE) {
-    if (!isEnabled(db, e.agent, site.id)) continue;
+    if (!capable(site, e.agent) || !isEnabled(db, e.agent, site.id)) continue;
     const slot = `${e.agent}:${now.date}:${e.at}`;
     const rows = db.prepare('SELECT status, started_at FROM agent_runs WHERE agent = ? AND site_id = ? AND slot = ?').all(e.agent, site.id, slot) as { status: string; started_at: string }[];
     if (rows.some((r) => r.status === 'running')) continue;
@@ -97,6 +100,8 @@ export function decide(db: DatabaseSync, id: number, action: 'approve' | 'reject
 
 export function startScheduler(db: DatabaseSync): void {
   seedSettings(db);
+  // Approved but never published (a restart dropped the in-memory publish): publish them now, oldest first.
+  for (const a of db.prepare("SELECT id FROM approvals WHERE status = 'approved' ORDER BY id").all() as { id: number }[]) void serial(() => publish(db, a.id)).catch((e) => console.error(`publish #${a.id}:`, e));
   // Clicked jobs that a restart interrupted or never started: run them again, in click order.
   for (const q of db.prepare('SELECT * FROM agent_queue ORDER BY id').all() as { agent: string; site_id: number; slug: string }[]) {
     const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;

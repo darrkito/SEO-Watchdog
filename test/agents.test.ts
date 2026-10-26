@@ -129,7 +129,7 @@ test('Fix now: needs a configured site and at least one open issue; "all" ignore
   const { queueFix } = await import('../src/agents/page.ts');
   const db = openDb(join(process.env.WATCHDOG_DATA!, 'fix.db'));
   db.prepare("INSERT INTO sites (id, url) VALUES (7, 'https://other.example/'), (8, 'https://studioyume.mx/')").run();
-  assert.throws(() => queueFix(db, 7, 'all'), /not set up/);
+  assert.throws(() => queueFix(db, 7, 'all'), /not enabled/);
   assert.throws(() => queueFix(db, 8, 'all'), /nothing to fix/);
   assert.throws(() => queueFix(db, 8, []), /Select at least one/);
   db.prepare("INSERT INTO findings (site_id, rule_id, subject, severity, message) VALUES (8, 'r', 'u', 'info', 'm')").run();

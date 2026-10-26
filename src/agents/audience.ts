@@ -28,3 +28,9 @@ export function audienceBrief(host: string): string {
   const f = join(import.meta.dirname, 'audience', `${host.replace(/^www\./, '')}.md`);
   return existsSync(f) ? `\n=== BRIEF DE AUDIENCIA DEL DUEÑO (prioridad máxima) ===\n${readFileSync(f, 'utf8')}\n=== FIN DEL BRIEF ===\n` : '';
 }
+
+/** The distilled SEO and local-SEO playbook (Get Found + Whitespark 2026), appended to the prompts of every agent that writes or judges SEO. */
+export function seoPlaybook(): string {
+  const f = join(import.meta.dirname, 'knowledge', 'seo-playbook.md');
+  return existsSync(f) ? `\n=== PLAYBOOK DE SEO (reglas a aplicar; las cifras de Whitespark son opinión de expertos) ===\n${readFileSync(f, 'utf8')}\n=== FIN DEL PLAYBOOK ===\n` : '';
+}
