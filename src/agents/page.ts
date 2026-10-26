@@ -1,7 +1,7 @@
 // Dashboard "Agents" tab: what each agent did, what waits for approval, and the controls (pause, autonomy, run now, kill switch).
 import type { DatabaseSync } from 'node:sqlite';
 import { h, raw, layout, chip, ago, type Html, type Sev } from '../html.ts';
-import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent } from './scheduler.ts';
+import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent, inFlight } from './scheduler.ts';
 import { LLM_AGENTS } from './agents.ts';
 import { blogScores } from './blogscore.ts';
 import type { Site } from '../db.ts';
@@ -14,6 +14,8 @@ const recentlyImproved = (db: DatabaseSync, siteId: number): Set<string> => new 
 
 const blogSection = (db: DatabaseSync, s: Site): Html => {
   const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
+  const working = new Set(inFlight().filter((k) => k.startsWith(`improver:${s.id}:`)).map((k) => k.split(':').slice(2).join(':')));
+  const waiting = new Map((db.prepare("SELECT id, json_extract(payload_json, '$.slug') slug FROM approvals WHERE site_id = ? AND status = 'pending' AND title LIKE 'Improve:%'").all(s.id) as { id: number; slug: string }[]).map((r) => [r.slug, r.id]));
   if (!rows.length) return h`<p class="muted small">No blog posts crawled yet.</p>`;
   const tone = (n: number): Sev => (n >= 75 ? 'good' : n >= 55 ? 'warn' : 'critical');
   const avg = Math.round(rows.reduce((a, r) => a + r.score, 0) / rows.length);
@@ -24,7 +26,7 @@ const blogSection = (db: DatabaseSync, s: Site): Html => {
     ${rows.slice(0, 25).map((r) => h`<tr><td class="num">${chip(tone(r.score), String(r.score))}</td>
       <td><a href="${r.url}" target="_blank" rel="noopener">${r.title}</a></td><td class="small">${r.reasons.join('. ') || 'Nothing to fix'}</td>
       <td class="num small">${r.impressions ? `${r.impressions} views · ${r.clicks} clicks` : '-'}</td>
-      <td>${done.has(r.slug) ? h`<span class="muted small">In progress / done</span>` : h`<form method="post" action="/agents/improve"><input type="hidden" name="site" value="${s.id}"><input type="hidden" name="slug" value="${r.slug}"><button class="btn link">Improve</button></form>`}</td></tr>`)}
+      <td>${working.has(r.slug) ? chip('info', 'Working on it…') : waiting.has(r.slug) ? h`<a class="small" href="#approval-${waiting.get(r.slug)}">Draft waiting for you ↓</a>` : done.has(r.slug) ? h`<span class="muted small">Improved recently</span>` : h`<form method="post" action="/agents/improve"><input type="hidden" name="site" value="${s.id}"><input type="hidden" name="slug" value="${r.slug}"><button class="btn link">Improve</button></form>`}</td></tr>`)}
     </tbody></table>${rows.length > 25 ? h`<p class="muted small">Showing the 25 lowest of ${rows.length}.</p>` : ''}</div>`;
 };
 
@@ -33,15 +35,16 @@ const sev = (s: string): Sev => (s === 'ok' ? 'good' : s === 'failed' ? 'critica
 export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string }): string {
   const killed = (db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined)?.enabled === 0;
   const sites = agentSites(db);
-  const pending = db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id").all() as any[];
+  const pending = db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC").all() as any[];
   const week = db.prepare("SELECT agent, COUNT(*) runs, SUM(tokens_in) tin, SUM(tokens_out) tout, ROUND(SUM(cost_usd),2) cost, SUM(status != 'ok') bad FROM agent_runs WHERE started_at >= datetime('now', '-7 days') GROUP BY agent").all() as any[];
   const runs = db.prepare('SELECT * FROM agent_runs ORDER BY id DESC LIMIT 20').all() as any[];
   const done = db.prepare("SELECT * FROM approvals WHERE status != 'pending' ORDER BY id DESC LIMIT 8").all() as any[];
   const topics = db.prepare("SELECT * FROM topics WHERE status = 'new' ORDER BY score DESC, id LIMIT 10").all() as any[];
   const fmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n ?? 0));
 
-  const approval = (a: any) => { const p = JSON.parse(a.payload_json); return h`<div class="card" style="margin-bottom:12px">
-    <div class="row"><h3>${chip('info', a.kind === 'post' ? 'Post' : 'Fix')} ${a.title}</h3><span class="muted small">${ago(a.created_at)}</span></div>
+  const approval = (a: any) => { const p = JSON.parse(a.payload_json); return h`<div class="card" id="approval-${a.id}" style="margin-bottom:12px">
+    <div class="row"><h3>${chip('info', a.kind === 'post' ? 'Post' : 'Fix')} ${a.title}</h3><span class="muted small">#${a.id} · ${ago(a.created_at)}</span></div>
+    ${p.urls?.[0] ? h`<p class="small">Post being changed: <a href="${p.urls[0]}" target="_blank" rel="noopener">${p.urls[0]}</a></p>` : ''}
     ${p.publishAt ? h`<p class="small">Scheduled for <b>${p.publishAt}</b>. Files: ${(p.files ?? []).join(', ')}</p>` : h`<p class="small">Files: ${(p.files ?? []).join(', ')}</p>`}
     ${p.claims?.length ? h`<details><summary class="small">Facts the writer relied on (${p.claims.length})</summary><ul class="urls">${p.claims.map((c: any) => h`<li><span class="u">${c.claim}<br><span class="m">${c.source}</span></span></li>`)}</ul></details>` : ''}
     <details><summary class="small">Diff</summary><pre style="overflow-x:auto;font-size:12px;max-height:520px">${a.diff.slice(0, 60_000)}</pre></details>
@@ -65,6 +68,7 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
     <h1>Agents</h1>
     <p class="muted">Run on your Claude subscription, never the API. One job at a time, lowest CPU priority.</p>
     ${msg?.error ? h`<div class="banner warn">${msg.error}</div>` : ''}${msg?.ok ? h`<div class="banner info">${msg.ok}</div>` : ''}
+    ${inFlight().length ? h`<div class="banner info"><b>Working now:</b> ${inFlight().map((k) => { const [agent, siteId, ...d] = k.split(':'); const slug = d.join(':'); const row = slug ? blogScores(db, agentSites(db).find((x) => x.id === Number(siteId))!).find((r) => r.slug === slug) : null; return `${LABEL[agent] ?? agent}${slug ? `: ${row?.title ?? slug}` : ''}`; }).join(' · ')}. A post takes about 2 minutes; this page refreshes by itself and the draft appears under "Waiting for you" (newest first).</div>` : ''}
     <div class="card row">${killed ? h`<span>${chip('critical', 'All agents stopped')}</span>` : h`<span>${chip('good', 'Fleet running')}</span>`}
       <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${killed ? 1 : 0}"><button class="btn ${killed ? 'primary' : ''}">${killed ? 'Resume all agents' : 'Stop all agents'}</button></form></div>
     <h2>Waiting for you${pending.length ? ` (${pending.length})` : ''}</h2>
@@ -80,7 +84,7 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
     <h2>Recent runs</h2>
     <div class="card"><ul class="urls">${runs.map((r) => h`<li><span class="u"><details><summary>${chip(sev(r.status), r.status)} ${LABEL[r.agent] ?? r.agent} <span class="muted small">· ${ago(r.started_at)} · ${fmt(r.tokens_in)} in / ${fmt(r.tokens_out)} out</span></summary>
       <pre style="white-space:pre-wrap;font-size:12px">${r.error ?? ''}${r.output ?? ''}</pre></details></span></li>`)}</ul></div>
-    ${done.length ? h`<h2>Decided</h2><div class="card"><ul class="urls">${done.map((a) => h`<li><span class="u">${a.title}<br><span class="m">${a.note ?? ''}</span></span>${chip(a.status === 'published' ? 'good' : a.status === 'failed' ? 'critical' : 'info', a.status)}</li>`)}</ul></div>` : ''}`);
+    ${done.length ? h`<h2>Decided</h2><div class="card"><ul class="urls">${done.map((a) => h`<li><span class="u">${a.title}<br><span class="m">${a.note ?? ''}</span></span>${chip(a.status === 'published' ? 'good' : a.status === 'failed' ? 'critical' : 'info', a.status)}</li>`)}</ul></div>` : ''}`, { refresh: inFlight().length ? 6 : undefined });
 }
 
 /** Form handlers. Throw a plain-language Error on bad input. */
@@ -101,7 +105,8 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
     const slugs = action === 'improve' ? [form.get('slug') ?? ''] : rows.filter((r) => !done.has(r.slug)).slice(0, 3).map((r) => r.slug);
     if (slugs.some((x) => !rows.some((r) => r.slug === x))) throw new Error('That post is not in the latest crawl.');
     for (const slug of slugs) void runAgent(db, 'improver', s, null, { slug });
-    return `Queued ${slugs.length} post${slugs.length === 1 ? '' : 's'} for the writer. Each draft shows up under "Waiting for you" in a few minutes.`;
+    const names = slugs.map((x) => `"${rows.find((r) => r.slug === x)!.title}"`).join(', ');
+    return `Queued for the writer: ${names}. Each takes about 2 minutes, then appears under "Waiting for you" as "Improve: <post name>".`;
   }
   if (action === 'run') { void runAgent(db, agent, db.prepare('SELECT * FROM sites WHERE id = ?').get(site) as any); return `${LABEL[agent]} queued.`; }
   throw new Error('Unknown action.');

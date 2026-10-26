@@ -489,8 +489,9 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         if ((origin && new URL(origin).host !== req.headers.host) || req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, 'Cross-site request refused');
         const form = await readForm(req);
         if (url.pathname.startsWith('/agents/')) {
-          try { return send(res, 200, agentsPage(db, { ok: agentsPost(db, url.pathname.slice(8), form) })); }
-          catch (e) { return send(res, 400, agentsPage(db, { error: (e as Error).message })); }
+          // Post/redirect/get: the page then refreshes safely while an agent works, and a reload never re-submits the click.
+          try { return redirect(res, `/agents?ok=${encodeURIComponent(agentsPost(db, url.pathname.slice(8), form))}`); }
+          catch (e) { return redirect(res, `/agents?err=${encodeURIComponent((e as Error).message)}`); }
         }
         if (url.pathname === '/sites') {
           const r = await addSite(db, { url: form.get('url') ?? '', market: form.get('market') ?? '' });
@@ -512,7 +513,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         return redirect(res, `/site/${site.id}?tab=issues`);
       }
       if (url.pathname === '/') return send(res, 200, overviewPage(db));
-      if (url.pathname === '/agents') return send(res, 200, agentsPage(db));
+      if (url.pathname === '/agents') return send(res, 200, agentsPage(db, { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined }));
       if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);

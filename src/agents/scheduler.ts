@@ -51,13 +51,15 @@ export function seedSettings(db: DatabaseSync): void {
 }
 
 const queued = new Set<string>();
+/** Agent jobs running or waiting in line right now, as `agent:siteId:detail` (the dashboard shows them so a click is never silent). */
+export const inFlight = (): string[] => [...queued];
 /** Execute one agent for one site and record the outcome (tokens, status, output). */
 export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: string | null = null, args?: { slug?: string }): Promise<void> {
   const key = `${agent}:${site.id}:${args?.slug ?? ''}`;
   if (queued.has(key)) return Promise.resolve();
   queued.add(key);
   return serial(async () => {
-    const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot) VALUES (?, ?, ?)').run(agent, site.id, slot).lastInsertRowid);
+    const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, args?.slug ?? null).lastInsertRowid);
     const ctx: Ctx = { db, site, cfg: AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')], usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
     let status = 'ok', output = '', error: string | null = null;
     try { output = await AGENTS[agent](ctx); }
