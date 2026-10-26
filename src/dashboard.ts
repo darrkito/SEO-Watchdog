@@ -513,7 +513,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         return redirect(res, `/site/${site.id}?tab=issues`);
       }
       if (url.pathname === '/') return send(res, 200, overviewPage(db));
-      if (url.pathname === '/agents') return send(res, 200, agentsPage(db, { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined }));
+      if (url.pathname === '/agents') return send(res, 200, agentsPage(db, { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined }, url.searchParams.has('all')));
       if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);
