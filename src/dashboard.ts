@@ -11,6 +11,8 @@ import { discover, activate, deactivate, addOwnCompetitor, candidates, type Cand
 import { findProperty } from './gsc.ts';
 import { battle } from './gaps.ts';
 import { hasLlm, canWebSearch, MODEL } from './llm.ts';
+import { agentsPage, agentsPost } from './agents/page.ts';
+import { serial, startScheduler } from './agents/scheduler.ts';
 import { h, raw, layout, chip, trendChart, safeHref, pathOf, ago, type Html, type Sev } from './html.ts';
 
 type Counts = { critical: number; warn: number; info: number };
@@ -79,6 +81,7 @@ function overviewPage(db: DatabaseSync, msg?: { error?: string; ok?: string }): 
     <div class="muted small">${x.r ? `Checked ${ago(x.r.finished_at)} · ${plural(x.r.stats.pages ?? 0, 'page')}` : 'Never checked'} · ${rivals(x.s.id) ? `watching ${plural(rivals(x.s.id), 'competitor')}` : 'competitors not set up'}</div></a>`;
   return layout('Overview', h`
     <div class="hero"><h1>Your websites</h1><p class="headline">${headline}</p>
+      <p class="small"><a href="/agents">Agents${(() => { const n = (db.prepare("SELECT COUNT(*) n FROM approvals WHERE status = 'pending'").get() as { n: number }).n; return n ? ` · ${n} waiting for you` : ''; })()} →</a></p>
       <p class="muted">${plural(own.length, 'site')} watched. Click a site to see what to fix, what changed, and what its competitors are doing.</p></div>
     ${msg?.error ? h`<div class="banner warn">${msg.error}</div>` : ''}${msg?.ok ? h`<div class="banner info">${msg.ok}</div>` : ''}
     ${sites.length ? h`<div class="grid-sites">${rows.map(card)}</div>` : ''}
@@ -376,11 +379,10 @@ function pageView(db: DatabaseSync, site: Site, url: string): string | null {
 
 // ---------- server ----------
 // One job at a time: crawls and discoveries share a small machine (and its live trading bots).
-let queue: Promise<void> = Promise.resolve();
 function enqueue(id: number, set: Set<number>, job: () => Promise<void>) {
   if (set.has(id)) return;
   set.add(id);
-  queue = queue.then(job).catch((e) => console.error(e)).finally(() => set.delete(id));
+  serial(job).catch((e) => console.error(e)).finally(() => set.delete(id)); // shared with the agent scheduler
 }
 function startRun(db: DatabaseSync, site: Site) {
   enqueue(site.id, running, async () => { const r = await runSite(db, site); const t = alertText(r); if (t) await sendAlert(t); });
@@ -471,6 +473,7 @@ async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
 export function startServer(port = Number(process.env.PORT) || 4321) {
   const db = openDb();
   setPriority(19); // live trading bots share this machine
+  startScheduler(db);
   const send = (res: ServerResponse, status: number, html: string) => res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
   const redirect = (res: ServerResponse, to: string) => res.writeHead(303, { location: to }).end();
   const notFound = (res: ServerResponse) => send(res, 404, layout('Not found', h`<div class="card empty">Not found. <a href="/">Back to all sites</a></div>`));
@@ -485,6 +488,10 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         const origin = req.headers.origin;
         if ((origin && new URL(origin).host !== req.headers.host) || req.headers['sec-fetch-site'] === 'cross-site') return send(res, 403, 'Cross-site request refused');
         const form = await readForm(req);
+        if (url.pathname.startsWith('/agents/')) {
+          try { return send(res, 200, agentsPage(db, { ok: agentsPost(db, url.pathname.slice(8), form) })); }
+          catch (e) { return send(res, 400, agentsPage(db, { error: (e as Error).message })); }
+        }
         if (url.pathname === '/sites') {
           const r = await addSite(db, { url: form.get('url') ?? '', market: form.get('market') ?? '' });
           if (!r.ok) return send(res, 400, overviewPage(db, { error: r.error }));
@@ -505,6 +512,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
         return redirect(res, `/site/${site.id}?tab=issues`);
       }
       if (url.pathname === '/') return send(res, 200, overviewPage(db));
+      if (url.pathname === '/agents') return send(res, 200, agentsPage(db));
       if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);

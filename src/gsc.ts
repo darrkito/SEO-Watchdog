@@ -53,3 +53,21 @@ export async function topQueries(keyFile: string, property: string, siteUrl?: st
   return (j.rows ?? []).map((x: any) => ({ query: x.keys[0], impressions: x.impressions, clicks: x.clicks, position: x.position }))
     .sort((a: any, b: any) => b.impressions - a.impressions);
 }
+
+/** Daily rows per (date, query, page) from `from` to `to` (YYYY-MM-DD), paged. GSC lags ~2 days, so callers end at today-2. */
+export async function dailyRows(keyFile: string, property: string, siteUrl: string, from: string, to: string):
+  Promise<{ date: string; query: string; page: string; clicks: number; impressions: number; position: number }[]> {
+  const t = await token(keyFile);
+  const out: any[] = [];
+  for (let startRow = 0; startRow < 100_000; startRow += 25_000) {
+    const r = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(property)}/searchAnalytics/query`, {
+      method: 'POST', headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ startDate: from, endDate: to, dimensions: ['date', 'query', 'page'], rowLimit: 25_000, startRow, dimensionFilterGroups: pageFilter(siteUrl) }),
+    });
+    const j: any = await r.json();
+    if (!r.ok) throw new Error(`Search Console: ${j.error?.message ?? r.status}`);
+    out.push(...(j.rows ?? []));
+    if ((j.rows ?? []).length < 25_000) break;
+  }
+  return out.map((x) => ({ date: x.keys[0], query: x.keys[1], page: x.keys[2], clicks: x.clicks, impressions: x.impressions, position: x.position }));
+}

@@ -173,3 +173,7 @@ Dizayn (2026-10-20, dizayn-web df1dc7e): 12 actions went down to 7 after one cha
 
 - Added with `add https://www.dizaynseo.com --market US,MX`; 43 pages crawled. Discovery #17 ($0.048, no GSC) watches thriveagency.com, percepture.com, mapranking.com (crawled, 300 pages each); suggested: mediaspearhead.com, brimaronlinemarketing.com, webfx.com.
 - Pending: verify the GSC property for www.dizaynseo.com and connect with `gsc 25 <key.json>`, then re-run `discover 25` on real queries. Known gap: "How to win" can compare against the wrong own page (see seo-ai-search-playbook §36).
+
+
+## 2026-10-26: agent fleet (Yume pilot)
+Built `src/agents/` (runner on the Claude subscription, collector, analyst/researcher/writer/fixer, in-process scheduler, `/agents` dashboard tab). Plan and status: `PLAN-agents-yume.md` (§10). Runs under pm2 as `seo-watchdog`. Open: `BING_WEBMASTER_API_KEY` + Telegram vars in `.env`, three items waiting in `/agents`, then replicate to Luvory/Dizayn via `src/agents/sites.ts`.

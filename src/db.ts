@@ -51,6 +51,31 @@ CREATE TABLE IF NOT EXISTS competitor_candidates (
   status TEXT NOT NULL CHECK (status IN ('suggested','active','pinned','user_added','excluded','directory','rejected')),
   discovery_id INTEGER REFERENCES discoveries(id) ON DELETE SET NULL,
   competitor_site_id INTEGER REFERENCES sites(id) ON DELETE SET NULL, UNIQUE (site_id, domain));
+-- Agent fleet (src/agents). site_id 0 + agent '*' is the global kill switch.
+CREATE TABLE IF NOT EXISTS agent_settings (
+  agent TEXT NOT NULL, site_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  autonomy TEXT NOT NULL DEFAULT 'approve' CHECK (autonomy IN ('approve','auto')), PRIMARY KEY (agent, site_id));
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY, agent TEXT NOT NULL, site_id INTEGER NOT NULL, slot TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ok','failed','limited')),
+  tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
+  output TEXT, error TEXT);
+CREATE INDEX IF NOT EXISTS agent_runs_slot ON agent_runs(agent, site_id, slot);
+CREATE TABLE IF NOT EXISTS approvals (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+  payload_json TEXT NOT NULL, diff TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','published','failed')),
+  note TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), decided_at TEXT);
+CREATE TABLE IF NOT EXISTS metrics (
+  site_id INTEGER NOT NULL, source TEXT NOT NULL, date TEXT NOT NULL, query TEXT NOT NULL DEFAULT '', page TEXT NOT NULL DEFAULT '',
+  clicks REAL NOT NULL DEFAULT 0, impressions REAL NOT NULL DEFAULT 0, position REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (site_id, source, date, query, page));
+CREATE TABLE IF NOT EXISTS topics (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, title TEXT NOT NULL, slug TEXT NOT NULL, query TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT 'new', why TEXT NOT NULL DEFAULT '', score REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','drafted','published','rejected')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (site_id, slug));
 `;
 
 export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {

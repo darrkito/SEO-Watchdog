@@ -20,7 +20,9 @@ const HELP = `seo-watchdog <command>
   gsc <site> <key.json>     connect Search Console (service-account key) for real keyword demand
   discover <site>           find the site's top competitors (needs ANTHROPIC_API_KEY; SERPER_API_KEY optional)
   competitors <site>        list discovered competitors and alternatives
-  serve [port]              localhost dashboard (default http://127.0.0.1:4321)
+  serve [port]              localhost dashboard (default http://127.0.0.1:4321); also runs the agent scheduler
+  agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
+  approvals                 list pending drafts/fixes; approve|reject <id> decides one
   mute <finding-id> | unmute <finding-id>
   remove <site>
 
@@ -112,6 +114,29 @@ switch (cmd) {
     for (const c of candidates(db, site(arg).id).filter((c) => c.status !== 'rejected'))
       console.log(`[${c.status}] ${c.domain}  score ${c.score}  ${c.types.join('+')}  ${c.evidence.overlap ?? 0} shared keywords${c.evidence.best ? `, best #${c.evidence.best}` : ''}${c.evidence.reason ? `\n    ${c.evidence.reason}` : ''}`);
     break;
+  }
+  case 'agent': {
+    setPriority(19);
+    const { runAgent, seedSettings } = await import('./agents/scheduler.ts');
+    const name = arg ?? die('usage: agent <name> <site>');
+    const s = site(process.argv.slice(2).filter((a) => !a.startsWith('--'))[2]);
+    seedSettings(db);
+    await runAgent(db, name, s);
+    const r = db.prepare('SELECT * FROM agent_runs ORDER BY id DESC LIMIT 1').get() as any;
+    console.log(`#${r.id} ${r.agent} ${r.status} ${r.tokens_in} in / ${r.tokens_out} out\n${r.error ?? ''}${r.output ?? ''}`);
+    process.exit(r.status === 'ok' ? 0 : 1);
+  }
+  case 'approvals': {
+    for (const a of db.prepare("SELECT id, kind, title, status, created_at FROM approvals ORDER BY id DESC LIMIT 20").all() as any[]) console.log(`#${a.id} [${a.status}] ${a.kind}: ${a.title} (${a.created_at})`);
+    break;
+  }
+  case 'approve':
+  case 'reject': {
+    const { decide, serial } = await import('./agents/scheduler.ts');
+    decide(db, posInt(arg, 0, 'id'), cmd);
+    await serial(async () => {}); // wait for the queued publish
+    console.log((db.prepare('SELECT status, note FROM approvals WHERE id = ?').get(Number(arg)) as any));
+    process.exit(0);
   }
   case 'serve': {
     const { startServer } = await import('./dashboard.ts');
