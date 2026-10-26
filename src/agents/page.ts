@@ -4,6 +4,7 @@ import { h, raw, layout, chip, ago, type Html, type Sev } from '../html.ts';
 import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent, inFlight } from './scheduler.ts';
 import { LLM_AGENTS } from './agents.ts';
 import { blogScores } from './blogscore.ts';
+import { TARGET, type Segment } from './audience.ts';
 import type { Site } from '../db.ts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -12,6 +13,7 @@ const LABEL: Record<string, string> = { improver: 'Post improver', crawl: 'Site 
 /** Slugs already being reworked (draft waiting) or reworked in the last 14 days: don't queue them again. */
 const recentlyImproved = (db: DatabaseSync, siteId: number): Set<string> => new Set((db.prepare("SELECT json_extract(payload_json, '$.slug') slug FROM approvals WHERE site_id = ? AND title LIKE 'Improve:%' AND status != 'rejected' AND created_at >= datetime('now', '-14 days')").all(siteId) as { slug: string }[]).map((r) => r.slug));
 
+const SEG: Record<Segment, string> = { event: 'Event (target)', 'corporate-event': 'Company event (target)', bulk: 'Bulk / industrial', labels: 'Labels & stickers', other: '-' };
 const blogSection = (db: DatabaseSync, s: Site, all: boolean): Html => {
   const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
   const working = new Set(inFlight().filter((k) => k.startsWith(`improver:${s.id}:`)).map((k) => k.split(':').slice(2).join(':')));
@@ -20,11 +22,13 @@ const blogSection = (db: DatabaseSync, s: Site, all: boolean): Html => {
   const tone = (n: number): Sev => (n >= 75 ? 'good' : n >= 55 ? 'warn' : 'critical');
   const avg = Math.round(rows.reduce((a, r) => a + r.score, 0) / rows.length);
   return h`<h2 id="blogs">Blog quality · ${new URL(s.url).hostname}</h2>
-    <p class="muted small">Score 0-100 per post: structure (length, FAQ, schema, title, description, H1, internal links) and Google visibility. Average ${avg}. One click sends a post to the writer, which fixes exactly the listed reasons and leaves a draft for you to approve.</p>
-    <form method="post" action="/agents/improve-low" style="margin-bottom:10px"><input type="hidden" name="site" value="${s.id}"><button class="btn primary">Improve the 3 lowest</button></form>
-    <div class="card" style="overflow-x:auto"><table><thead><tr><th class="num">Score</th><th>Post</th><th>Why it scores low</th><th class="num">Google 90d</th><th></th></tr></thead><tbody>
+    <p class="muted small">Score 0-100 per post (the owner's target customers are marked): structure (length, FAQ, schema, title, description, H1, internal links) and Google visibility. Average ${avg}. One click sends a post to the writer, which fixes exactly the listed reasons and leaves a draft for you to approve.</p>
+    <div class="row" style="justify-content:flex-start;margin-bottom:10px">
+      <form method="post" action="/agents/improve-low"><input type="hidden" name="site" value="${s.id}"><input type="hidden" name="target" value="1"><button class="btn primary">Improve the 3 lowest event posts</button></form>
+      <form method="post" action="/agents/improve-low"><input type="hidden" name="site" value="${s.id}"><button class="btn">Improve the 3 lowest (any)</button></form></div>
+    <div class="card" style="overflow-x:auto"><table><thead><tr><th class="num">Score</th><th>Post</th><th>Speaks to</th><th>Why it scores low</th><th class="num">Google 90d</th><th></th></tr></thead><tbody>
     ${(all ? rows : rows.slice(0, 25)).map((r) => h`<tr><td class="num">${chip(tone(r.score), String(r.score))}</td>
-      <td><a href="${r.url}" target="_blank" rel="noopener">${r.title}</a></td><td class="small">${r.reasons.join('. ') || 'Nothing to fix'}</td>
+      <td><a href="${r.url}" target="_blank" rel="noopener">${r.title}</a></td><td class="small">${TARGET.has(r.segment) ? chip('good', SEG[r.segment]) : SEG[r.segment]}</td><td class="small">${r.reasons.join('. ') || 'Nothing to fix'}</td>
       <td class="num small">${r.impressions ? `${r.impressions} views · ${r.clicks} clicks` : '-'}</td>
       <td>${working.has(r.slug) ? chip('info', 'Working on it…') : waiting.has(r.slug) ? h`<a class="small" href="#approval-${waiting.get(r.slug)}">Draft waiting for you ↓</a>` : done.has(r.slug) ? h`<span class="muted small">Improved recently</span>` : h`<form method="post" action="/agents/improve"><input type="hidden" name="site" value="${s.id}"><input type="hidden" name="slug" value="${r.slug}"><button class="btn link">Improve</button></form>`}</td></tr>`)}
     </tbody></table>${rows.length > 25 ? h`<p class="muted small">${all ? `Showing all ${rows.length}.` : `Showing the 25 lowest of ${rows.length}.`} <a href="/agents?${all ? '' : 'all=1'}#blogs">${all ? 'Show only the 25 lowest' : `Show all ${rows.length}`}</a></p>` : ''}</div>`;
@@ -102,7 +106,9 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
   if (action === 'improve' || action === 'improve-low') {
     const s = agentSites(db).find((x) => x.id === site); if (!s) throw new Error('Unknown site.');
     const rows = blogScores(db, s), done = recentlyImproved(db, s.id);
-    const slugs = action === 'improve' ? [form.get('slug') ?? ''] : rows.filter((r) => !done.has(r.slug)).slice(0, 3).map((r) => r.slug);
+    const onlyTarget = form.get('target') === '1';
+    const slugs = action === 'improve' ? [form.get('slug') ?? ''] : rows.filter((r) => !done.has(r.slug) && (!onlyTarget || TARGET.has(r.segment))).slice(0, 3).map((r) => r.slug);
+    if (!slugs.length) throw new Error('No posts match: they are all improved or in progress.');
     if (slugs.some((x) => !rows.some((r) => r.slug === x))) throw new Error('That post is not in the latest crawl.');
     for (const slug of slugs) void runAgent(db, 'improver', s, null, { slug });
     const names = slugs.map((x) => `"${rows.find((r) => r.slug === x)!.title}"`).join(', ');

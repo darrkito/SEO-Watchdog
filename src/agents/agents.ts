@@ -10,6 +10,7 @@ import { alertText, sendAlert } from '../alert.ts';
 import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
+import { audienceBrief, segmentOf, TARGET } from './audience.ts';
 import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
@@ -42,6 +43,10 @@ async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; ma
   if (!r.ok) throw new Error(r.error ?? 'claude failed');
   return r.text;
 }
+
+const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname);
+/** Ranking used to pick the next topic: the owner's target customers first, bulk/industrial last. */
+export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corporate-event' THEN 3 WHEN 'bulk' THEN -4 ELSE 0 END)";
 
 // ---------- worktree ----------
 /** A clean checkout of origin/main on `branch`, in the agents' own worktree (the owner's checkout is never touched). */
@@ -100,7 +105,16 @@ export function weeklySummary(db: DatabaseSync, siteId: number) {
   const findings = db.prepare("SELECT rule_id, severity, COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' AND severity != 'info' GROUP BY rule_id, severity ORDER BY n DESC LIMIT 12").all(siteId);
   const bing = db.prepare("SELECT query, SUM(clicks) clicks, SUM(impressions) impressions, ROUND(AVG(position),1) position FROM metrics WHERE site_id = ? AND source = 'bing' AND date >= ? GROUP BY query ORDER BY impressions DESC LIMIT 10").all(siteId, dayAgo(35));
   return { period: { now: `${dayAgo(8)}..${dayAgo(2)}`, before: `${dayAgo(15)}..${dayAgo(9)}` }, totals: { now: { ...cur, p: r1(cur.p) }, before: { ...prev, p: r1(prev.p) } },
-    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing };
+    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing, audienceSegments: segmentShare(db, siteId) };
+}
+
+/** Share of Google impressions/clicks (28d) going to each customer segment: the number that shows whether the SEO turn is working. */
+export function segmentShare(db: DatabaseSync, siteId: number) {
+  const out: Record<string, { impressions: number; clicks: number }> = {};
+  for (const r of db.prepare("SELECT query, SUM(impressions) i, SUM(clicks) c FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= ? GROUP BY query").all(siteId, dayAgo(30)) as { query: string; i: number; c: number }[]) {
+    const seg = segmentOf(r.query); out[seg] ??= { impressions: 0, clicks: 0 }; out[seg].impressions += r.i; out[seg].clicks += r.c;
+  }
+  return out;
 }
 
 /** Deterministic alert, independent of the model: a real drop on real volume. */
@@ -121,6 +135,8 @@ export const analystAgent: AgentFn = async (c) => {
     prompt: `Eres el analista SEO de ${c.site.url}. Abajo hay datos reales y ya calculados (Search Console y Bing, semana contra semana). Escribe en español un informe breve (máx 220 palabras) para el dueño:
 1) Qué funciona, 2) Qué no funciona o cae, 3) Hasta 4 acciones concretas, cada una con el agente que debe hacerla (fixer = corrige en el sitio, researcher = busca temas, writer = escribe posts, owner = solo el dueño).
 Usa solo estos números; si algo no se puede concluir con tan pocos datos, dilo. No inventes volúmenes ni causas.
+Incluye una línea sobre audienceSegments: qué parte de las impresiones viene de eventos/bodas (cliente ideal) frente a etiquetas/volumen, según el brief.
+${audience(c)}
 
 ${JSON.stringify(s)}`,
   });
@@ -156,14 +172,16 @@ Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo 
 - Posts que YA existen (no los dupliques; si un tema se parece, usa action "merge:<slug-existente>" para ampliarlo): ${JSON.stringify(posts)}
 - Slugs ya en el backlog (no repetir): ${JSON.stringify(backlog)}
 Puedes leer el repo (src/content/products.ts, blog.ts) y buscar en la web para validar demanda y qué responde la competencia. El tema debe conectar con productos o servicios reales de Yume.
+Prioridad: al menos 6 de los 8 temas deben hablarle al cliente ideal del brief (bodas primero; luego baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, y eventos de empresa como posadas). Máximo 1 tema de etiquetas/stickers y solo con ángulo de evento o regalo. Considera la temporada (hoy es ${mxNow().date}). Solo temas que Yume pueda cumplir con lo que de verdad produce.
+${audience(c)}
 Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case-es","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras","score":1-10}]
 ${c.cfg.rules}\n${c.cfg.writerRules}`,
   });
   const topics = extractJson<Topic[]>(text).filter((t) => t.title && /^[a-z0-9-]+$/.test(t.slug));
-  const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score) VALUES (?, ?, ?, ?, ?, ?, ?)');
+  const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score, segment) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
   const taken = new Set(posts.map((p) => p.slug));
   let n = 0;
-  for (const t of topics) { if (t.action === 'new' && taken.has(t.slug)) continue; n += Number(ins.run(c.site.id, t.title, t.slug, t.query ?? '', t.action ?? 'new', t.why ?? '', Number(t.score) || 0).changes); }
+  for (const t of topics) { if (t.action === 'new' && taken.has(t.slug)) continue; n += Number(ins.run(c.site.id, t.title, t.slug, t.query ?? '', t.action ?? 'new', t.why ?? '', Number(t.score) || 0, segmentOf(`${t.title} ${t.query}`)).changes); }
   return `${n} new topics in the backlog (${topics.length} proposed)`;
 };
 
@@ -190,7 +208,7 @@ export const writerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
   const pending = c.db.prepare("SELECT COUNT(*) n FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'pending'").get(c.site.id) as { n: number };
   if (pending.n >= 2) return `skipped: ${pending.n} drafts already waiting for approval`;
-  const topic = c.db.prepare("SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY score DESC, id LIMIT 1").get(c.site.id) as Draftable | undefined;
+  const topic = c.db.prepare(`SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY ${TOPIC_ORDER} DESC, id LIMIT 1`).get(c.site.id) as Draftable | undefined;
   if (!topic) return 'skipped: no topics in the backlog (the researcher runs Sundays)';
   return draftTopic(c, topic, nextPublishDate());
 };
@@ -219,6 +237,7 @@ ${merge ? `Este tema se FUSIONA: amplía el post existente "${merge}" (secciones
 Trabaja SOLO editando archivos en este repo (no ejecutes comandos). Investiga en la web fuentes primarias para cualquier dato no comercial y cítalas en \`sources\` solo si abriste la página.
 ${cfg.rules}
 ${cfg.writerRules}
+${audience(c)}
 Al terminar responde SOLO con JSON: {"slug":"...","enSlug":"...","claims":[{"claim":"afirmación factual del post","source":"archivo del repo o URL abierta"}]}
 ${extra}`,
   });
@@ -255,6 +274,7 @@ export const fixerAgent: AgentFn = async (c) => {
 ${JSON.stringify(list)}
 Corrige en el código de este repo hasta 5 de ellos, empezando por los críticos. Prefiere cambios en contenido (src/content/**). Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (hace falta dato que no tienes, o toca pagos/checkout/emails/rutas), sáltalo y di por qué. No ejecutes comandos.
 ${cfg.rules}
+Respeta el posicionamiento del brief (no cambies el enfoque de la marca, solo corrige lo técnico/SEO).${audience(c)}
 Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
   });
   const files = changedFiles(wt);

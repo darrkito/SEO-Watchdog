@@ -2,8 +2,9 @@
 // Deterministic and explainable: every point lost comes with a plain reason, which is also what the improver is told to fix.
 import type { DatabaseSync } from 'node:sqlite';
 import type { Site } from '../db.ts';
+import { segmentOf, type Segment } from './audience.ts';
 
-export type BlogRow = { url: string; slug: string; title: string; score: number; reasons: string[]; words: number; impressions: number; clicks: number; position: number; topQuery: string | null };
+export type BlogRow = { segment: Segment; url: string; slug: string; title: string; score: number; reasons: string[]; words: number; impressions: number; clicks: number; position: number; topQuery: string | null };
 
 export function scorePost(ex: { title: string | null; meta_description: string | null; h1: string[]; word_count: number; faq_questions: string[]; jsonld_types: string[]; links: string[] },
   gsc: { impressions: number; clicks: number; position: number } | null, host: string): { score: number; reasons: string[] } {
@@ -45,7 +46,7 @@ export function blogScores(db: DatabaseSync, site: Site): BlogRow[] {
     const ex = JSON.parse(r.extract_json), noSlash = r.url.replace(/\/$/, '');
     const g = hasGsc ? (gscFor.get(site.id, day(90), noSlash, noSlash + '/') as { impressions: number; clicks: number; position: number }) : null;
     const { score, reasons } = scorePost(ex, g, host);
-    out.push({ url: r.url, slug: m[1], title: ex.h1?.[0] ?? ex.title ?? m[1], score, reasons, words: ex.word_count, impressions: g?.impressions ?? 0, clicks: g?.clicks ?? 0, position: Math.round((g?.position ?? 0) * 10) / 10,
+    out.push({ segment: segmentOf(`${m[1].replace(/-/g, ' ')} ${ex.h1?.[0] ?? ''}`), url: r.url, slug: m[1], title: ex.h1?.[0] ?? ex.title ?? m[1], score, reasons, words: ex.word_count, impressions: g?.impressions ?? 0, clicks: g?.clicks ?? 0, position: Math.round((g?.position ?? 0) * 10) / 10,
       topQuery: (topQ.get(site.id, day(90), noSlash, noSlash + '/') as { query: string } | undefined)?.query ?? null });
   }
   return out.sort((a, b) => a.score - b.score);

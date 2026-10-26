@@ -142,3 +142,15 @@ Pendiente del dueño: `BING_WEBMASTER_API_KEY` y tokens de Telegram en `.env`, a
 ### 10.1 Mejora de posts con un clic (2026-10-26)
 
 Pestaña `/agents`, sección "Blog quality": puntaje 0-100 por post (estructura 70 pts: palabras, FAQ visible, schema, title, description, H1, enlaces internos; visibilidad en Google 30 pts) con la razón de cada punto perdido. Botón "Improve" por post y "Improve the 3 lowest". Cada clic manda el post al agente `improver` (el redactor en modo mejora, guiado por esas razones medidas); deja un borrador en "Waiting for you" y no se publica sin aprobación. No se vuelve a encolar un post con borrador pendiente o mejorado en los últimos 14 días. Primer caso real: `dulceros-para-graduacion` (puntaje más bajo) con borrador #4.
+
+### 10.2 Giro hacia el cliente ideal (2026-10-26)
+
+El dueño pidió reorientar el SEO hacia personas de alto poder adquisitivo que organizan celebraciones (bodas primero; baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación) y empresas que organizan eventos (posadas, eventos corporativos), sin abandonar etiquetas y stickers pero sin atraer pedidos industriales o en serie. Su fuente: 3 notas de voz en `/home/darrkito/YumePhotos/Notes`.
+
+- Brief resumido y con lenguaje cuidado: `src/agents/audience/studioyume.mx.md`. Se inyecta en el prompt del analista, investigador, redactor/mejorador y fixer.
+- `src/agents/audience.ts` clasifica consultas, temas y posts en `event`, `corporate-event` (objetivo), `labels`, `bulk` y `other`.
+- Investigador: al menos 6 de 8 temas para el cliente ideal, máximo 1 de etiquetas y con ángulo de evento. El redactor elige primero temas objetivo (+3) y último los de volumen (-4). Temas con ángulo industrial se descartan.
+- Analista: informa qué parte de las impresiones de Google viene de eventos frente a etiquetas (`audienceSegments`), para medir si el giro funciona.
+- Dashboard: columna "Speaks to" en Blog quality y botón "Improve the 3 lowest event posts".
+- Límite de honestidad: solo se ofrece lo que Yume produce (8 productos en `products.ts` más los servicios por cotización existentes). No hay productos de boda en el catálogo: los posts de bodas llevan a cotizar por WhatsApp y marcan en `claims` lo pendiente de confirmar con el dueño.
+- Pendiente del dueño: lista exacta de lo que Yume puede hacer para bodas y eventos (invitaciones, menús, tarjetas, etiquetas de copa, souvenirs...), y si quiere páginas de servicio dedicadas (/bodas, /eventos). Las páginas son código y pasarían por aprobación.
