@@ -26,6 +26,7 @@ export type AgentSite = {
   typecheck: string[];   // command that must pass before anything is committed or pushed
   contentPaths: string[]; // paths a post/fix may touch; a trailing * means "starts with"; anything else is refused
   lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto); same * rule
+  regenerateFrom?: string[]; // generated-site repos: on a rebase conflict, re-apply the draft's changes under these paths on the latest main and regenerate
   lintPaths?: string[];   // when set, the copy lint (em-dashes, unverifiable claims) judges only these files: the rest is generated output
   rules: string;         // appended to every writer/fixer prompt
   writerRules: string;   // writer only
@@ -186,6 +187,7 @@ AGENT_SITES['dizaynseo.com'] = {
   indexnowKey: 'ffea521f6f9644fc9a526c6c23c1cdb4.txt',
   contentPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py', 'blog.html', 'blog/*', 'md/*', 'sitemap.xml', 'llms.txt', 'llms-full.txt', 'api/_index.js', 'agent-tools.js', 'vercel.json'],
   lowRiskPaths: [],
+  regenerateFrom: ['_src'],
   lintPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
   postEdit: dizaynPostEdit, validate: dizaynValidate,
   postBrief: (o) => o.kind === 'improve' ? `Mejora el post EXISTENTE "${o.merge}" (no cambies su slug ni su URL; la fecha de actualización del sitio es global). Su puntaje de calidad es bajo por estas razones medidas: ${o.why}. Corrige exactamente eso, en inglés: amplía con contenido útil y verificable, agrega respuestas directas de 40 a 75 palabras al inicio de cada H2, enlaces internos reales y mejora title/desc si están fuera de rango. El post vive en _src/posts.py o _src/posts_funnel.py (busca su slug): edita solo su title, desc, lede y body. Conserva lo que ya funciona.`

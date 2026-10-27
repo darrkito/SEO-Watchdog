@@ -13,6 +13,7 @@ import { blogScores } from './blogscore.ts';
 import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from './audience.ts';
 import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
+import type { PostOpts } from './hooks.ts';
 
 export class LimitError extends Error {}
 export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
@@ -341,12 +342,34 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
 
 // ---------- publish ----------
 /** Rebase onto the latest main, typecheck, push. Throws on any conflict or failure; never force-pushes. */
-export function pushAndVerify(cfg: AgentSite, _urls: string[]): void {
+export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts): void {
   const wt = cfg.worktree;
   gitRemote(cfg, 'fetch', cfg.remote, 'main');
-  try { git(wt, 'rebase', `${cfg.remote}/main`); } catch (e) { try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ } throw new Error(`rebase conflict: ${String((e as any).stderr ?? e).slice(0, 300)}`); }
+  try { git(wt, 'rebase', `${cfg.remote}/main`); }
+  catch (e) {
+    try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
+    // Sites with generated pages (Dizayn SEO): two drafts made from the same base both rewrite the same one-line pages, so git cannot merge them.
+    // Re-apply only the draft's SOURCE change on the latest main and regenerate everything else.
+    if (!cfg.regenerateFrom || !post || !cfg.postEdit) throw new Error(`rebase conflict: ${String((e as any).stderr ?? e).slice(0, 300)}`);
+    regenerateOnLatest(cfg, post);
+  }
   const err = typecheck(cfg); if (err) throw new Error(`typecheck after rebase: ${err.slice(0, 300)}`);
   gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
+}
+
+/** The draft branch is checked out. Rebuild it on top of the latest main: take what the writer changed under `cfg.regenerateFrom`, apply it, regenerate, commit. */
+function regenerateOnLatest(cfg: AgentSite, post: PostOpts): void {
+  const wt = cfg.worktree, main = `${cfg.remote}/main`;
+  const branch = git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const base = git(wt, 'merge-base', 'HEAD', main).trim();
+  const source = execFileSync('git', ['diff', base, 'HEAD', '--', ...cfg.regenerateFrom!], { cwd: wt, encoding: 'utf8', maxBuffer: 64 << 20 });
+  const subject = git(wt, 'log', '-1', '--format=%s').trim();
+  git(wt, 'reset', '--hard'); git(wt, 'checkout', '-B', branch, main);
+  try { execFileSync('git', ['apply', '--3way', '--whitespace=nowarn'], { cwd: wt, input: source, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }); }
+  catch (e) { git(wt, 'reset', '--hard'); throw new Error(`source conflict with a newer change to the same post: draft it again (${String((e as any).stderr ?? e).slice(0, 200)})`); }
+  try { cfg.postEdit!(wt, post); } catch (e) { git(wt, 'reset', '--hard'); throw new Error(`regeneration failed: ${String((e as any).stderr ?? (e as Error).message).slice(0, 300)}`); }
+  git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules');
+  commit(wt, `${subject} (regenerated on the latest main)`);
 }
 
 async function waitLive(urls: string[], marker?: string, timeoutMs = 900_000, everyMs = 30_000): Promise<boolean> {
@@ -381,7 +404,7 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
   try {
     if (!cfg) throw new Error('no agent config for this site');
     git(cfg.worktree, 'checkout', p.branch);
-    pushAndVerify(cfg, p.urls);
+    pushAndVerify(cfg, p.urls, a.kind === 'post' ? { slug: p.slug, improve: a.title.startsWith('Improve:'), merge: a.title.startsWith('Improve:') || a.title.startsWith('Update:') ? p.slug : null } : undefined);
     console.log(`[publish #${a.id}] pushed; confirming the deploy in the background`);
     if (cfg.deployHint) await sendAlert(`📤 ${a.title}: ${cfg.deployHint}`);
     // The push is the only step that needs the shared worktree. Waiting for Vercel (minutes) must not hold up the next publish,
