@@ -54,6 +54,9 @@ export function seedSettings(db: DatabaseSync): void {
 }
 
 const queued = new Set<string>();
+let limitRetryMs = 30 * 60_000;
+/** Test hook: how long a clicked job waits after the usage limit before it runs again. */
+export const setLimitRetry = (ms: number): void => { limitRetryMs = ms; };
 /** Agent jobs running or waiting in line right now, as `agent:siteId:detail` (the dashboard shows them so a click is never silent). */
 export const inFlight = (): string[] => [...queued];
 /** Execute one agent for one site and record the outcome (tokens, status, output). */
@@ -63,6 +66,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   if (queued.has(key)) return Promise.resolve();
   queued.add(key);
   if (slot === null) db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail); // manual click: survives a restart
+  let limited = false;
   return serial(async () => {
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
     const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
@@ -72,8 +76,15 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
     db.prepare("UPDATE agent_runs SET finished_at = datetime('now'), status = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?, output = ?, error = ? WHERE id = ?")
       .run(status, ctx.usage.reduce((a, u) => a + u.tokensIn, 0), ctx.usage.reduce((a, u) => a + u.tokensOut, 0), ctx.usage.reduce((a, u) => a + u.costUsd, 0), output.slice(0, 20_000), error, id);
     if (status === 'failed') await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
-    if (status === 'limited') console.log(`[${agent}] usage limit reached; will retry in 30 min`);
-  }).catch((e) => console.error(`[${agent}]`, e)).finally(() => { queued.delete(key); db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail); });
+    if (status === 'limited') { limited = slot === null; console.log(`[${agent}] usage limit reached; ${slot === null ? 'the click stays queued and retries' : 'the schedule retries'} in ${Math.round(limitRetryMs / 60_000)} min`); }
+  }).catch((e) => console.error(`[${agent}]`, e)).finally(() => {
+    if (limited) {
+      // A clicked job must not vanish when the Claude session limit is hit: keep its queue row (survives a restart) and its dedupe key, try again later.
+      setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limitRetryMs).unref();
+      return;
+    }
+    queued.delete(key); db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail);
+  });
 }
 
 export function tick(db: DatabaseSync, now = mxNow(), nowMs = Date.now()): void {
