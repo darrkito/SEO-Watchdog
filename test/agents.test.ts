@@ -245,3 +245,20 @@ test('copy lint can be limited to the files the writer authors (generated output
   assert.deepEqual(lintAdded(diff, ['_src/posts_agent.py']), []);
   assert.deepEqual(lintAdded(diff.replace('+limpio', '+con — raya'), ['_src/posts_agent.py']), ['em-dash in new copy'], 'still catches the writer\'s own copy');
 });
+
+test('staging never includes node_modules, whether the repo ignores it or not', async () => {
+  const { execFileSync: x } = await import('node:child_process');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const { prepareWorktree, changedFiles } = await import('../src/agents/agents.ts');
+  const root = mkdtempSync(join(tmpdir(), 'wd-nm-')), g = (cwd: string, ...a: string[]) => x('git', a, { cwd, encoding: 'utf8' });
+  for (const [i, ignore] of ['node_modules', 'node_modules/', ''].entries()) {
+    const owner = join(root, 'o' + i); mkdirSync(owner);
+    g(owner, 'init', '-q', '-b', 'main'); g(owner, 'config', 'user.email', 't@t'); g(owner, 'config', 'user.name', 't');
+    writeFileSync(join(owner, '.gitignore'), ignore + '\n'); writeFileSync(join(owner, 'a.txt'), '1\n'); g(owner, 'add', '.'); g(owner, 'commit', '-qm', 'i');
+    mkdirSync(join(owner, 'node_modules')); writeFileSync(join(owner, 'node_modules/x.js'), '');
+    g(owner, 'remote', 'add', 'origin', owner);
+    const wt = prepareWorktree({ repo: owner, worktree: join(root, 'w' + i), remote: 'origin' } as any, 'agent/t');
+    writeFileSync(join(wt, 'a.txt'), '2\n');
+    assert.deepEqual(changedFiles(wt), ['a.txt'], `ignore rule ${JSON.stringify(ignore)}`);
+  }
+});

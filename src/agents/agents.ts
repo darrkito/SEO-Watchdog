@@ -71,7 +71,7 @@ export function prepareWorktree(cfg: AgentSite, branch: string): string {
   return cfg.worktree;
 }
 // node_modules is a symlink to the owner's install: some repos ignore `node_modules/` (directories only), so it must never be staged.
-const changedFiles = (wt: string) => { git(wt, 'add', '-A', '--', '.', ':(exclude)node_modules'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
+export const changedFiles = (wt: string) => { git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
 const typecheck = (cfg: AgentSite) => { try { sh(cfg.worktree, cfg.typecheck[0], cfg.typecheck.slice(1), 900_000); return null; } catch (e) { return String((e as any).stdout ?? e).slice(0, 1500); } };
 const commit = (wt: string, msg: string) => git(wt, 'commit', '-m', `${msg}\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`);
 
