@@ -177,3 +177,7 @@ Dizayn (2026-10-20, dizayn-web df1dc7e): 12 actions went down to 7 after one cha
 
 ## 2026-10-26: agent fleet (Yume pilot)
 Built `src/agents/` (runner on the Claude subscription, collector, analyst/researcher/writer/fixer, in-process scheduler, `/agents` dashboard tab). Plan and status: `PLAN-agents-yume.md` (§10). Runs under pm2 as `seo-watchdog`. Open: `BING_WEBMASTER_API_KEY` + Telegram vars in `.env`, three items waiting in `/agents`, then replicate to Luvory/Dizayn via `src/agents/sites.ts`.
+
+## 2026-10-27: Luvory + Vexon in the fleet, Write now, audit
+Luvory (#1) and Vexon (#5) run all seven agents (`src/agents/sites.ts`, `hooks.ts`, briefs in `audience/`). New "Write now" button on every Topic backlog row. Fleet-wide additions: mini audit step for writers, keyword criteria for the researcher, `effectOfOurPosts` for the analyst, `audience/<host>.questions.md` hook, playbook section G. Dizayn SEO brief rewritten (US only, San Antonio, new prices). Full list of what was applied and what is still pending (owner and dev): `docs/agents-pending-audit-2026-10-27.md`. Details: `PLAN-agents-yume.md` §10.6. Open: Search Console access for Vexon and Dizayn SEO, Bing key check, Telegram vars, Lovable publish for Luvory.
+

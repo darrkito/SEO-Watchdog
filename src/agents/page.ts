@@ -70,8 +70,9 @@ function workingBanner(db: DatabaseSync, only?: number): Html | '' {
   if (!items.length) return '';
   const label = items.map(({ agent, siteId, slug }) => {
     const site = agentSites(db).find((x) => x.id === siteId);
-    const row = slug && !slug.startsWith('ids:') && site ? blogScores(db, site).find((r) => r.slug === slug) : null;
-    return `${LABEL[agent] ?? agent}${only == null && site ? ` (${cfgOf(site)?.short})` : ''}${slug.startsWith('ids:') ? `: ${slug.slice(4).split(',').length} issue(s)` : slug ? `: ${row?.title ?? slug}` : ''}`;
+    const topic = slug.startsWith('topic:') ? (db.prepare('SELECT title FROM topics WHERE id = ?').get(Number(slug.slice(6))) as { title: string } | undefined) : undefined;
+    const row = slug && !slug.startsWith('ids:') && !topic && site ? blogScores(db, site).find((r) => r.slug === slug) : null;
+    return `${LABEL[agent] ?? agent}${only == null && site ? ` (${cfgOf(site)?.short})` : ''}${slug.startsWith('ids:') ? `: ${slug.slice(4).split(',').length} issue(s)` : slug ? `: ${topic?.title ?? row?.title ?? slug}` : ''}`;
   }).join(' · ');
   return h`<div class="banner info"><b>Working now:</b> ${label}. This page refreshes by itself; a draft appears under "Waiting for you" (newest first) when it is ready.</div>`;
 }
@@ -123,12 +124,18 @@ export function agentsPage(db: DatabaseSync, msg?: { error?: string; ok?: string
 }
 
 /** One page per site: its approvals, agents and controls, blog quality (when the site has a blog), topics and runs. */
-export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: string; ok?: string }, showAll = false): string | null {
+export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: string; ok?: string }, showAll = false, allTopics = false): string | null {
   const site = agentSites(db).find((s) => cfgOf(s)?.short === short);
   if (!site) return null;
   const cfg = cfgOf(site)!, id = site.id;
   const pending = db.prepare("SELECT * FROM approvals WHERE status = 'pending' AND site_id = ? ORDER BY id DESC").all(id) as any[];
-  const topics = db.prepare("SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY score DESC, id LIMIT 10").all(id) as any[];
+  const topicCount = (db.prepare("SELECT COUNT(*) n FROM topics WHERE site_id = ? AND status = 'new'").get(id) as { n: number }).n;
+  const topics = db.prepare(`SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY score DESC, id${allTopics ? '' : ' LIMIT 10'}`).all(id) as any[];
+  const writing = new Set(inFlight().filter((k) => k.startsWith(`writer:${id}:topic:`)).map((k) => Number(k.split(':')[3])));
+  const canWrite = cfg.capabilities.includes('writer');
+  const writeCell = (t: any): Html => writing.has(t.id) ? chip('info', 'Writing…')
+    : canWrite ? h`<form method="post" action="/agents/write-topic" style="margin:0"><input type="hidden" name="site" value="${id}"><input type="hidden" name="topic" value="${t.id}"><button class="btn link" title="The writer drafts this post now. You still approve it before anything goes live.">Write now</button></form>`
+    : h`<span class="muted small" title="${cfg.pendingNote ?? ''}">Writer off</span>`;
   const issues = (db.prepare("SELECT COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' AND severity != 'info'").get(id) as { n: number }).n;
   const agentRow = (a: string) => {
     const last = db.prepare('SELECT * FROM agent_runs WHERE agent = ? AND site_id = ? ORDER BY id DESC LIMIT 1').get(a, id) as any;
@@ -155,8 +162,10 @@ export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: 
     <div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Last run</th><th>Status</th><th>Autonomy</th><th></th></tr></thead><tbody>
       ${ALL_AGENTS.filter((a) => cfg.capabilities.includes(a)).map(agentRow)}</tbody></table></div>
     ${cfg.capabilities.includes('improver') ? blogSection(db, site, showAll, cfg.short) : ''}
-    <h2>Topic backlog</h2>
-    <div class="card">${topics.length ? h`<ul class="urls">${topics.map((t) => h`<li><span class="u"><b>${t.title}</b> ${t.action !== 'new' ? chip('info', t.action) : ''}<br><span class="m">${t.query ? `“${t.query}” · ` : ''}${t.why}</span></span><span class="m">score ${t.score}</span></li>`)}</ul>` : h`<p class="muted small">Empty. The researcher fills it on Sundays.</p>`}</div>
+    <h2 id="topics">Topic backlog</h2>
+    <p class="muted small">"Write now" sends one topic to the writer immediately (about 5 to 10 minutes). The draft appears under "Waiting for you"; nothing goes live until you approve it.</p>
+    <div class="card">${topics.length ? h`<ul class="urls">${topics.map((t) => h`<li><span class="u"><b>${t.title}</b> ${t.action !== 'new' ? chip('info', t.action) : ''}<br><span class="m">${t.query ? `“${t.query}” · ` : ''}${t.why}</span></span><span class="m">score ${t.score}</span>${writeCell(t)}</li>`)}</ul>
+      ${topicCount > topics.length || allTopics ? h`<p class="muted small">${allTopics ? `Showing all ${topicCount}.` : `Showing the top 10 of ${topicCount}.`} <a href="/agents/${cfg.short}?${allTopics ? '' : 'topics=all'}#topics">${allTopics ? 'Show only the top 10' : `Show all ${topicCount}`}</a></p>` : ''}` : h`<p class="muted small">Empty. The researcher fills it on Sundays.</p>`}</div>
     ${runsList(db, id)}${decidedList(db, id)}`, { refresh: inFlight().length ? 6 : undefined });
 }
 
@@ -167,6 +176,15 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
   if (action === 'kill') { db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, ?) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = excluded.enabled").run(form.get('enabled') === '1' ? 1 : 0); return form.get('enabled') === '1' ? 'Agents resumed.' : 'All agents stopped.'; }
   if (action === 'decide') { const id = Number(form.get('id')), a = form.get('action'); if (a !== 'approve' && a !== 'reject') throw new Error('Bad action.'); decide(db, id, a); return a === 'approve' ? 'Approved. Publishing now: it goes live after the deploy is confirmed.' : 'Rejected.'; }
   if (action === 'fix-all') return queueFix(db, site, 'all');
+  if (action === 'write-topic') {
+    const s = agentSites(db).find((x) => x.id === site); if (!s || !capable(s, 'writer')) throw new Error('The writer is not enabled for this site.');
+    if ((db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined)?.enabled === 0) throw new Error('All agents are stopped: resume them first.');
+    const t = db.prepare('SELECT id, title, status FROM topics WHERE id = ? AND site_id = ?').get(Number(form.get('topic')), site) as { id: number; title: string; status: string } | undefined;
+    if (!t) throw new Error('That topic is not in this site\'s backlog.');
+    if (t.status !== 'new') throw new Error(`"${t.title}" is already ${t.status}.`);
+    void runAgent(db, 'writer', s, null, { topicId: t.id });
+    return `Writer started on "${t.title}". It takes about 5 to 10 minutes; the draft then appears under "Waiting for you". Nothing is published until you approve it.`;
+  }
   if (action !== 'improve' && action !== 'improve-low') known();
   if (action === 'toggle') { db.prepare('UPDATE agent_settings SET enabled = ? WHERE agent = ? AND site_id = ?').run(form.get('enabled') === '1' ? 1 : 0, agent, site); return `${LABEL[agent]} ${form.get('enabled') === '1' ? 'resumed' : 'paused'}.`; }
   if (action === 'autonomy') {

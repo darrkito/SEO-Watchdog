@@ -135,3 +135,104 @@ test('Fix now: needs a configured site and at least one open issue; "all" ignore
   db.prepare("INSERT INTO findings (site_id, rule_id, subject, severity, message) VALUES (8, 'r', 'u', 'info', 'm')").run();
   assert.throws(() => queueFix(db, 8, 'all'), /nothing to fix/, 'info notes are not "issues to fix"');
 });
+
+test('paths: exact entries and trailing-* prefixes', async () => {
+  const { pathAllowed } = await import('../src/agents/sites.ts');
+  const paths = ['src/data/blog-posts.ts', 'src/content/blog/*', 'public/og/blog-*'];
+  assert.ok(pathAllowed(paths, 'src/data/blog-posts.ts') && pathAllowed(paths, 'src/content/blog/nuevo.mdx') && pathAllowed(paths, 'public/og/blog-nuevo.jpg'));
+  assert.ok(!pathAllowed(paths, 'src/data/blog-posts.ts.bak') && !pathAllowed(paths, 'src/pages/index.astro') && !pathAllowed(paths, 'public/og/default.jpg'));
+});
+
+test('Write now dates: skips Mon/Wed already used by a draft or a published post', async () => {
+  const { nextFreeDate } = await import('../src/agents/agents.ts');
+  const db = openDb(join(process.env.WATCHDOG_DATA!, 'slots.db'));
+  db.prepare("INSERT INTO sites (id, url) VALUES (9, 'https://z.example/')").run();
+  const put = db.prepare("INSERT INTO approvals (site_id, agent, kind, title, payload_json, diff, status) VALUES (9, 'writer', 'post', 't', ?, '', ?)");
+  assert.equal(nextFreeDate(db, 9, '2026-10-25'), '2026-10-26');
+  put.run(JSON.stringify({ publishAt: '2026-10-26' }), 'pending');
+  put.run(JSON.stringify({ publishAt: '2026-10-28' }), 'published');
+  put.run(JSON.stringify({ publishAt: '2026-11-02' }), 'rejected'); // a rejected draft frees its day
+  assert.equal(nextFreeDate(db, 9, '2026-10-25'), '2026-11-02');
+});
+
+test('Write now: refuses sites without a writer, unknown topics and topics already drafted', async () => {
+  const { agentsPost } = await import('../src/agents/page.ts');
+  const db = openDb(join(process.env.WATCHDOG_DATA!, 'wn.db'));
+  db.prepare("INSERT INTO sites (id, url, kind) VALUES (21, 'https://www.dizaynseo.com/', 'own'), (22, 'https://luvory.com.mx/', 'own')").run();
+  db.prepare("INSERT INTO topics (id, site_id, title, slug, status) VALUES (1, 21, 'a', 'a', 'new'), (2, 22, 'b', 'b', 'drafted')").run();
+  const form = (site: number, topic: number) => new URLSearchParams({ site: String(site), topic: String(topic) });
+  assert.throws(() => agentsPost(db, 'write-topic', form(21, 1)), /writer is not enabled/); // Dizayn SEO: its generator is missing
+  assert.throws(() => agentsPost(db, 'write-topic', form(22, 99)), /not in this site/);
+  assert.throws(() => agentsPost(db, 'write-topic', form(22, 2)), /already drafted/);
+  assert.throws(() => agentsPost(db, 'write-topic', form(22, 1)), /not in this site/, 'a topic of another site cannot be written here');
+});
+
+test('Luvory / Vexon post lists are read from their own post formats', async () => {
+  const { luvoryPosts, mdxPosts } = await import('../src/agents/sites.ts');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const lv = mkdtempSync(join(tmpdir(), 'wd-lv-')); mkdirSync(join(lv, 'src/data'), { recursive: true });
+  writeFileSync(join(lv, 'src/data/blog-posts.ts'), `export const blogPosts = [\n  {\n    slug: "a-b",\n    title: "Titulo A: con dos puntos",\n    metaTitle: "Corto",\n    en: {\n      title: "English title",\n    },\n  },\n  {\n    slug: "c-d",\n    title: 'Otro "titulo"',\n  },\n];\n`);
+  assert.deepEqual(luvoryPosts(lv), [{ slug: 'a-b', title: 'Titulo A: con dos puntos' }, { slug: 'c-d', title: 'Otro "titulo"' }]);
+  const vx = mkdtempSync(join(tmpdir(), 'wd-vx-')); mkdirSync(join(vx, 'src/content/blog'), { recursive: true });
+  writeFileSync(join(vx, 'src/content/blog/mi-post.mdx'), `---\ntitle: 'Cómo elegir (3 a 10 m)'\ndescription: 'x'\n---\ncuerpo\n`);
+  assert.deepEqual(mdxPosts(vx), [{ slug: 'mi-post', title: 'Cómo elegir (3 a 10 m)' }]);
+  assert.deepEqual(mdxPosts('/nonexistent'), []);
+});
+
+test('Luvory hooks: blog-index.json is regenerated from blog-posts.ts, and a new post must be wired into the map and the sitemap', async () => {
+  const { luvoryPostEdit, luvoryValidate } = await import('../src/agents/hooks.ts');
+  const { writeFileSync, mkdirSync, readFileSync } = await import('node:fs');
+  const wt = mkdtempSync(join(tmpdir(), 'wd-lh-'));
+  for (const d of ['src/data', 'src/lib', 'public']) mkdirSync(join(wt, d), { recursive: true });
+  writeFileSync(join(wt, 'src/data/blog-posts.ts'), `export interface P { slug: string }\nexport const blogPosts = [\n  {\n    slug: "nuevo",\n    title: "T",\n    excerpt: "e",\n    date: "2026-11-02",\n    dateModified: "2026-11-02",\n    category: "Eventos",\n    content: \`## Hola\`,\n    en: {\n      title: "T en",\n      excerpt: "e en",\n      category: "Events",\n      content: \`## Hi\`,\n    },\n  },\n];\n`);
+  luvoryPostEdit(wt);
+  assert.deepEqual(JSON.parse(readFileSync(join(wt, 'src/data/blog-index.json'), 'utf8')), [{ slug: 'nuevo', title: 'T', excerpt: 'e', date: '2026-11-02', dateModified: '2026-11-02', category: 'Eventos', en: { title: 'T en', excerpt: 'e en', category: 'Events' } }]);
+  const o = { slug: 'nuevo', improve: false, merge: null };
+  assert.equal(luvoryValidate(wt, o).length, 2, 'no EN_SLUG_MAP entry and no sitemap entry yet (the sitemap file is missing)');
+  writeFileSync(join(wt, 'src/lib/i18n.ts'), `const EN_SLUG_MAP = {\n  "/blog/nuevo": "/blog/new-post",\n};\n`);
+  writeFileSync(join(wt, 'public/sitemap.xml'), `<loc>https://luvory.com.mx/blog/nuevo</loc><loc>https://luvory.com.mx/en/blog/new-post</loc>`);
+  assert.deepEqual(luvoryValidate(wt, o), []);
+  assert.deepEqual(luvoryValidate(wt, { slug: 'falta', improve: false, merge: null }), ['post falta is not in src/data/blog-posts.ts']);
+});
+
+test('Vexon hook: frontmatter limits from the playbook', async () => {
+  const { vexonValidate } = await import('../src/agents/hooks.ts');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const wt = mkdtempSync(join(tmpdir(), 'wd-vh-')); mkdirSync(join(wt, 'src/content/blog'), { recursive: true });
+  const post = (title: string, desc: string, faqs = true) => `---\ntitle: '${title}'\ndescription: '${desc}'\ndate: 2026-11-02\ncategory: 'Guías'\n${faqs ? "faqs:\n  - q: 'a'\n    a: 'b'\n" : ''}---\n\n## Hola\n`;
+  writeFileSync(join(wt, 'src/content/blog/ok.mdx'), post('Cómo elegir el tamaño de tu oficina móvil', 'd'.repeat(120)));
+  assert.deepEqual(vexonValidate(wt, { slug: 'ok', improve: false, merge: null }), []);
+  writeFileSync(join(wt, 'src/content/blog/mal.mdx'), post('Corto', 'd'.repeat(30), false));
+  assert.equal(vexonValidate(wt, { slug: 'mal', improve: false, merge: null }).length, 3);
+  assert.match(vexonValidate(wt, { slug: 'no-existe', improve: false, merge: null })[0], /does not exist/);
+});
+
+test('markers and EN slugs work for markdown posts and for both slug-map styles', async () => {
+  const { pickMarker, enSlugFor } = await import('../src/agents/agents.ts');
+  const diff = ['diff --git a/src/data/blog-posts.ts b/src/data/blog-posts.ts', '+++ b/src/data/blog-posts.ts', "+## Qué es el cuál's", '+## Cuántos baños por invitado', '+## Hola'].join('\n');
+  assert.equal(pickMarker(diff), 'Cuántos baños por invitado', "skips headings with apostrophes (HTML-escaped) and too-short ones");
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const wt = mkdtempSync(join(tmpdir(), 'wd-en-')); mkdirSync(join(wt, 'src/lib'), { recursive: true });
+  writeFileSync(join(wt, 'src/lib/i18n.ts'), `"/blog/luvory-a": "/blog/luvory-a-en",\n"yume-b": "yume-b-en",`);
+  assert.equal(enSlugFor({ worktree: wt } as any, 'luvory-a'), 'luvory-a-en');
+  assert.equal(enSlugFor({ worktree: wt } as any, 'yume-b'), 'yume-b-en');
+  assert.equal(enSlugFor({ worktree: wt } as any, 'otro', 'x'), 'x');
+});
+
+test('post effects: impressions per day 28 days before vs since a published post', async () => {
+  const { postEffects } = await import('../src/agents/agents.ts');
+  const db = openDb(join(process.env.WATCHDOG_DATA!, 'fx.db'));
+  db.prepare("INSERT INTO sites (id, url) VALUES (31, 'https://fx.example/')").run();
+  const day = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+  db.prepare("INSERT INTO approvals (site_id, agent, kind, title, payload_json, diff, status, decided_at) VALUES (31, 'writer', 'post', 'Improve: Mi post', ?, '', 'published', ?)").run(JSON.stringify({ urls: ['https://fx.example/blog/mi-post'] }), day(30) + ' 12:00:00');
+  const put = db.prepare("INSERT INTO metrics VALUES (31, 'gsc', ?, 'q', 'https://fx.example/blog/mi-post', 0, ?, 10)");
+  put.run(day(40), 56); // before: 56 impressions in the 28 days before => 2/day
+  put.run(day(10), 56); // after: 56 impressions over the ~28 days since => 2/day
+  const fx = postEffects(db, 31);
+  assert.equal(fx.length, 1); assert.equal(fx[0].kind, 'Improve'); assert.equal(fx[0].impressionsPerDay, '2 -> 2');
+});
+
+test('customer questions are injected only when the owner supplied a file', async () => {
+  const { customerQuestions } = await import('../src/agents/audience.ts');
+  assert.equal(customerQuestions('nope.example'), '');
+});

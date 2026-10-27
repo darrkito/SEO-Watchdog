@@ -10,12 +10,12 @@ import { alertText, sendAlert } from '../alert.ts';
 import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
-import { audienceBrief, seoPlaybook, segmentOf, TARGET } from './audience.ts';
+import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from './audience.ts';
 import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
-import { AGENT_SITES, type AgentSite } from './sites.ts';
+import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 
 export class LimitError extends Error {}
-export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[] } };
+export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
 export type AgentFn = (c: Ctx) => Promise<string>;
 
 // Never touched by an agent push, whatever the prompt says.
@@ -33,8 +33,18 @@ export function nextPublishDate(from = mxNow().date): string {
   throw new Error('unreachable');
 }
 
+/** Next Monday/Wednesday that no draft or published post of this site already uses (several "Write now" clicks must not pile onto one day). */
+export function nextFreeDate(db: DatabaseSync, siteId: number, from = mxNow().date): string {
+  const used = new Set((db.prepare("SELECT json_extract(payload_json, '$.publishAt') d FROM approvals WHERE site_id = ? AND kind = 'post' AND status IN ('pending', 'approved', 'published')").all(siteId) as { d: string | null }[]).map((r) => r.d));
+  let d = nextPublishDate(from);
+  for (let i = 0; i < 60 && used.has(d); i++) d = nextPublishDate(d);
+  return d;
+}
+
 const sh = (cwd: string, cmd: string, args: string[], timeout = 600_000) => execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
 const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
+/** git against the site's remote. With `remoteUrl` the remote is defined for this one command only (the owner's checkout stays untouched). */
+const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
 async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number }): Promise<string> {
   const r = await runClaude(o);
@@ -52,7 +62,7 @@ export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corp
 /** A clean checkout of origin/main on `branch`, in the agents' own worktree (the owner's checkout is never touched). */
 export function prepareWorktree(cfg: AgentSite, branch: string): string {
   if (!existsSync(cfg.worktree)) git(cfg.repo, 'worktree', 'add', '--detach', cfg.worktree, 'HEAD');
-  git(cfg.worktree, 'fetch', cfg.remote, 'main');
+  gitRemote(cfg, 'fetch', cfg.remote, 'main');
   git(cfg.worktree, 'reset', '--hard');
   git(cfg.worktree, 'clean', '-fd');
   git(cfg.worktree, 'checkout', '-B', branch, `${cfg.remote}/main`);
@@ -60,7 +70,8 @@ export function prepareWorktree(cfg: AgentSite, branch: string): string {
   if (!existsSync(nm) && existsSync(join(cfg.repo, 'node_modules'))) symlinkSync(join(cfg.repo, 'node_modules'), nm);
   return cfg.worktree;
 }
-const changedFiles = (wt: string) => { git(wt, 'add', '-A'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
+// node_modules is a symlink to the owner's install: some repos ignore `node_modules/` (directories only), so it must never be staged.
+const changedFiles = (wt: string) => { git(wt, 'add', '-A', '--', '.', ':(exclude)node_modules'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
 const typecheck = (cfg: AgentSite) => { try { sh(cfg.worktree, cfg.typecheck[0], cfg.typecheck.slice(1), 900_000); return null; } catch (e) { return String((e as any).stdout ?? e).slice(0, 1500); } };
 const commit = (wt: string, msg: string) => git(wt, 'commit', '-m', `${msg}\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`);
 
@@ -105,7 +116,22 @@ export function weeklySummary(db: DatabaseSync, siteId: number, segments = true)
   const findings = db.prepare("SELECT rule_id, severity, COUNT(*) n FROM findings WHERE site_id = ? AND status = 'open' AND severity != 'info' GROUP BY rule_id, severity ORDER BY n DESC LIMIT 12").all(siteId);
   const bing = db.prepare("SELECT query, SUM(clicks) clicks, SUM(impressions) impressions, ROUND(AVG(position),1) position FROM metrics WHERE site_id = ? AND source = 'bing' AND date >= ? GROUP BY query ORDER BY impressions DESC LIMIT 10").all(siteId, dayAgo(35));
   return { period: { now: `${dayAgo(8)}..${dayAgo(2)}`, before: `${dayAgo(15)}..${dayAgo(9)}` }, totals: { now: { ...cur, p: r1(cur.p) }, before: { ...prev, p: r1(prev.p) } },
-    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing, ...(segments ? { audienceSegments: segmentShare(db, siteId) } : {}) };
+    queries: movers('query'), pages: movers('page'), strikingDistance: striking, sitemapPagesWithNoSearchImpressions30d: { count: noVis.length, sample: noVis.slice(0, 12) }, openFindings: findings, bingTopQueries: bing, effectOfOurPosts: postEffects(db, siteId), ...(segments ? { audienceSegments: segmentShare(db, siteId) } : {}) };
+}
+
+/** Posts the agents published or improved 14 to 120 days ago: Google impressions per day in the 28 days before vs the days since (same page). */
+export function postEffects(db: DatabaseSync, siteId: number) {
+  const out: { post: string; kind: string; date: string; impressionsPerDay: string; clicksPerDay: string }[] = [];
+  const rows = db.prepare("SELECT title, json_extract(payload_json, '$.urls[0]') url, substr(decided_at, 1, 10) d FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'published' AND decided_at BETWEEN datetime('now', '-120 days') AND datetime('now', '-14 days') ORDER BY decided_at DESC LIMIT 12").all(siteId) as { title: string; url: string | null; d: string }[];
+  const sum = db.prepare("SELECT COALESCE(SUM(impressions),0) i, COALESCE(SUM(clicks),0) c FROM metrics WHERE site_id = ? AND source = 'gsc' AND (page = ? OR page = ?) AND date BETWEEN ? AND ?");
+  const addDays = (d: string, n: number) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86_400_000).toISOString().slice(0, 10);
+  for (const r of rows) {
+    if (!r.url) continue;
+    const u = r.url.replace(/\/$/, ''), from = addDays(r.d, -28), until = dayAgo(2), days = Math.max(1, Math.round((Date.parse(until) - Date.parse(r.d)) / 86_400_000));
+    const b = sum.get(siteId, u, u + '/', from, addDays(r.d, -1)) as { i: number; c: number }, a = sum.get(siteId, u, u + '/', r.d, until) as { i: number; c: number };
+    out.push({ post: r.title, kind: r.title.split(':')[0], date: r.d, impressionsPerDay: `${r1(b.i / 28)} -> ${r1(a.i / days)}`, clicksPerDay: `${r1(b.c / 28)} -> ${r1(a.c / days)}` });
+  }
+  return out;
 }
 
 /** Share of Google impressions/clicks (28d) going to each customer segment: the number that shows whether the SEO turn is working. */
@@ -135,6 +161,7 @@ export const analystAgent: AgentFn = async (c) => {
     prompt: `Eres el analista SEO de ${c.site.url}. Abajo hay datos reales y ya calculados (Search Console y Bing, semana contra semana). Escribe en español un informe breve (máx 220 palabras) para el dueño:
 1) Qué funciona, 2) Qué no funciona o cae, 3) Hasta 4 acciones concretas, cada una con el agente que debe hacerla (fixer = corrige en el sitio, researcher = busca temas, writer = escribe posts, owner = solo el dueño).
 Usa solo estos números; si algo no se puede concluir con tan pocos datos, dilo. No inventes volúmenes ni causas.
+Si effectOfOurPosts muestra que un post que nosotros publicamos o mejoramos bajó mucho en impresiones por día (más de 40%) después del cambio, dilo: la regla del libro es esperar unas semanas, y si sigue bajando revertir a la versión anterior y reintentar con cambios pequeños (acción para el fixer o el dueño). Si subió, menciónalo como lo que funciona.
 ${c.cfg?.segments ? 'Incluye una línea sobre audienceSegments: qué parte de las impresiones viene de eventos/bodas (cliente ideal) frente a etiquetas/volumen, según el brief.' : ''}
 ${audience(c)}
 
@@ -144,6 +171,9 @@ ${JSON.stringify(s)}`,
 };
 
 // ---------- researcher ----------
+/** Get Found: how to pick keywords. The researcher is told, and the writer later runs the mini audit against the real #1. */
+const KEYWORD_CRITERIA = `Criterios del playbook para elegir cada tema (aplícalos y verifícalos con búsquedas reales): (1) palabra clave long-tail de 3 o más palabras con intención clara (informativa, comercial o transaccional); (2) perenne antes que de moda; (3) con modificador geográfico cuando el negocio es local; (4) baja dificultad: que los primeros resultados sean sitios pequeños o genéricos, no marcas enormes (estrategia avalancha, 10 a 100 búsquedas al mes al empezar); (5) responde una pregunta concreta de un cliente real (revisa "otras preguntas de la gente" y las dudas del brief); (6) no canibaliza un post existente: si se parece, usa action "merge:<slug>". En "why" di qué verificaste en los primeros resultados.`;
+
 type Topic = { title: string; slug: string; query: string; action: string; why: string; score: number };
 
 export const researcherAgent: AgentFn = async (c) => {
@@ -163,7 +193,8 @@ Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo 
 - Slugs ya en el backlog (no repetir): ${JSON.stringify(backlog)}
 ${c.cfg.research.context}
 ${c.cfg.research.priority} Considera la temporada (hoy es ${mxNow().date}).
-${audience(c)}
+${KEYWORD_CRITERIA}
+${audience(c)}${customerQuestions(new URL(c.site.url).hostname)}
 Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras","score":1-10}]
 ${c.cfg.rules}\n${c.cfg.writerRules}`,
   });
@@ -178,24 +209,34 @@ ${c.cfg.rules}\n${c.cfg.writerRules}`,
 // ---------- writer ----------
 /** The EN slug as the repo itself maps it (BLOG_SLUG_EN), not as the model claims it. */
 export function enSlugFor(cfg: AgentSite, slug: string, fallback?: string): string | undefined {
-  try { return readFileSync(join(cfg.worktree, 'src/lib/i18n.ts'), 'utf8').match(new RegExp(`"${slug}":\\s*"([^"]+)"`))?.[1] ?? fallback; } catch { return fallback; }
+  try { return readFileSync(join(cfg.worktree, 'src/lib/i18n.ts'), 'utf8').match(new RegExp(`"(?:/blog/)?${slug}":\\s*"(?:/blog/)?([^"]+)"`))?.[1] ?? fallback; } catch { return fallback; }
 }
 /** A string that only the NEW version of the page contains, so "live" means the new deploy, not the old page answering 200. */
 export function pickMarker(diff: string): string | undefined {
   // The ES file only (the EN page ships in the same deploy): skip chunks of *.en.ts files.
   const es = diff.split(/^diff --git /m).filter((chunk) => !/^a\/\S+\.en\.ts /.test(chunk)).join('\n');
   const lines = addedLines(es);
-  return lines.map((l) => l.match(/heading:\s*"([^"]{8,80})"/)?.[1]).find(Boolean) ?? lines.map((l) => l.match(/^\s*"([^"\\]{30,70})/)?.[1]).find(Boolean);
+  const md = lines.map((l) => l.match(/^## ([^'"&<>*_`\[\]\\]{8,80})$/)?.[1]).find(Boolean); // markdown posts: the heading renders as plain text in the HTML
+  return lines.map((l) => l.match(/heading:\s*"([^"]{8,80})"/)?.[1]).find(Boolean) ?? md ?? lines.map((l) => l.match(/^\s*"([^"\\]{30,70})/)?.[1]).find(Boolean);
 }
 
 function approvalFor(c: Ctx, kind: string, title: string, payload: object, diff: string): number {
   return Number(c.db.prepare('INSERT INTO approvals (site_id, agent, kind, title, payload_json, diff) VALUES (?, ?, ?, ?, ?, ?)').run(c.site.id, kind === 'post' ? 'writer' : 'fixer', kind, title, JSON.stringify(payload), diff).lastInsertRowid);
 }
 
+/** From the Get Found playbook: compare against the #1 result before writing, and place the keyword where it counts. Operational, so the writer cannot skip it. */
+const MINI_AUDIT = `Antes de escribir haz la mini auditoría del playbook: busca en la web la consulta principal, abre los 3 primeros resultados y anota sus palabras, sus H2 y cuántas veces usan la palabra clave. Tu texto cubre lo mismo con tus propias palabras (no copies encabezados idénticos) y supera ligeramente al #1 en profundidad útil, no en relleno. La palabra clave principal va en title (<=60 caracteres), meta description (80 a 156), URL, H1 y al menos un H2. Mínimo 3 enlaces internos, al menos uno a la página que vende (producto o servicio) con ancla descriptiva de 1 a 5 palabras. Cada H2 abre con una respuesta directa de 40 a 60 palabras. Si algo no lo puedes verificar, déjalo fuera.`;
+
 type Draftable = { id: number | null; title: string; slug: string; query: string; why: string; action: string; improve?: boolean };
 
 export const writerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
+  if (c.args?.topicId != null) { // "Write now" on one topic of the backlog: no weekly cap, the owner asked for exactly this one
+    const t = c.db.prepare('SELECT * FROM topics WHERE id = ? AND site_id = ?').get(c.args.topicId, c.site.id) as Draftable | undefined;
+    if (!t) throw new Error('That topic is not in this site\'s backlog any more.');
+    if ((t as any).status !== 'new') return `skipped: "${t.title}" is already ${(t as any).status}`;
+    return draftTopic(c, t, nextFreeDate(c.db, c.site.id));
+  }
   const pending = c.db.prepare("SELECT COUNT(*) n FROM approvals WHERE site_id = ? AND kind = 'post' AND status = 'pending'").get(c.site.id) as { n: number };
   if (pending.n >= 2) return `skipped: ${pending.n} drafts already waiting for approval`;
   const topic = c.db.prepare(`SELECT * FROM topics WHERE site_id = ? AND status = 'new' ORDER BY ${TOPIC_ORDER} DESC, id LIMIT 1`).get(c.site.id) as Draftable | undefined;
@@ -220,26 +261,35 @@ async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<
   const branch = `agent/post-${topic.slug}${topic.improve ? '-' + publishAt : ''}-${Date.now().toString(36)}`;
   const wt = prepareWorktree(cfg, branch);
   const merge = String(topic.action).startsWith('merge:') ? String(topic.action).slice(6) : null;
-  const brief = topic.improve ? `Mejora el post EXISTENTE "${merge}" (no cambies su slug, URL ni publishedAt; pon modifiedAt a ${publishAt}). Su puntaje de calidad es bajo por estas razones medidas: ${topic.why}. Corrige exactamente eso: amplía con contenido útil y verificable, agrega respuestas directas de 40-60 palabras al inicio de cada H2, FAQ visible con hechos reales, enlaces internos a posts y productos reales, y mejora title/description si están fuera de rango. Conserva lo que ya funciona y aplica los cambios en ES y en EN.` : `Tema: "${topic.title}" (búsqueda principal: "${topic.query}"). Por qué: ${topic.why}
-${merge ? `Este tema se FUSIONA: amplía el post existente "${merge}" (secciones/FAQ nuevas, actualiza modifiedAt a ${publishAt}), no crees un post nuevo.` : `Crea un post NUEVO con slug "${topic.slug}", publishedAt "${publishAt}", en ES (blog.ts) y EN (blog.en.ts) + entrada en BLOG_SLUG_EN. Si el tema es de dulceros, usa los archivos blog-dulceros*.`}`;
+  if (!cfg.postBrief) throw new Error('this site has no writer brief configured');
+  const opts = { slug: merge ?? topic.slug, improve: !!topic.improve, merge };
+  const brief = cfg.postBrief({ kind: topic.improve ? 'improve' : merge ? 'merge' : 'new', title: topic.title, slug: topic.slug, query: topic.query, why: topic.why, merge, publishAt });
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
     prompt: `Eres el redactor de ${c.site.url}. ${brief}
-Trabaja SOLO editando archivos en este repo (no ejecutes comandos). Investiga en la web fuentes primarias para cualquier dato no comercial y cítalas en \`sources\` solo si abriste la página.
+Trabaja SOLO editando archivos en este repo (no ejecutes comandos). Investiga en la web fuentes primarias para cualquier dato no comercial y cítalas en \`sources\` (o en la sección de fuentes del post) solo si abriste la página.
+${MINI_AUDIT}
 ${cfg.rules}
 ${cfg.writerRules}
 ${audience(c)}
 Al terminar responde SOLO con JSON: {"slug":"...","enSlug":"...","claims":[{"claim":"afirmación factual del post","source":"archivo del repo o URL abierta"}]}
 ${extra}`,
   });
+  /** Deterministic checks after every model edit: regenerate derived files, typecheck, then the site's "is it wired in everywhere" rules. */
+  const verify = (): string | null => {
+    try { cfg.postEdit?.(wt, opts); } catch (e) { return `post-edit step failed: ${String((e as any).stderr ?? (e as Error).message).slice(0, 600)}`; }
+    const tc = typecheck(cfg); if (tc) return tc;
+    const v = cfg.validate?.(wt, opts) ?? [];
+    return v.length ? `The post is not wired in correctly:\n- ${v.join('\n- ')}` : null;
+  };
   let text = await run();
-  let err = typecheck(cfg);
-  if (err) { text = await run(`El typecheck falló, corrige solo esto:\n${err}`); err = typecheck(cfg); }
+  let err = verify();
+  if (err) { text = await run(`Los chequeos automáticos fallaron, corrige solo esto:\n${err}`); err = verify(); }
   const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
-  const bad = [...(err ? [`typecheck: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !cfg.contentPaths.includes(f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff)];
+  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff)];
   if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
   const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
-  commit(wt, `content(blog): ${topic.title} (ES+EN)`);
+  commit(wt, `content(blog): ${topic.title}`);
   const slug = merge ?? meta.slug ?? topic.slug;
   const enSlug = enSlugFor(cfg, slug, meta.enSlug);
   const id = approvalFor(c, 'post', `${topic.improve ? 'Improve' : merge ? 'Update' : 'New post'}: ${topic.title}`, { branch, slug, enSlug, topicId: topic.id ?? null, publishAt, files, claims: meta.claims ?? [], urls: cfg.blogUrl(slug, enSlug), marker: pickMarker(diff) }, diff);
@@ -279,7 +329,7 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
   if (forbidden.length || err || lint.length) { git(wt, 'reset', '--hard'); throw new Error(`fix rejected by checks: ${[...forbidden.map((f) => `forbidden ${f}`), err ? `typecheck ${err.slice(0, 200)}` : '', ...lint].filter(Boolean).join('; ')}`); }
   const meta = (() => { try { return extractJson<{ fixed?: number[]; skipped?: unknown[] }>(text); } catch { return {} as { fixed?: number[]; skipped?: unknown[] }; } })();
   commit(wt, `seo(fix): ${meta.fixed?.length ?? files.length} watchdog findings\n\nFindings: ${(meta.fixed ?? []).join(', ')}`);
-  const low = files.every((f) => cfg.lowRiskPaths.includes(f));
+  const low = files.every((f) => pathAllowed(cfg.lowRiskPaths, f));
   if (autonomy === 'auto' && low) { pushAndVerify(cfg, []); return `pushed ${files.length} low-risk files (${(meta.fixed ?? []).length} findings)`; }
   const id = approvalFor(c, 'fix', `Fix ${meta.fixed?.length ?? files.length} findings (${files.length} files${low ? '' : ', touches code outside content'})`, { branch, files, fixed: meta.fixed ?? [], skipped: meta.skipped ?? [], urls: [] }, diff);
   await sendAlert(`🔧 Lote de correcciones listo para aprobar (#${id}, ${files.length} archivos). Revisa en el dashboard: /agents`);
@@ -290,20 +340,31 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
 /** Rebase onto the latest main, typecheck, push. Throws on any conflict or failure; never force-pushes. */
 export function pushAndVerify(cfg: AgentSite, _urls: string[]): void {
   const wt = cfg.worktree;
-  git(wt, 'fetch', cfg.remote, 'main');
+  gitRemote(cfg, 'fetch', cfg.remote, 'main');
   try { git(wt, 'rebase', `${cfg.remote}/main`); } catch (e) { try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ } throw new Error(`rebase conflict: ${String((e as any).stderr ?? e).slice(0, 300)}`); }
   const err = typecheck(cfg); if (err) throw new Error(`typecheck after rebase: ${err.slice(0, 300)}`);
-  git(wt, 'push', cfg.remote, 'HEAD:main');
+  gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
 }
 
-async function waitLive(urls: string[], marker?: string, timeoutMs = 900_000): Promise<boolean> {
+async function waitLive(urls: string[], marker?: string, timeoutMs = 900_000, everyMs = 30_000): Promise<boolean> {
   const end = Date.now() + timeoutMs;
   while (Date.now() < end) {
     const ok = await Promise.all(urls.map((u) => fetch(u, { redirect: 'follow', signal: AbortSignal.timeout(30_000) }).then(async (r) => r.status === 200 && (!marker || (await r.text()).includes(marker))).catch(() => false)));
     if (ok.every(Boolean)) return true;
-    await new Promise((r) => setTimeout(r, 30_000));
+    await new Promise((r) => setTimeout(r, everyMs));
   }
   return false;
+}
+
+/** IndexNow without a per-site script: the key file in the repo proves the key, the watchdog posts the URLs. */
+export async function submitIndexNow(cfg: AgentSite, urls: string[]): Promise<string> {
+  const keyFile = join(cfg.worktree, cfg.indexnowKey!);
+  const key = readFileSync(keyFile, 'utf8').trim();
+  const host = new URL(cfg.liveBase).host;
+  const r = await fetch('https://api.indexnow.org/indexnow', { method: 'POST', headers: { 'content-type': 'application/json; charset=utf-8' }, signal: AbortSignal.timeout(30_000),
+    body: JSON.stringify({ host, key, keyLocation: `${cfg.liveBase}/${key}.txt`, urlList: urls }) });
+  if (!r.ok && r.status !== 202) throw new Error(`IndexNow HTTP ${r.status}`);
+  return `IndexNow ${r.status}`;
 }
 
 /** Approved item -> main -> wait for the REAL deploy (200 on the live URL) -> only then ping IndexNow. */
@@ -319,15 +380,18 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
     git(cfg.worktree, 'checkout', p.branch);
     pushAndVerify(cfg, p.urls);
     console.log(`[publish #${a.id}] pushed; confirming the deploy in the background`);
+    if (cfg.deployHint) await sendAlert(`📤 ${a.title}: ${cfg.deployHint}`);
     // The push is the only step that needs the shared worktree. Waiting for Vercel (minutes) must not hold up the next publish,
     // so the live check, IndexNow and the final status run detached. A restart before it finishes simply repeats it (the push is a no-op).
     void (async () => {
       let note = 'pushed';
       try {
         if (p.urls?.length) {
-          const live = await waitLive(p.urls.slice(0, 1), p.marker); // the ES page carries the marker; EN follows the same deploy
-          note = live ? 'live (200)' : 'pushed, but the deploy was not live after 15 min: check Vercel';
+          const mins = cfg.liveTimeoutMin ?? 15;
+          const live = await waitLive(p.urls.slice(0, 1), p.marker, mins * 60_000, mins > 15 ? 120_000 : 30_000); // the ES page carries the marker; EN follows the same deploy
+          note = live ? 'live (200)' : `pushed, but not live after ${mins >= 120 ? Math.round(mins / 60) + ' h' : mins + ' min'}: ${cfg.deployHint ?? 'check Vercel'}`;
           if (live && cfg.indexnow) { try { sh(cfg.worktree, cfg.indexnow[0], [...cfg.indexnow.slice(1), ...p.urls]); note += ', IndexNow sent'; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
+          if (live && cfg.indexnowKey) { try { note += `, ${await submitIndexNow(cfg, p.urls)}`; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
         }
         db.prepare("UPDATE approvals SET status = 'published', note = ?, decided_at = datetime('now') WHERE id = ?").run(note, a.id);
         if (p.topicId) db.prepare("UPDATE topics SET status = 'published' WHERE id = ?").run(p.topicId);

@@ -34,3 +34,9 @@ export function seoPlaybook(): string {
   const f = join(import.meta.dirname, 'knowledge', 'seo-playbook.md');
   return existsSync(f) ? `\n=== PLAYBOOK DE SEO (reglas a aplicar; las cifras de Whitespark son opinión de expertos) ===\n${readFileSync(f, 'utf8')}\n=== FIN DEL PLAYBOOK ===\n` : '';
 }
+
+/** Real questions customers asked (WhatsApp, calls, email), one per line in `audience/<host>.questions.md`. The book's best topic source: "una pregunta de un cliente es un post". Empty when the owner has not supplied any. */
+export function customerQuestions(host: string): string {
+  const f = join(import.meta.dirname, 'audience', `${host.replace(/^www\./, '')}.questions.md`);
+  return existsSync(f) ? `\n=== PREGUNTAS REALES DE CLIENTES (la mejor fuente de temas: cada una puede ser un post; verifica la demanda y no repitas posts existentes) ===\n${readFileSync(f, 'utf8')}\n=== FIN DE LAS PREGUNTAS ===\n` : '';
+}

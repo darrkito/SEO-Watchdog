@@ -1,16 +1,17 @@
-# A quién le habla Dizayn SEO (brief, 2026-10-26)
+# A quién le habla Dizayn SEO (brief, 2026-10-27)
 
-Fuente: decisiones del dueño registradas el 2026-10-23 y 2026-10-25. Este brief manda sobre cualquier otra prioridad de SEO para www.dizaynseo.com.
+Fuente: decisiones del dueño registradas el 2026-10-23, 2026-10-25 y 2026-10-27. Este brief manda sobre cualquier otra prioridad de SEO para www.dizaynseo.com.
 
 ## Cliente ideal
 
-Cualquier negocio de Estados Unidos que quiera aparecer en Google, en Google Maps y en las respuestas de ChatGPT, Perplexity y los resúmenes de IA. **Todos los negocios de EE.UU.**: no hay nicho por industria ni ángulo hispano en los titulares. Los clientes reales (Luvory, Vexon, Lemus Weddings) son prueba de portafolio, nunca el discurso de venta.
+Cualquier negocio de Estados Unidos que quiera aparecer en Google, en Google Maps y en las respuestas de ChatGPT, Perplexity y los resúmenes de IA. **Todos los negocios de EE.UU.**: no hay nicho por industria ni ángulo hispano en los titulares. Mercado: **solo Estados Unidos**, inglés primero y español como segundo idioma; no se vende a México. Los clientes reales (Luvory, Vexon, Lemus Weddings) son prueba de portafolio, nunca el discurso de venta.
 
-## Oferta (solo lo que el sitio ya publica y el dueño aprobó)
+## Oferta (solo lo que el sitio ya publica y el dueño aprobó, 2026-10-27)
 
-- Agencia de SEO y sitios web nearshore, trabajando desde Guadalajara, México, para negocios de EE.UU.
-- Análisis gratuito (normalmente $750), garantía de 90 días (el mes 4 es gratis) y cupos Founding (40% de descuento por 3 meses, 3 cupos). Estos términos están aprobados y públicos; no inventar otros.
-- Verificador de visibilidad en IA (`/ai-visibility-checker`) y agente A2A.
+- Estudio de sitios web, SEO y búsqueda con IA con sede en **San Antonio, Texas**. No decir que es una agencia en México, "nearshore" ni que cuesta menos por estar en México.
+- Precios en USD: Starter Site $540 y Complete Site $1,200 (pago único); plan mensual Basic $99 (hosting, monitoreo, respaldos) y Complete $450 (incluye SEO y búsqueda con IA, 4 artículos al mes, reporte). Sin mínimo: mes a mes. El dueño los marcó como hipótesis a validar: no inventar otros precios ni descuentos.
+- Garantía de 90 días solo en el plan Complete (si las solicitudes no suben, el mes 4 es gratis); cupos Founding: los primeros 5 clientes del Complete Site pagan $300 al mes de por vida a cambio de un caso público.
+- Análisis gratuito del sitio, verificador de visibilidad en IA (`/ai-visibility-checker`) y agente A2A.
 
 ## Oportunidad principal
 
@@ -26,5 +27,5 @@ Cualquier negocio de Estados Unidos que quiera aparecer en Google, en Google Map
 
 ## Límites duros
 
-- No reintroducir un nicho de industria ni un titular hispano; no publicar el borrador de Founding/garantía con términos distintos a los ya aprobados; no mencionar pagos en cripto.
-- Hoy los agentes solo investigan, miden y recomiendan. **No crean ni editan páginas** de este sitio hasta contar con el generador del socio (`tools/aeo/build.py`).
+- No reintroducir un nicho de industria, un titular hispano ni el discurso de México/nearshore; no mencionar pagos en cripto; no publicar términos de garantía o Founding distintos a los aprobados arriba.
+- Hoy los agentes solo investigan, miden y recomiendan. **No crean ni editan páginas** de este sitio hasta contar con el generador del socio (`tools/aeo/build.py`): sin él, editar a mano rompe los gemelos markdown, el sitemap, llms.txt y los encabezados.

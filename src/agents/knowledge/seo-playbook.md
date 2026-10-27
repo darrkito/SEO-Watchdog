@@ -62,3 +62,13 @@ Velocidad y Core Web Vitals, sitio móvil, schema (ayuda a destacar, pero Google
 4. **Local y GEO:** priorizar geo-relevancia (ciudad/colonia) en contenido, páginas por servicio y citas no estructuradas (menciones). No prometer reseñas ni citas que el dueño no haya conseguido.
 5. **Nunca** inventar reseñas, cifras, listas "lo mejor de" ni resultados de clientes.
 6. **Medir:** indexación en Search Console, impresiones/posiciones por página, y revertir con cambios pequeños si una edición baja el tráfico.
+
+## G. Lecciones operativas aprendidas trabajando los sitios (2026-10-27)
+
+1. **Un dato de negocio vive en un solo lugar del repo** (precio, ubicación, garantía, plazo mínimo, teléfono). El contenido nuevo no lo repite a mano: lo copia de ese lugar. Cuando el dueño cambia uno, hay que actualizarlo en TODO lo derivado (FAQ, JSON-LD, gemelos .md, llms.txt, entradas de blog que citan el precio). Un sitio que se contradice pierde confianza con personas y con asistentes de IA.
+2. **Lo que el dueño llama "hipótesis" no se amplía.** Precios y ofertas por validar se publican tal cual y no se inventan variantes, descuentos ni plazos.
+3. **Cambiar el negocio propio no cambia los datos de los clientes.** Un caso de éxito conserva la ubicación y los resultados reales de ese cliente.
+4. **Subir a main no es estar en vivo.** Algunos sitios publican desde otro panel (Luvory: Lovable). Hasta comprobar la página en vivo, el post no cuenta como publicado.
+5. **Después de editar un post, mirar 4 semanas** (impresiones por día antes y después). Si cae más de 40% y sigue cayendo, revertir a la versión anterior y reintentar con cambios pequeños.
+6. **Sitios con generador de páginas** (Dizayn SEO): nunca editar a mano el HTML generado; se pierden los gemelos markdown, el sitemap y llms.txt. Primero hace falta el generador.
+7. **Dónde el dueño no vende, no se escribe.** El brief de cada sitio manda sobre estas reglas: mercado, idioma y oferta aprobados.

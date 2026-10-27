@@ -1,6 +1,10 @@
 // Per-site agent config. Replicating the fleet to another site = one more entry here (plus its repo rules).
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { luvoryPostEdit, luvoryValidate, vexonPostEdit, vexonValidate, type PostOpts } from './hooks.ts';
+
+/** What a post brief is asked to do. `merge` is the existing slug being extended or improved. */
+export type BriefOpts = { kind: 'new' | 'merge' | 'improve'; title: string; slug: string; query: string; why: string; merge: string | null; publishAt: string };
 
 export type AgentSite = {
   short: string;         // dashboard page: /agents/<short>
@@ -14,15 +18,25 @@ export type AgentSite = {
   repo: string;          // the owner's checkout; never edited by agents
   worktree: string;      // agents' own checkout (git worktree of `repo`)
   remote: string;        // pushed to as `<remote> HEAD:main`
+  remoteUrl?: string;    // when the owner's remote is HTTPS (no credentials here): fetch and push over this URL instead, set per command, never saved
   liveBase: string;      // deploy is "live" when the published URL answers 200 here
   blogUrl: (slug: string, enSlug?: string) => string[];  // public URLs a post appears at, ES first
   indexnow?: string[];   // command (in the worktree) taking URLs as extra args
+  indexnowKey?: string;  // alternative: path (in the worktree) of the IndexNow key file; the watchdog submits the URLs itself
   typecheck: string[];   // command that must pass before anything is committed or pushed
-  contentPaths: string[]; // path prefixes a post/fix may touch; anything else is refused
-  lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto)
+  contentPaths: string[]; // paths a post/fix may touch; a trailing * means "starts with"; anything else is refused
+  lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto); same * rule
   rules: string;         // appended to every writer/fixer prompt
   writerRules: string;   // writer only
+  postBrief?: (o: BriefOpts) => string; // the task given to the writer for a new post, a merge or an improvement
+  postEdit?: (wt: string, o: PostOpts) => void; // deterministic step after the model edits (regenerate derived files)
+  validate?: (wt: string, o: PostOpts) => string[]; // deterministic checks that the post is wired in everywhere; messages go back to the writer
+  deployHint?: string;   // shown when the push is not enough to go live (the owner must publish somewhere)
+  liveTimeoutMin?: number; // how long to wait for the live check (default 15)
 };
+
+/** True when `file` is allowed by `paths` (exact, or prefix when the entry ends with *). */
+export const pathAllowed = (paths: string[], file: string): boolean => paths.some((p) => (p.endsWith('*') ? file.startsWith(p.slice(0, -1)) : file === p));
 
 const staticPosts = (repo: string) => {
   const dir = join(repo, 'blog');
@@ -38,6 +52,22 @@ const blogTsPosts = (repo: string) => {
   }
   return out;
 };
+/** Luvory: every post is `slug: "..." , title: "..."` at the top level of src/data/blog-posts.ts (the `en` block's keys are indented deeper). */
+export const luvoryPosts = (repo: string) => {
+  const p = join(repo, 'src/data/blog-posts.ts');
+  if (!existsSync(p)) return [];
+  return [...readFileSync(p, 'utf8').matchAll(/^ {4}slug:\s*"([^"]+)",\s*\n {4}title:\s*(["'`])((?:\\.|(?!\2)[^\\])*)\2/gm)].map((m) => ({ slug: m[1], title: m[3].replace(/\\(["'`])/g, '$1') }));
+};
+/** Vexon: src/content/blog/<slug>.mdx with a single-quoted `title:` in the frontmatter. */
+export const mdxPosts = (repo: string) => {
+  const dir = join(repo, 'src/content/blog');
+  return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.mdx')).map((f) => ({ slug: f.replace(/\.mdx$/, ''), title: (readFileSync(join(dir, f), 'utf8').match(/^title:\s*'(.+)'\s*$/m)?.[1] ?? '').replace(/''/g, "'") })) : [];
+};
+
+const header = (o: BriefOpts) => `Tema: "${o.title}" (búsqueda principal: "${o.query}"). Por qué: ${o.why}`;
+/** The brief the owner's improver click uses: fix exactly the measured reasons for the low score. */
+const improveBrief = (o: BriefOpts, modified: string, langs: string) =>
+  `Mejora el post EXISTENTE "${o.merge}" (no cambies su slug, URL ni fecha de publicación; pon ${modified} a ${o.publishAt}). Su puntaje de calidad es bajo por estas razones medidas: ${o.why}. Corrige exactamente eso: amplía con contenido útil y verificable, agrega respuestas directas de 40-60 palabras al inicio de cada H2, FAQ visible con hechos reales, enlaces internos a posts y productos reales, y mejora title/description si están fuera de rango. Conserva lo que ya funciona${langs}.`;
 
 export const AGENT_SITES: Record<string, AgentSite> = {
   'studioyume.mx': {
@@ -52,6 +82,9 @@ export const AGENT_SITES: Record<string, AgentSite> = {
     typecheck: ['node_modules/.bin/tsc', '--noEmit', '-p', '.'],
     contentPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts', 'src/lib/i18n.ts'],
     lowRiskPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts'],
+    postBrief: (o) => o.kind === 'improve' ? improveBrief(o, 'modifiedAt', ' y aplica los cambios en ES y en EN')
+      : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (secciones/FAQ nuevas, actualiza modifiedAt a ${o.publishAt}), no crees un post nuevo.`
+      : `${header(o)}\nCrea un post NUEVO con slug "${o.slug}", publishedAt "${o.publishAt}", en ES (blog.ts) y EN (blog.en.ts) + entrada en BLOG_SLUG_EN. Si el tema es de dulceros, usa los archivos blog-dulceros*.`,
     rules: `Yume rules (hard limits, from the owner):
 - Read CLAUDE.md and AGENTS.md in this repo first and follow them.
 - Spanish (Mexico), "tú", clear and concrete.
@@ -68,15 +101,88 @@ export const AGENT_SITES: Record<string, AgentSite> = {
   },
 };
 
+// Luvory deploys from Lovable: a push to main is NOT enough to go live (2026-10-02: production stayed on the old build two days after a push, until the
+// owner pressed Publish). So the live check waits long, and the alert says what the owner has to do.
+AGENT_SITES['luvory.com.mx'] = {
+  short: 'luvory', label: 'Luvory (luvory.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: luvoryPosts,
+  research: {
+    context: 'Luvory es una empresa real de renta de baños portátiles de lujo, remolques sanitarios y baños VIP para bodas, conciertos, festivales, eventos deportivos y corporativos en Guadalajara, Zapopan, Tlaquepaque, Tlajomulco y Tequila. Puedes leer el repo (src/data/blog-posts.ts, src/data/pricing.ts, PLAN-trafico-ventas.md, SEO.md) y buscar en la web para validar demanda y qué publica la competencia. Solo temas que Luvory pueda cumplir y respaldar con su oferta real.',
+    priority: 'Prioridad (plan de tráfico del 2026-10-19): la búsqueda total del nicho en Guadalajara es chica, así que prefiere temas que ayuden a quienes DECIDEN el evento: wedding planners, haciendas y venues, productoras de conciertos y festivales, organizadores de eventos corporativos y de obra (cuántos baños, normas y permisos, logística, costos, temporada: posadas y fin de año). Al menos 5 de los 8 temas con modificador local (Guadalajara, Zapopan, Tequila, Tlajomulco, Tlaquepaque). No propongas crónicas de eventos que ya pasaron salvo guías útiles de logística, y no dupliques los posts de eventos ya publicados.',
+  },
+  repo: '/home/darrkito/luvory-genius-generator', worktree: '/home/darrkito/luvory-agent-wt', remote: 'origin', liveBase: 'https://luvory.com.mx',
+  blogUrl: (s, en) => [`https://luvory.com.mx/blog/${s}`, ...(en ? [`https://luvory.com.mx/en/blog/${en}`] : [])],
+  indexnowKey: 'public/e0edb2f799db4fb3967c9fa8023a5558.txt',
+  typecheck: ['sh', '-c', 'node_modules/.bin/tsc --noEmit -p . && node_modules/.bin/vitest run src/data'],
+  contentPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json', 'src/lib/i18n.ts', 'public/sitemap.xml'],
+  lowRiskPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json'],
+  deployHint: 'Luvory se publica desde Lovable: el cambio ya está en main, pero hay que pulsar Publish en Lovable para que salga en vivo.',
+  liveTimeoutMin: 720,
+  postEdit: luvoryPostEdit, validate: luvoryValidate,
+  postBrief: (o) => o.kind === 'improve' ? improveBrief(o, 'dateModified', ', y aplica los cambios en ES y en su bloque `en`; actualiza también el <lastmod> de sus dos entradas en public/sitemap.xml')
+    : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" en src/data/blog-posts.ts (secciones/FAQ nuevas en ES y en su bloque \`en\`), pon dateModified a ${o.publishAt} y actualiza el <lastmod> de sus dos entradas en public/sitemap.xml. No crees un post nuevo.`
+    : `${header(o)}\nCrea un post NUEVO con slug "${o.slug}". Haz TODOS estos cambios:
+1) src/data/blog-posts.ts: agrega al FINAL del arreglo blogPosts un objeto con la forma del último post (slug, title, metaTitle solo si title pasa de 60 caracteres, excerpt, date "${o.publishAt}", dateModified "${o.publishAt}", category de las existentes, image "", content en markdown) y su bloque \`en\` completo (title, excerpt, category, content: la traducción íntegra al inglés, no un resumen).
+2) src/lib/i18n.ts: agrega "/blog/${o.slug}": "/blog/<slug-en-inglés-en-kebab-case>" a EN_SLUG_MAP.
+3) public/sitemap.xml: agrega dos bloques <url> (ES y EN) copiando exactamente el formato de un post existente (lastmod ${o.publishAt}, hreflang es/en/x-default); omite <image:image> si el post no tiene imagen propia.`,
+  rules: `Reglas de Luvory (límites duros del dueño):
+- Lee primero CLAUDE.md y SEO.md de este repo y síguelos.
+- Español de México, trato de "tú", claro y concreto. Es un negocio real de renta de baños portátiles de lujo para eventos, no una demo.
+- NUNCA uses rayas largas (—) en texto nuevo. Usa comas, puntos o dos puntos.
+- No inventes reseñas, eventos atendidos, resultados, cifras, premios ni certificaciones. "Más de 100 eventos atendidos" es un dato aprobado por el dueño: no lo infles ni lo amplíes. No cites a nadie que no esté en src/data/google-reviews.ts.
+- No afirmes que Luvory estuvo en un evento que no tenga ya su post publicado en src/data/blog-posts.ts.
+- No escribas precios, horarios ni teléfonos a mano: los precios salen de src/data/pricing.ts y el WhatsApp de src/data/business.ts (copia el enlace de WhatsApp de un post existente tal cual). Si no puedes verificar un dato en este repo o en una fuente primaria que abriste, déjalo fuera.
+- No toques src/routes, src/components, estilos, google-reviews.ts, business.ts ni pricing.ts.`,
+  writerRules: `Reglas del redactor:
+- Los posts viven en src/data/blog-posts.ts. ES es el canónico y el bloque \`en\` lleva la traducción completa con su propio slug en EN_SLUG_MAP de src/lib/i18n.ts. Copia la estructura de un post existente (si tiene faqJsonLd, copia cómo lo arma).
+- excerpt de 110 a 156 caracteres. Markdown con ## para los H2: cada H2 abre con una respuesta directa de 40 a 60 palabras. Agrega preguntas frecuentes con hechos reales y, si citas algo, una sección "Fuentes" con enlaces a páginas que abriste.
+- Los enlaces internos del contenido usan rutas canónicas en español (/blog/..., /banos-moviles-para-eventos, /remolques); NUNCA escribas hrefs que empiecen con /en/ (langPath los traduce).
+- Cierra con el enlace de cotización por WhatsApp copiado de un post existente y 2 o 3 enlaces a las páginas que venden (/remolques, /banos-moviles-para-eventos, /calculadora-banos-portatiles o la que corresponda).
+- Si el tema se parece a un post existente, amplíalo en lugar de crear uno que compita. No cambies títulos de portada, VIP, lujo ni móviles (ventana de canibalización hasta 2026-11-05).
+- Solo edita src/data/blog-posts.ts, src/lib/i18n.ts (EN_SLUG_MAP) y public/sitemap.xml. src/data/blog-index.json se regenera solo.`,
+};
+
+// Vexon (Astro): the owner's checkout has an HTTPS remote and this machine has no HTTPS credentials, so agents use the SSH URL (set per command).
+AGENT_SITES['vexonmexico.com.mx'] = {
+  short: 'vexon', label: 'Vexon (vexonmexico.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: mdxPosts,
+  pendingNote: 'Search Console is not connected for this site yet (no service account has access to vexonmexico.com.mx), so the analyst and the blog score have no Google data until you add one.',
+  research: {
+    context: 'Vexon by Capelton renta oficinas móviles (línea VX, de 3 a 10 m) para obra en Guadalajara, Zapopan y la ZMG. Puedes leer el repo (src/data/modelos.ts, src/data/faqs.ts, src/data/soluciones.ts, src/content/blog) y buscar en la web para validar demanda y qué publica la competencia (cvsolucionesmoviles.com, atcoespaciomovil.com, remobras.mx). Solo temas que Vexon pueda cumplir con sus modelos reales.',
+    priority: 'Prioridad: temas que responden una duda concreta de un residente de obra, de compras de una constructora, de un negocio en remodelación o de una planta (qué oficina necesito, requisitos, costos y qué incluye una renta, instalación, comparativas con caseta o contenedor, checklist de obra). Al menos 5 de los 8 temas con modificador local (Guadalajara, Zapopan, ZMG, El Salto, Tlajomulco). No propongas temas de precios, plazos o cobertura que el dueño aún no ha confirmado.',
+  },
+  repo: '/home/darrkito/VexonWeb', worktree: '/home/darrkito/vexon-agent-wt', remote: 'agent', remoteUrl: 'git@github.com:darrkito/VexonWeb.git', liveBase: 'https://vexonmexico.com.mx',
+  blogUrl: (s) => [`https://vexonmexico.com.mx/blog/${s}`],
+  indexnow: ['node', 'scripts/indexnow.mjs'],
+  // `astro check` has 2 old errors in astro.config.mjs (siteLastmod); only errors anywhere else count.
+  typecheck: ['sh', '-c', `out=$(node_modules/.bin/astro check 2>&1 | sed 's/\\x1b\\[[0-9;]*m//g'); echo "$out" | grep -q '^Result (' || { echo "$out" | tail -5; exit 1; }; bad=$(echo "$out" | grep -E ' - error ' | grep -v '^astro.config.mjs'); [ -z "$bad" ] || { echo "$bad"; exit 1; }`],
+  contentPaths: ['src/content/blog/*', 'public/og/blog-*'],
+  lowRiskPaths: ['src/content/blog/*', 'public/og/blog-*'],
+  postEdit: vexonPostEdit, validate: vexonValidate,
+  postBrief: (o) => o.kind === 'improve' ? improveBrief(o, 'updated', ' (los cambios son solo en español)')
+    : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" en src/content/blog/${o.merge}.mdx (secciones/FAQ nuevas), pon updated a ${o.publishAt}, no crees un post nuevo.`
+    : `${header(o)}\nCrea un post NUEVO en src/content/blog/${o.slug}.mdx con date ${o.publishAt}.`,
+  rules: `Reglas de Vexon (límites duros del dueño):
+- Lee primero README.md de este repo y síguelo.
+- Español de México, trato de "tú", claro y concreto, para residentes de obra, compras de constructoras y negocios en remodelación. Es renta de oficinas móviles (línea VX) en Guadalajara, Zapopan y la ZMG.
+- NUNCA uses rayas largas (—) en texto nuevo; en una tabla escribe "No aplica" o "-".
+- Las especificaciones de cada modelo (medidas, personas, mesas, lámparas, clima) salen SOLO de src/data/modelos.ts; teléfono, dirección y horario de src/lib/site.ts. No escribas a mano ninguno que no esté ahí.
+- No inventes precios, plazo mínimo de renta, tiempos de entrega, cobertura, qué incluye el traslado, la instalación o el mantenimiento, ni normas o permisos: esos puntos están "POR CONFIRMAR" con el dueño (src/data/faqs.ts). Si hace falta mencionarlos, di que se confirman en la cotización por WhatsApp. Para normatividad cita solo fuentes primarias que abriste.
+- No toques src/pages, src/components, src/data, src/lib, vercel.json ni astro.config.mjs.`,
+  writerRules: `Reglas del redactor:
+- Cada post es src/content/blog/<slug>.mdx con el frontmatter de los demás: title entre 25 y 62 caracteres (entre comillas simples), description entre 80 y 156, date AAAA-MM-DD, category exactamente una de Guías, Obra, Remodelación, Normatividad, Casos; model con un slug que exista en src/data/modelos.ts (p. ej. 'vx-6m'); persona opcional (residente, compras, remodelacion, planta); faqs con 3 o más q/a reales.
+- Después del frontmatter va \`import CtaInline from '../../components/CtaInline.astro';\` y el cuerpo con ## para los H2; usa <CtaInline /> una vez a mitad del texto. Cada H2 abre con una respuesta directa de 40 a 60 palabras. Enlaza al menos 3 veces: al modelo relevante (/oficinas-moviles/<modelo>), a /soluciones/<persona> y a otro post existente.
+- Al ampliar un post existente pon updated con la fecha de hoy y no cambies su slug ni su date.
+- Solo español (no hay versión en inglés). Solo edita archivos dentro de src/content/blog/; la imagen social se genera sola.`,
+};
+
 // Dizayn SEO is a static site whose page generator (the partner's tools/aeo/build.py) is not on this machine, so agents may not
 // create or rewrite its pages yet: writer, fixer and improver stay off until that generator is available.
 AGENT_SITES['dizaynseo.com'] = {
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher'], lang: 'en', segments: false, listPosts: staticPosts,
-  pendingNote: "Writer, fixer and post improver are off for this site: its pages come from the partner's generator (tools/aeo/build.py), which is not on this machine. Editing generated files by hand would drop the markdown twins, sitemap, llms.txt and headers. Get the generator, then enable them.",
+  pendingNote: "Writer, fixer and post improver are off for this site: its pages come from the partner's generator (tools/aeo/build.py), which is not on this machine. Editing generated files by hand would drop the markdown twins, sitemap, llms.txt and headers (on 2026-10-27 a manual build-and-merge workflow was needed to change prices sitewide without breaking them). Get the generator, then enable them.",
   repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com',
   blogUrl: (s) => [`https://www.dizaynseo.com/blog/${s}`], typecheck: ['true'], contentPaths: [], lowRiskPaths: [], rules: '', writerRules: '',
   research: {
-    context: 'Es una agencia de SEO y sitios web (nearshore, desde Guadalajara) para negocios de Estados Unidos. Puedes leer el repo (blog/*.html, llms.txt) y buscar en la web para validar demanda y qué publica la competencia (thriveagency.com, percepture.com, mapranking.com). Redacta los temas en inglés. Solo temas que Dizayn pueda cumplir y respaldar con su oferta real.',
-    priority: 'Prioridad: al menos 5 de los 8 temas deben construir el grupo de contenido de Google Maps y SEO local (la competencia mapranking.com tiene 11 páginas y nosotros 2), y al menos 2 deben cubrir visibilidad en IA (ChatGPT, Perplexity, AI Overviews). Cada tema debe poder responder una pregunta concreta de un dueño de negocio en EE.UU.',
+    context: 'Es una agencia de sitios web y SEO con sede en San Antonio, Texas, que vende SOLO a negocios de Estados Unidos (nada de México ni de "nearshore"). Oferta pública: Starter Site $540, Complete Site $1,200, planes mensuales $99 (Basic) y $450 (Complete, incluye SEO y búsqueda con IA), mes a mes. Puedes leer el repo (blog/*.html, llms.txt) y buscar en la web para validar demanda y qué publica la competencia (thriveagency.com, percepture.com, mapranking.com). Redacta los temas en inglés. Solo temas que Dizayn pueda cumplir y respaldar con su oferta real.',
+    priority: 'Prioridad: al menos 5 de los 8 temas deben construir el grupo de contenido de Google Maps y SEO local (la competencia mapranking.com tiene 11 páginas y nosotros 2), y al menos 2 deben cubrir visibilidad en IA (ChatGPT, Perplexity, AI Overviews). Cada tema debe poder responder una pregunta concreta de un dueño de negocio en EE.UU. No propongas temas de contratar una agencia en México ni de ahorrar por la ubicación del equipo.',
   },
 };

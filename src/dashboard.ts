@@ -528,7 +528,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
       const flash = { ok: url.searchParams.get('ok') ?? undefined, error: url.searchParams.get('err') ?? undefined };
       if (url.pathname === '/agents') return send(res, 200, agentsPage(db, flash));
       const agentSite = url.pathname.match(/^\/agents\/([a-z]+)$/);
-      if (agentSite) { const p = siteAgentsPage(db, agentSite[1], flash, url.searchParams.has('all')); return p ? send(res, 200, p) : notFound(res); }
+      if (agentSite) { const p = siteAgentsPage(db, agentSite[1], flash, url.searchParams.has('all'), url.searchParams.get('topics') === 'all'); return p ? send(res, 200, p) : notFound(res); }
       if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);

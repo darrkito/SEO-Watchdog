@@ -57,8 +57,8 @@ const queued = new Set<string>();
 /** Agent jobs running or waiting in line right now, as `agent:siteId:detail` (the dashboard shows them so a click is never silent). */
 export const inFlight = (): string[] => [...queued];
 /** Execute one agent for one site and record the outcome (tokens, status, output). */
-export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: string | null = null, args?: { slug?: string; ids?: number[] }): Promise<void> {
-  const detail = args?.slug ?? (args?.ids ? `ids:${args.ids.join(',')}` : '');
+export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: string | null = null, args?: { slug?: string; ids?: number[]; topicId?: number }): Promise<void> {
+  const detail = args?.slug ?? (args?.ids ? `ids:${args.ids.join(',')}` : args?.topicId != null ? `topic:${args.topicId}` : '');
   const key = `${agent}:${site.id}:${detail}`;
   if (queued.has(key)) return Promise.resolve();
   queued.add(key);
@@ -105,7 +105,7 @@ export function startScheduler(db: DatabaseSync): void {
   // Clicked jobs that a restart interrupted or never started: run them again, in click order.
   for (const q of db.prepare('SELECT * FROM agent_queue ORDER BY id').all() as { agent: string; site_id: number; slug: string }[]) {
     const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
-    if (site && AGENTS[q.agent]) void runAgent(db, q.agent, site, null, q.slug.startsWith('ids:') ? { ids: q.slug.slice(4).split(',').map(Number) } : q.slug ? { slug: q.slug } : undefined);
+    if (site && AGENTS[q.agent]) void runAgent(db, q.agent, site, null, q.slug.startsWith('ids:') ? { ids: q.slug.slice(4).split(',').map(Number) } : q.slug.startsWith('topic:') ? { topicId: Number(q.slug.slice(6)) } : q.slug ? { slug: q.slug } : undefined);
   }
   setTimeout(() => tick(db), 10_000);
   setInterval(() => tick(db), 60_000).unref();
