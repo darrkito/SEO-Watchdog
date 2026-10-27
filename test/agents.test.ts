@@ -158,10 +158,10 @@ test('Write now dates: skips Mon/Wed already used by a draft or a published post
 test('Write now: refuses sites without a writer, unknown topics and topics already drafted', async () => {
   const { agentsPost } = await import('../src/agents/page.ts');
   const db = openDb(join(process.env.WATCHDOG_DATA!, 'wn.db'));
-  db.prepare("INSERT INTO sites (id, url, kind) VALUES (21, 'https://www.dizaynseo.com/', 'own'), (22, 'https://luvory.com.mx/', 'own')").run();
+  db.prepare("INSERT INTO sites (id, url, kind) VALUES (21, 'https://other.example/', 'own'), (22, 'https://luvory.com.mx/', 'own')").run();
   db.prepare("INSERT INTO topics (id, site_id, title, slug, status) VALUES (1, 21, 'a', 'a', 'new'), (2, 22, 'b', 'b', 'drafted')").run();
   const form = (site: number, topic: number) => new URLSearchParams({ site: String(site), topic: String(topic) });
-  assert.throws(() => agentsPost(db, 'write-topic', form(21, 1)), /writer is not enabled/); // Dizayn SEO: its generator is missing
+  assert.throws(() => agentsPost(db, 'write-topic', form(21, 1)), /writer is not enabled/); // a site the fleet does not run
   assert.throws(() => agentsPost(db, 'write-topic', form(22, 99)), /not in this site/);
   assert.throws(() => agentsPost(db, 'write-topic', form(22, 2)), /already drafted/);
   assert.throws(() => agentsPost(db, 'write-topic', form(22, 1)), /not in this site/, 'a topic of another site cannot be written here');
@@ -235,4 +235,13 @@ test('post effects: impressions per day 28 days before vs since a published post
 test('customer questions are injected only when the owner supplied a file', async () => {
   const { customerQuestions } = await import('../src/agents/audience.ts');
   assert.equal(customerQuestions('nope.example'), '');
+});
+
+test('copy lint can be limited to the files the writer authors (generated output is not judged)', async () => {
+  const { lintAdded } = await import('../src/agents/agents.ts');
+  const diff = ['diff --git a/_src/posts_agent.py b/_src/posts_agent.py', '--- a/_src/posts_agent.py', '+++ b/_src/posts_agent.py', '+limpio',
+    'diff --git a/llms.txt b/llms.txt', '--- a/llms.txt', '+++ b/llms.txt', '+- [t](u): d — markdown: `x`'].join('\n');
+  assert.deepEqual(lintAdded(diff), ['em-dash in new copy'], 'without a limit the generated line is flagged');
+  assert.deepEqual(lintAdded(diff, ['_src/posts_agent.py']), []);
+  assert.deepEqual(lintAdded(diff.replace('+limpio', '+con — raya'), ['_src/posts_agent.py']), ['em-dash in new copy'], 'still catches the writer\'s own copy');
 });

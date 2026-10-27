@@ -77,8 +77,10 @@ const commit = (wt: string, msg: string) => git(wt, 'commit', '-m', `${msg}\n\nC
 
 /** Added lines only: the em-dash rule applies to new copy, not to what already exists. */
 export function addedLines(diff: string): string[] { return diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)); }
-export function lintAdded(diff: string): string[] {
-  const added = addedLines(diff), bad: string[] = [];
+export function lintAdded(diff: string, only?: string[]): string[] {
+  // generated files (e.g. llms.txt, whose line format contains " — ") are not copy the model wrote: judge only `only`, when given
+  const judged = only ? diff.split(/^diff --git /m).filter((c) => { const f = c.match(/^a\/(\S+) /)?.[1]; return !!f && pathAllowed(only, f); }).join('\n+++ \n') : diff;
+  const added = addedLines(judged), bad: string[] = [];
   if (added.some((l) => l.includes('—'))) bad.push('em-dash in new copy');
   if (added.some((l) => /\b(100% garantizad|el mejor del mundo|certificad[oa] iso)/i.test(l))) bad.push('unverifiable superlative/certification claim');
   return bad;
@@ -217,7 +219,8 @@ export function pickMarker(diff: string): string | undefined {
   const es = diff.split(/^diff --git /m).filter((chunk) => !/^a\/\S+\.en\.ts /.test(chunk)).join('\n');
   const lines = addedLines(es);
   const md = lines.map((l) => l.match(/^## ([^'"&<>*_`\[\]\\]{8,80})$/)?.[1]).find(Boolean); // markdown posts: the heading renders as plain text in the HTML
-  return lines.map((l) => l.match(/heading:\s*"([^"]{8,80})"/)?.[1]).find(Boolean) ?? md ?? lines.map((l) => l.match(/^\s*"([^"\\]{30,70})/)?.[1]).find(Boolean);
+  const py = lines.map((l) => l.match(/^<h2 id="[^"]+">([^'"&<>*_`\[\]\\]{8,80})<\/h2>$/)?.[1]).find(Boolean); // Dizayn SEO posts: HTML inside a Python string
+  return lines.map((l) => l.match(/heading:\s*"([^"]{8,80})"/)?.[1]).find(Boolean) ?? md ?? py ?? lines.map((l) => l.match(/^\s*"([^"\\]{30,70})/)?.[1]).find(Boolean);
 }
 
 function approvalFor(c: Ctx, kind: string, title: string, payload: object, diff: string): number {
@@ -286,7 +289,7 @@ ${extra}`,
   let err = verify();
   if (err) { text = await run(`Los chequeos automáticos fallaron, corrige solo esto:\n${err}`); err = verify(); }
   const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
-  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff)];
+  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths)];
   if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
   const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
   commit(wt, `content(blog): ${topic.title}`);
@@ -325,7 +328,7 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
   const files = changedFiles(wt);
   if (!files.length) { git(wt, 'reset', '--hard'); return `no changes (${text.slice(0, 200)})`; }
   const diff = git(wt, 'diff', '--cached');
-  const forbidden = files.filter((f) => FORBIDDEN.test(f)), err = typecheck(cfg), lint = lintAdded(diff);
+  const forbidden = files.filter((f) => FORBIDDEN.test(f)), err = typecheck(cfg), lint = lintAdded(diff, cfg.lintPaths);
   if (forbidden.length || err || lint.length) { git(wt, 'reset', '--hard'); throw new Error(`fix rejected by checks: ${[...forbidden.map((f) => `forbidden ${f}`), err ? `typecheck ${err.slice(0, 200)}` : '', ...lint].filter(Boolean).join('; ')}`); }
   const meta = (() => { try { return extractJson<{ fixed?: number[]; skipped?: unknown[] }>(text); } catch { return {} as { fixed?: number[]; skipped?: unknown[] }; } })();
   commit(wt, `seo(fix): ${meta.fixed?.length ?? files.length} watchdog findings\n\nFindings: ${(meta.fixed ?? []).join(', ')}`);

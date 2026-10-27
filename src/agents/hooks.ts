@@ -7,7 +7,7 @@ import { join } from 'node:path';
 export type PostOpts = { slug: string; improve: boolean; merge: string | null };
 
 const run = (cwd: string, cmd: string, args: string[], timeout = 300_000) =>
-  execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
 const read = (wt: string, f: string) => (existsSync(join(wt, f)) ? readFileSync(join(wt, f), 'utf8') : '');
 
 // ---------- Luvory ----------
@@ -72,4 +72,17 @@ export function vexonValidate(wt: string, o: PostOpts): string[] {
   if (!/^faqs:\s*\n\s+- q:/m.test(fm)) bad.push('frontmatter has no faqs');
   if (!/^## /m.test(src)) bad.push('the post has no ## headings');
   return bad;
+}
+
+// ---------- Dizayn SEO ----------
+// Static site built from _src/*.py plus the partner's generator, which is not on this machine. dizayn/prep.py stands in for it (replayed
+// against the committed output by dizayn/selftest.py): it rebuilds, keeps committed pages byte-identical where they did not change, and
+// updates the markdown twins, sitemap, llms*.txt, api/_index.js, agent-tools.js and vercel.json for a new post.
+const DIZAYN = join(import.meta.dirname, 'dizayn');
+export function dizaynPostEdit(wt: string): void {
+  run(wt, 'python3', [join(DIZAYN, 'prep.py'), wt], 600_000);
+}
+export function dizaynValidate(wt: string, o: PostOpts): string[] {
+  try { run(wt, 'python3', [join(DIZAYN, 'check_post.py'), wt, o.merge ?? o.slug, o.improve || o.merge ? 'existing' : 'new']); return []; }
+  catch (e) { return String((e as any).stdout ?? (e as Error).message).split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 12); }
 }

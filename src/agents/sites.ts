@@ -1,7 +1,7 @@
 // Per-site agent config. Replicating the fleet to another site = one more entry here (plus its repo rules).
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { luvoryPostEdit, luvoryValidate, vexonPostEdit, vexonValidate, type PostOpts } from './hooks.ts';
+import { dizaynPostEdit, dizaynValidate, luvoryPostEdit, luvoryValidate, vexonPostEdit, vexonValidate, type PostOpts } from './hooks.ts';
 
 /** What a post brief is asked to do. `merge` is the existing slug being extended or improved. */
 export type BriefOpts = { kind: 'new' | 'merge' | 'improve'; title: string; slug: string; query: string; why: string; merge: string | null; publishAt: string };
@@ -26,6 +26,7 @@ export type AgentSite = {
   typecheck: string[];   // command that must pass before anything is committed or pushed
   contentPaths: string[]; // paths a post/fix may touch; a trailing * means "starts with"; anything else is refused
   lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto); same * rule
+  lintPaths?: string[];   // when set, the copy lint (em-dashes, unverifiable claims) judges only these files: the rest is generated output
   rules: string;         // appended to every writer/fixer prompt
   writerRules: string;   // writer only
   postBrief?: (o: BriefOpts) => string; // the task given to the writer for a new post, a merge or an improvement
@@ -174,13 +175,36 @@ AGENT_SITES['vexonmexico.com.mx'] = {
 - Solo español (no hay versión en inglés). Solo edita archivos dentro de src/content/blog/; la imagen social se genera sola.`,
 };
 
-// Dizayn SEO is a static site whose page generator (the partner's tools/aeo/build.py) is not on this machine, so agents may not
-// create or rewrite its pages yet: writer, fixer and improver stay off until that generator is available.
+// Dizayn SEO is a static site built from _src/*.py by the partner's two-step build. The second step (tools/aeo/build.py) is not on this machine,
+// so src/agents/dizayn/prep.py stands in for it. It is proven by replay (selftest.py regenerates a committed post byte for byte), which is why the
+// writer and improver are on here. The fixer stays off: it edits arbitrary files, and nothing replays those.
 AGENT_SITES['dizaynseo.com'] = {
-  short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher'], lang: 'en', segments: false, listPosts: staticPosts,
-  pendingNote: "Writer, fixer and post improver are off for this site: its pages come from the partner's generator (tools/aeo/build.py), which is not on this machine. Editing generated files by hand would drop the markdown twins, sitemap, llms.txt and headers (on 2026-10-27 a manual build-and-merge workflow was needed to change prices sitewide without breaking them). Get the generator, then enable them.",
+  short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts,
+  pendingNote: "Posts are written into _src/posts_agent.py (or the post's own file when improving) and the generated files are rebuilt by dizayn/prep.py, a stand-in for the partner's missing generator that is checked against the committed output. The fixer is off for this site.",
   repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com',
-  blogUrl: (s) => [`https://www.dizaynseo.com/blog/${s}`], typecheck: ['true'], contentPaths: [], lowRiskPaths: [], rules: '', writerRules: '',
+  blogUrl: (s) => [`https://www.dizaynseo.com/blog/${s}`], typecheck: ['true'],
+  indexnowKey: 'ffea521f6f9644fc9a526c6c23c1cdb4.txt',
+  contentPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py', 'blog.html', 'blog/*', 'md/*', 'sitemap.xml', 'llms.txt', 'llms-full.txt', 'api/_index.js', 'agent-tools.js', 'vercel.json'],
+  lowRiskPaths: [],
+  lintPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
+  postEdit: dizaynPostEdit, validate: dizaynValidate,
+  postBrief: (o) => o.kind === 'improve' ? `Mejora el post EXISTENTE "${o.merge}" (no cambies su slug ni su URL; la fecha de actualización del sitio es global). Su puntaje de calidad es bajo por estas razones medidas: ${o.why}. Corrige exactamente eso, en inglés: amplía con contenido útil y verificable, agrega respuestas directas de 40 a 75 palabras al inicio de cada H2, enlaces internos reales y mejora title/desc si están fuera de rango. El post vive en _src/posts.py o _src/posts_funnel.py (busca su slug): edita solo su title, desc, lede y body. Conserva lo que ya funciona.`
+    : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (busca su slug en _src/posts.py o _src/posts_funnel.py): secciones nuevas con su respuesta directa, sin crear un post nuevo. Escribe en inglés.`
+    : `${header(o)}\nCrea un post NUEVO en inglés: agrega UN dict al final de POSTS en _src/posts_agent.py con slug "${o.slug}", stage (unaware|problem|solution|product), cat (una categoría que ya use otro post), title de 25 a 62 caracteres con la palabra clave al inicio, h1, desc de 80 a 156 caracteres, lede (2 frases), mins (entero: minutos de lectura) y body en HTML. Las fuentes van como L("Nombre (fecha)", "https://...") en S, las tablas como T([...], [[...]]) en TABLES, y en el body se usan como %(clave)s. Copia la forma de un post existente de _src/posts_funnel.py. No edites nada más: la página, el gemelo markdown, el sitemap, llms.txt y demás archivos generados los reconstruye prep.py solo.`,
+  rules: `Reglas de Dizayn SEO (límites duros del dueño, 2026-10-27):
+- Lee primero _src/posts_agent.py y un post parecido de _src/posts_funnel.py y copia su estructura.
+- Escribe en inglés claro y directo, para el dueño de un negocio pequeño o mediano de EE.UU. Mercado: solo Estados Unidos.
+- NUNCA uses rayas largas (—) en texto nuevo. Usa comas, puntos o dos puntos.
+- Dizayn tiene su sede en San Antonio, Texas. NO menciones México, "nearshore" ni "cuesta menos por la ubicación del equipo". No hables de pagos en cripto.
+- Precios y condiciones: usa SOLO estos y solo cuando el tema lo pida: Starter Site $540 y Complete Site $1,200 (pago único); plan mensual Basic $99 y Complete $450 (incluye SEO y búsqueda con IA), mes a mes, sin mínimo; garantía de 90 días solo en el plan Complete (si las solicitudes no suben, el mes 4 es gratis). El dueño los marcó como hipótesis: no inventes otros precios, descuentos, plazos ni resultados de clientes que no estén ya publicados en el sitio.
+- Cifras de terceros solo con una fuente primaria que abriste, citada con L(...) y enlazada. Si no puedes verificarlo, déjalo fuera.
+- No toques config.py, lib.py, p_*.py ni ningún archivo generado (blog/, md/, sitemap.xml, llms*.txt, vercel.json, api/): prep.py los reconstruye.`,
+  writerRules: `Reglas del redactor:
+- Cada H2 es <h2 id="clave-corta"> y abre con una respuesta directa de 40 a 75 palabras; las comparaciones van en tablas T(...); cada dato con cifra lleva su fuente.
+- Al menos 3 enlaces internos con ancla descriptiva (1 a 5 palabras) en el body: uno a /services/seo, /services/ai-search o /pricing, otro a /ai-visibility-checker y otro a un post existente (/blog/<slug>). Termina con <div class="callout"><p>...</p></div> que lleve al lector al paso siguiente.
+- El tema ya fue validado como pregunta real de un dueño de negocio: respóndela completa y concreta, sin relleno ni promesas de posición.
+- Si el tema se parece a un post existente, amplíalo en lugar de crear uno que compita.
+- Solo edita _src/posts_agent.py (post nuevo) o el archivo donde vive el post (mejora).`,
   research: {
     context: 'Es una agencia de sitios web y SEO con sede en San Antonio, Texas, que vende SOLO a negocios de Estados Unidos (nada de México ni de "nearshore"). Oferta pública: Starter Site $540, Complete Site $1,200, planes mensuales $99 (Basic) y $450 (Complete, incluye SEO y búsqueda con IA), mes a mes. Puedes leer el repo (blog/*.html, llms.txt) y buscar en la web para validar demanda y qué publica la competencia (thriveagency.com, percepture.com, mapranking.com). Redacta los temas en inglés. Solo temas que Dizayn pueda cumplir y respaldar con su oferta real.',
     priority: 'Prioridad: al menos 5 de los 8 temas deben construir el grupo de contenido de Google Maps y SEO local (la competencia mapranking.com tiene 11 páginas y nosotros 2), y al menos 2 deben cubrir visibilidad en IA (ChatGPT, Perplexity, AI Overviews). Cada tema debe poder responder una pregunta concreta de un dueño de negocio en EE.UU. No propongas temas de contratar una agencia en México ni de ahorrar por la ubicación del equipo.',
