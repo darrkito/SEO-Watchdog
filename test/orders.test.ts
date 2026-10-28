@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOrder, orderPrompt, fixPrompt, applyCheck, verbatimCheck, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
+import { parseOrder, orderPrompt, fixPrompt, BIG, writeStepFiles, clearStepFiles, applyCheck, verbatimCheck, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
 
 const step: EditStep = { n: 1, file: 'a.txt', do: 'insert-after', anchor: 'old', text: 'new' };
 const order = (steps: EditStep[] = [{ ...step }]): WorkOrder => ({ title: 'Test', steps, mustContain: [], forbiddenPaths: [], doneWhen: '' });
@@ -270,4 +270,42 @@ test('executor prompt includes verified claims and mechanical blocking instructi
   assert.ok(prompt.indexOf('VERIFIED CLAIMS (each') > prompt.indexOf('rules\n'));
   assert.ok(prompt.indexOf('VERIFIED CLAIMS (each') < prompt.indexOf('STEP 1:'));
   assert.ok(!orderPrompt(order(), '').includes('VERIFIED CLAIMS (each'));
+});
+
+
+test('large step fields are written exactly and referenced in prompts', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'orders-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(writeStepFiles(order([{ ...step, text: 'x'.repeat(BIG) }]), root), new Map());
+  assert.equal(existsSync(join(root, '.agent-order')), false);
+  const big = '`code` ${x} unicode ☃\n\n' + 'x'.repeat(BIG) + '\n';
+  const value = order([{ ...step, do: 'replace-range', text: big, anchor: big, endAnchor: big }, { n: 2, file: 'b', do: 'create', text: 'small' }]);
+  const files = writeStepFiles(value, root);
+  assert.deepEqual(files, new Map([[1, { text: '.agent-order/step-1.text', anchor: '.agent-order/step-1.anchor', endAnchor: '.agent-order/step-1.endAnchor' }]]));
+  for (const path of Object.values(files.get(1)!)) assert.deepEqual(readFileSync(join(root, path)), Buffer.from(big, 'utf8'));
+  const prompt = orderPrompt(value, '', files);
+  for (const [label, path] of [['TEXT', files.get(1)!.text], ['ANCHOR', files.get(1)!.anchor], ['END ANCHOR', files.get(1)!.endAnchor]]) {
+    assert.ok(prompt.includes(`${label}: stored in the file ${path} (${big.length} characters, ${big.split('\n').length} lines); use its content exactly and in full.`));
+  }
+  assert.ok(prompt.includes('LARGE TEXT: some texts are stored in files under .agent-order/'));
+  assert.ok(!prompt.includes(big));
+  assert.ok(prompt.includes('<<<TEXT\nsmall\nTEXT>>>'));
+  clearStepFiles(root);
+  assert.equal(existsSync(join(root, '.agent-order')), false);
+});
+
+test('orderPrompt without files retains the inline snapshot', () => {
+  const snapshot = [
+    'You are an executor, not a designer. Do exactly the numbered steps below. Do not improve, reformat, rename, refactor, translate, shorten or add anything.',
+    'Only the files named in the steps may change. Do not touch any other file. Never run installs, network access, or git commands that write. Read-only commands (ls, cat, grep, git diff, git status) are allowed. The only exception is the LARGE TEXT section below, when it is present.',
+    'If a step cannot be done exactly as written (an anchor is missing, or occurs more than once, or the file does not exist when it should), change NOTHING and make your last line `BLOCKED: <one-line reason>`.',
+    'Block ONLY for mechanical reasons (anchor missing or ambiguous, file missing, text that cannot be placed). NEVER block, edit, soften or question the CONTENT of a text block: its facts were checked by the planner against the sources listed under VERIFIED CLAIMS and a reviewer checks it afterwards.',
+    'Text blocks below are copied character for character, including indentation and blank lines. Keep it that way.',
+    'Operations: create writes the whole file (replacing it if it exists); replace swaps ANCHOR for TEXT; replace-range swaps everything from ANCHOR up to END ANCHOR (not included) for TEXT; insert-after / insert-before put TEXT next to ANCHOR; append adds TEXT at the end of the file; delete removes ANCHOR.',
+    '', 'ORDER: Test', '', 'STEP 1: insert-after in a.txt', 'ANCHOR (must occur exactly once in the file):', '<<<ANCHOR', 'old', 'ANCHOR>>>', 'TEXT:', '<<<TEXT', 'new', 'TEXT>>>', '', 'FORBIDDEN PATHS: none', 'DONE WHEN: all steps are applied', done,
+  ].join('\n');
+  assert.equal(orderPrompt(order(), '', undefined), snapshot);
+  assert.equal(orderPrompt(order(), '', new Map()), snapshot);
+  assert.ok(!snapshot.includes('LARGE TEXT:'));
+  assert.ok(snapshot.split('\n')[1].endsWith('The only exception is the LARGE TEXT section below, when it is present.'));
 });

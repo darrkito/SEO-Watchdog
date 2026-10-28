@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractJson } from './runner.ts';
 import { pathAllowed } from './sites.ts';
@@ -6,6 +6,30 @@ import { pathAllowed } from './sites.ts';
 export type EditOp = 'create' | 'replace' | 'replace-range' | 'insert-after' | 'insert-before' | 'append' | 'delete';
 export type EditStep = { n: number; file: string; do: EditOp; anchor?: string; endAnchor?: string; text?: string; note?: string };
 export type WorkOrder = { title: string; steps: EditStep[]; mustContain: string[]; forbiddenPaths: string[]; doneWhen: string; analysis?: string; claims?: { claim: string; source: string }[] };
+
+export const BIG = 1200;
+export type StepFiles = Map<number, { text?: string; anchor?: string; endAnchor?: string }>;
+
+export function writeStepFiles(order: WorkOrder, root: string): StepFiles {
+  const files: StepFiles = new Map();
+  for (const step of order.steps) {
+    for (const field of ['text', 'anchor', 'endAnchor'] as const) {
+      const value = step[field];
+      if (value === undefined || value.length <= BIG) continue;
+      const path = `.agent-order/step-${step.n}.${field}`;
+      mkdirSync(join(root, '.agent-order'), { recursive: true });
+      writeFileSync(join(root, path), value, 'utf8');
+      const entry = files.get(step.n) ?? {};
+      entry[field] = path;
+      files.set(step.n, entry);
+    }
+  }
+  return files;
+}
+
+export function clearStepFiles(root: string): void {
+  rmSync(join(root, '.agent-order'), { recursive: true, force: true });
+}
 
 const ops: EditOp[] = ['create', 'replace', 'replace-range', 'insert-after', 'insert-before', 'append', 'delete'];
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -65,7 +89,7 @@ export function parseOrder(reply: string, o: { allowedPaths?: string[] } = {}): 
 
 const HEADER = [
   'You are an executor, not a designer. Do exactly the numbered steps below. Do not improve, reformat, rename, refactor, translate, shorten or add anything.',
-  'Only the files named in the steps may change. Do not touch any other file. Never run installs, network access, or git commands that write. Read-only commands (ls, cat, grep, git diff, git status) are allowed.',
+  'Only the files named in the steps may change. Do not touch any other file. Never run installs, network access, or git commands that write. Read-only commands (ls, cat, grep, git diff, git status) are allowed. The only exception is the LARGE TEXT section below, when it is present.',
   'If a step cannot be done exactly as written (an anchor is missing, or occurs more than once, or the file does not exist when it should), change NOTHING and make your last line `BLOCKED: <one-line reason>`.',
   'Block ONLY for mechanical reasons (anchor missing or ambiguous, file missing, text that cannot be placed). NEVER block, edit, soften or question the CONTENT of a text block: its facts were checked by the planner against the sources listed under VERIFIED CLAIMS and a reviewer checks it afterwards.',
   'Text blocks below are copied character for character, including indentation and blank lines. Keep it that way.',
@@ -74,15 +98,18 @@ const HEADER = [
 const DONE = 'Your last message must be `DONE` followed by one line per step (`1 ok`, `2 ok`, ...). Nothing else.';
 const rulesBlock = (rules: string): string[] => rules ? ['SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):', rules] : [];
 
-export function orderPrompt(order: WorkOrder, rules: string): string {
+export function orderPrompt(order: WorkOrder, rules: string, files?: StepFiles): string {
+  const stored = (label: string, path: string, value: string): string =>
+    `${label}: stored in the file ${path} (${value.length} characters, ${value.split('\n').length} lines); use its content exactly and in full.`;
   const blocks = order.steps.map((step) => [
     `STEP ${step.n}: ${step.do} in ${step.file}`,
     ...(step.note ? [`NOTE: ${step.note}`] : []),
-    ...(step.anchor !== undefined ? [step.do === 'replace-range' ? 'ANCHOR (must occur exactly once in the file; the replaced range starts here):' : 'ANCHOR (must occur exactly once in the file):', '<<<ANCHOR', step.anchor, 'ANCHOR>>>'] : []),
-    ...(step.endAnchor !== undefined ? ['END ANCHOR (first occurrence AFTER the anchor; everything from the start of ANCHOR up to, but NOT including, END ANCHOR is replaced by TEXT):', '<<<ENDANCHOR', step.endAnchor, 'ENDANCHOR>>>'] : []),
-    ...(step.text !== undefined ? ['TEXT:', '<<<TEXT', step.text, 'TEXT>>>'] : []),
+    ...(step.anchor !== undefined ? files?.get(step.n)?.anchor ? [stored('ANCHOR', files.get(step.n)!.anchor!, step.anchor)] : [step.do === 'replace-range' ? 'ANCHOR (must occur exactly once in the file; the replaced range starts here):' : 'ANCHOR (must occur exactly once in the file):', '<<<ANCHOR', step.anchor, 'ANCHOR>>>'] : []),
+    ...(step.endAnchor !== undefined ? files?.get(step.n)?.endAnchor ? [stored('END ANCHOR', files.get(step.n)!.endAnchor!, step.endAnchor)] : ['END ANCHOR (first occurrence AFTER the anchor; everything from the start of ANCHOR up to, but NOT including, END ANCHOR is replaced by TEXT):', '<<<ENDANCHOR', step.endAnchor, 'ENDANCHOR>>>'] : []),
+    ...(step.text !== undefined ? files?.get(step.n)?.text ? [stored('TEXT', files.get(step.n)!.text!, step.text)] : ['TEXT:', '<<<TEXT', step.text, 'TEXT>>>'] : []),
   ].join('\n'));
   return [HEADER, '', `ORDER: ${order.title}`, ...rulesBlock(rules), ...(order.claims?.length ? ['VERIFIED CLAIMS (each one was checked by the planner against the source shown; they are not yours to re-verify):', ...order.claims.map(({ claim, source }) => `- ${claim.slice(0, 300)} [source: ${source.slice(0, 300)}]`)] : []), '', blocks.join('\n\n'), '',
+    ...(files?.size ? ['LARGE TEXT: some texts are stored in files under .agent-order/ so you do not have to retype them. Place them with a short command that reads the file and splices it into the target file (python3, sed, cat, head, tail and printf are allowed for this and nothing else; no network, no installs, no git writes), so that not one character changes. Afterwards check that the placed text equals the file (for example with diff or grep -c). Never copy a file\'s content by retyping it. Do not leave the .agent-order directory modified.'] : []),
     `FORBIDDEN PATHS: ${order.forbiddenPaths.join(', ') || 'none'}`,
     `DONE WHEN: ${order.doneWhen || 'all steps are applied'}`, DONE].join('\n');
 }

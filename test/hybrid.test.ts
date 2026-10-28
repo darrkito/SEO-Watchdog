@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { HybridLimit, revisePrompt, runHybrid, type HybridDeps, type HybridInput } from '../src/agents/hybrid.ts';
-import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
+import { simulateOrder, compareFiles, BIG, type WorkOrder } from '../src/agents/orders.ts';
 import type { CodexResult } from '../src/agents/runner.ts';
 
 const ok: CodexResult = { ok: true, blocked: false, limited: false, text: 'DONE' };
@@ -235,4 +235,30 @@ test('change orders retain verified claims and replace duplicates by claim text'
   assert.equal(codex.prompts[1].split('- Fact [source:').length - 1, 1);
   assert.ok(codex.prompts[2].includes('- Fact [source: latest]'));
   assert.equal(codex.prompts[2].split('- Fact [source:').length - 1, 1);
+});
+
+
+test('large text is available to the executor and removed before checks', async (t) => {
+  const big = 'large text\n' + 'x'.repeat(BIG);
+  const large: WorkOrder = { ...initial, steps: [{ ...initial.steps[0], text: big }], mustContain: [big] };
+  const { d, input, root } = fixture(t, [(prompt, root) => {
+    assert.ok(prompt.includes('.agent-order/step-1.text'));
+    assert.ok(!prompt.includes(big));
+    writeFileSync(join(root, 'a.txt'), readFileSync(join(root, '.agent-order/step-1.text')));
+    return ok;
+  }]);
+  d.plan = async () => raw(large);
+  d.verify = () => { assert.equal(existsSync(join(root, '.agent-order')), false); return null; };
+  const result = await runHybrid(d, input);
+  assert.deepEqual(compareFiles(new Map([['a.txt', big]]), root), []);
+  assert.deepEqual(result.review, approved);
+  assert.equal(existsSync(join(root, '.agent-order')), false);
+});
+
+test('large text files are removed when execute throws', async (t) => {
+  const { d, input, root } = fixture(t, []);
+  d.plan = async () => raw({ ...initial, steps: [{ ...initial.steps[0], text: 'x'.repeat(BIG + 1) }], mustContain: [] });
+  d.execute = async () => { assert.ok(existsSync(join(root, '.agent-order/step-1.text'))); throw new Error('execute failed'); };
+  await assert.rejects(runHybrid(d, input), /execute failed/);
+  assert.equal(existsSync(join(root, '.agent-order')), false);
 });

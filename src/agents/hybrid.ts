@@ -1,4 +1,4 @@
-import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, compareFiles, verbatimCheck, type WorkOrder } from './orders.ts';
+import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
 
 export class HybridLimit extends Error {}
@@ -67,12 +67,17 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       const v = d.verify();
       return v ? [v] : [];
     };
-    const r = await d.execute(orderPrompt(order, input.rules));
+    const files = writeStepFiles(order, d.root);
+    let r: CodexResult;
+    try { r = await d.execute(orderPrompt(order, input.rules, files)); }
+    finally { clearStepFiles(d.root); }
     stages.executions++;
     if (r.limited) throw new HybridLimit(r.error ?? 'codex usage limit');
     let problems = r.ok ? check() : ['executor: ' + (r.error ?? r.text)];
     if (problems.length && r.ok) {
-      const r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules));
+      let r2: CodexResult;
+      try { r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules)); }
+      finally { clearStepFiles(d.root); }
       stages.executions++;
       if (r2.limited) throw new HybridLimit(r2.error ?? 'codex usage limit');
       problems = r2.ok ? check() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
