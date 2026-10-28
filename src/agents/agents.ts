@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Site } from '../db.ts';
 import { runSite } from '../crawl.ts';
@@ -11,9 +12,13 @@ import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
 import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from './audience.ts';
-import { runClaude, extractJson, assertCodexSubscription, type ClaudeResult } from './runner.ts';
+import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
+import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
+import { planPrompt, reviewPrompt, type PlanInput } from './prompts.ts';
+import { locatePost, currentOf, exampleOf } from './locate.ts';
+import { insertPointsFor } from './insertpoints.ts';
 
 let executorFallbackWarned = false;
 export function executorMode(): 'hybrid' | 'claude' {
@@ -310,8 +315,78 @@ export async function finishDraft(c: Ctx, topic: Draftable, publishAt: string, s
   return `draft #${id} "${topic.title}" for ${publishAt}: ${files.length} files`;
 };
 
+export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: string, s: ReturnType<typeof startDraft>, override: Partial<HybridDeps> = {}): Promise<string> {
+  const { cfg, branch, wt, merge, opts, brief } = s;
+  if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
+  const host = new URL(c.site.url).hostname.replace(/^www\./, '');
+  const ranges = merge ? locatePost(cfg, wt, merge) : [];
+  const prompt = planPrompt({
+    brief, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
+    example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
+    ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
+    insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths,
+  } satisfies PlanInput);
+  const planReplies: string[] = [];
+  let codexRuns = 0;
+  const defaults: HybridDeps = {
+    plan: async (p) => {
+      const t = await ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 20, timeoutMs: 1_200_000 });
+      planReplies.push(t);
+      return t;
+    },
+    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
+    execute: async (p) => {
+      const r = await runCodex({ prompt: p, cwd: wt, write: true, timeoutMs: 900_000 });
+      codexRuns++;
+      return r;
+    },
+    verify: makeVerify(cfg, wt, opts),
+    addedText: () => {
+      git(wt, 'add', '-A');
+      git(wt, 'reset', '-q', '--', 'node_modules');
+      return addedLines(git(wt, 'diff', '--cached')).join('\n');
+    },
+    diff: () => {
+      git(wt, 'add', '-A');
+      git(wt, 'reset', '-q', '--', 'node_modules');
+      return git(wt, 'diff', '--cached', '-U25');
+    },
+    review: async (order, diff): Promise<Review> => {
+      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
+      const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
+      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };
+    },
+    root: wt, log: c.log,
+  };
+  const deps = { ...defaults, ...override };
+  let result;
+  try { result = await runHybrid(deps, { planPrompt: prompt, rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
+  catch (e) {
+    git(wt, 'reset', '--hard');
+    git(wt, 'clean', '-fd', '-e', 'node_modules');
+    if (e instanceof HybridLimit) throw new LimitError(e.message);
+    throw e;
+  }
+  let metaText = JSON.stringify({ slug: merge ?? topic.slug });
+  for (const reply of planReplies) {
+    try {
+      const { meta } = extractJson<{ meta?: unknown }>(reply);
+      if (meta && typeof meta === 'object' && !Array.isArray(meta)) { metaText = JSON.stringify(meta); break; }
+    } catch { /* Try the next planner reply. */ }
+  }
+  const out = await finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, metaText, null, { hybrid: {
+    analysis: result.orders[0].analysis ?? '', plans: result.stages.plans, revisions: result.stages.revisions,
+    executions: result.stages.executions, reviews: result.stages.reviews, rounds: result.stages.rounds,
+    reviewNotes: result.review.problems,
+  } });
+  return `${out} | hybrid: ${result.stages.plans} plan, ${result.stages.executions} codex, ${result.stages.reviews} review, ${result.stages.rounds} extra round(s)`;
+}
+
 async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
-  const { cfg, branch, wt, merge, opts, brief } = startDraft(c, topic, publishAt);
+  const s = startDraft(c, topic, publishAt);
+  if (executorMode() === 'hybrid') return draftTopicHybrid(c, topic, publishAt, s);
+  const { cfg, branch, wt, merge, opts, brief } = s;
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
     prompt: `Eres el redactor de ${c.site.url}. ${brief}

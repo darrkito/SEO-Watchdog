@@ -1,0 +1,118 @@
+import { test, type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { draftTopicHybrid, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
+import { openDb } from '../src/db.ts';
+
+const publishAt = '2026-11-02';
+const lastPost = '  {\n    slug: "second",\n    title: "Second post",\n  },\n';
+const newPost = '  {\n    slug: "new-post",\n    title: "New hybrid post",\n  },\n';
+
+function fixture(t: TestContext) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  process.env.TELEGRAM_BOT_TOKEN = '';
+  t.after(() => {
+    if (token === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = token;
+  });
+  const root = mkdtempSync(join(tmpdir(), 'wd-hybrid-draft-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  git(root, 'init', '-q', '--bare', '-b', 'main', 'remote.git');
+  git(root, 'clone', '-q', 'remote.git', 'owner');
+  const owner = join(root, 'owner');
+  git(owner, 'config', 'user.email', 't@t');
+  git(owner, 'config', 'user.name', 't');
+  writeFileSync(join(owner, 'blog.ts'), 'export const posts = [\n  {\n    slug: "first",\n    title: "First post",\n  },\n' + lastPost + '];\n');
+  mkdirSync(join(owner, 'src/lib'), { recursive: true });
+  writeFileSync(join(owner, 'src/lib/i18n.ts'), 'export const EN_SLUG_MAP = {};\n');
+  git(owner, 'add', '.');
+  git(owner, 'commit', '-qm', 'init');
+  git(owner, 'push', '-q', 'origin', 'main');
+  const cfg: any = {
+    repo: owner, worktree: join(root, 'wt'), remote: 'origin', typecheck: ['true'],
+    contentPaths: ['blog.ts'], orderPaths: ['blog.ts'], rules: '', writerRules: '',
+    postBrief: () => 'Write a short new post.',
+    listPosts: (wt: string) => [...readFileSync(join(wt, 'blog.ts'), 'utf8').matchAll(/slug: "([^"]+)"/g)].map((m) => ({ slug: m[1] })),
+    postFiles: () => ['blog.ts'], blogUrl: (s: string) => [`https://x.test/blog/${s}`],
+  };
+  const db = openDb(join(root, 'test.db'));
+  t.after(() => db.close());
+  db.prepare("INSERT INTO sites (id, url) VALUES (1, 'https://x.test')").run();
+  db.prepare("INSERT INTO topics (id, site_id, title, slug, query, action, why, score) VALUES (1, 1, 'New hybrid post', 'new-post', 'new post', 'new', 'test', 5)").run();
+  const site = db.prepare('SELECT * FROM sites WHERE id = 1').get() as Ctx['site'];
+  const c: Ctx = { db, site, cfg, usage: [], log: () => {} };
+  const topic = { id: 1, title: 'New hybrid post', slug: 'new-post', query: 'new post', action: 'new', why: 'test' };
+  const s = startDraft(c, topic, publishAt);
+  const order: WorkOrder & { meta: { slug: string } } = {
+    title: 'Insert post', analysis: 'Add the requested post.', meta: { slug: topic.slug },
+    steps: [{ n: 1, file: 'blog.ts', do: 'insert-after', anchor: lastPost, text: newPost }],
+    mustContain: ['New hybrid post'], forbiddenPaths: [], doneWhen: 'The post is inserted.',
+  };
+  const apply = (o: WorkOrder) => {
+    const result = simulateOrder(o, s.wt);
+    assert.deepEqual(result.problems, []);
+    for (const [file, text] of result.files) writeFileSync(join(s.wt, file), text);
+    return { ok: true, limited: false, blocked: false, text: 'DONE' };
+  };
+  const override = {
+    plan: async () => JSON.stringify(order),
+    revise: async () => { throw new Error('unexpected revision'); },
+    execute: async () => apply(order),
+    review: async () => ({ ok: true, problems: [] }),
+    verify: () => null,
+  };
+  return { c, topic, s, order, apply, override };
+}
+
+test('hybrid draft commits the post and creates a pending approval', async (t) => {
+  const { c, topic, s, override } = fixture(t);
+  const out = await draftTopicHybrid(c, topic, publishAt, s, override);
+  assert.match(out, /hybrid:/);
+  const rows = c.db.prepare('SELECT kind, status, payload_json FROM approvals').all();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, 'post');
+  assert.equal(rows[0].status, 'pending');
+  const payload = JSON.parse(rows[0].payload_json as string);
+  assert.equal(payload.hybrid.plans, 1);
+  assert.deepEqual(payload.files, ['blog.ts']);
+  assert.equal(c.db.prepare('SELECT status FROM topics WHERE id = 1').get()!.status, 'drafted');
+  assert.ok(git(s.wt, 'show', `${s.branch}:blog.ts`).includes(newPost));
+  assert.equal(git(s.wt, 'rev-list', '--count', `origin/main..${s.branch}`).trim(), '1');
+});
+
+test('hybrid usage limit becomes LimitError and cleans the worktree', async (t) => {
+  const { c, topic, s, order, apply, override } = fixture(t);
+  await assert.rejects(draftTopicHybrid(c, topic, publishAt, s, {
+    ...override,
+    execute: async () => {
+      apply(order);
+      writeFileSync(join(s.wt, 'unfinished.txt'), 'partial output');
+      return { ok: false, limited: true, blocked: false, text: '', error: 'usage limit' };
+    },
+  }), LimitError);
+  assert.equal(git(s.wt, 'status', '--porcelain'), '');
+});
+
+test('hybrid repeated review rejection stops after three rounds without approval', async (t) => {
+  const { c, topic, s, order, apply, override } = fixture(t);
+  let current = order;
+  let reviews = 0;
+  let revisions = 0;
+  await assert.rejects(draftTopicHybrid(c, topic, publishAt, s, {
+    ...override,
+    execute: async () => apply(current),
+    review: async () => { reviews++; return { ok: false, problems: ['Needs more detail'] }; },
+    revise: async () => {
+      revisions++;
+      current = { ...order, steps: [{ n: 1, file: 'blog.ts', do: 'insert-before', anchor: '];', text: `  // Revision ${revisions}\n` }] };
+      return JSON.stringify(current);
+    },
+  }), /not approved after 3 rounds/);
+  assert.equal(reviews, 3);
+  assert.equal(revisions, 2);
+  assert.equal(c.db.prepare('SELECT COUNT(*) n FROM approvals').get()!.n, 0);
+  assert.equal(git(s.wt, 'status', '--porcelain'), '');
+});
