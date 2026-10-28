@@ -47,7 +47,8 @@ const orderRules = (paths: string): string => `REGLAS DE LA ORDEN (si alguna fal
 4. El orden de los pasos importa: cada paso ve el resultado de los anteriores.
 5. En JSON, los saltos de línea van como \\n y las comillas dobles como \\". Verifica que el JSON sea válido.
 6. mustContain: pon el título, la descripción y cada encabezado nuevo, tal como quedan escritos.
-7. Antes de responder, revisa uno por uno cada anchor contra el texto que te di. Si un anchor no está en este mensaje, no lo inventes: usa otro paso que sí tenga anchor verificado.`;
+7. Antes de responder, revisa uno por uno cada anchor contra el texto que te di. Si un anchor no está en este mensaje, no lo inventes: usa otro paso que sí tenga anchor verificado.
+8. Toda afirmación factual del texto (cifras, fechas, temporadas, normas, comparaciones) va en meta.claims con su fuente: una URL que abriste o un archivo del repo. Si no tienes fuente, quita la afirmación del texto en lugar de escribirla. El ejecutor y el revisor ven esa lista.`;
 
 const sections = (parts: string[]): string => parts.filter((part) => part !== '').flatMap((part, n) => n ? ['', part] : [part]).join('\n');
 const siteRules = (rules: string, writerRules = ''): string => rules || writerRules

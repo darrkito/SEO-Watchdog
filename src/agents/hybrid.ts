@@ -32,6 +32,7 @@ export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt
 export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<HybridResult> {
   const stages = { plans: 0, revisions: 0, executions: 0, reviews: 0, rounds: 0 };
   const orders: WorkOrder[] = [];
+  let knownClaims: NonNullable<WorkOrder['claims']> = [];
   async function getOrder(ask: (prompt: string) => Promise<string>, firstPrompt: string): Promise<WorkOrder> {
     let problems: string[] = [];
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -42,7 +43,13 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       try { order = parseOrder(reply, { allowedPaths: input.allowedPaths }); }
       catch (e) { problems = [(e as Error).message]; continue; }
       problems = preflightOrder(order, d.root);
-      if (!problems.length) return order;
+      if (!problems.length) {
+        const claims = new Map(knownClaims.map((item) => [item.claim, item]));
+        for (const item of order.claims ?? []) claims.set(item.claim, item);
+        knownClaims = [...claims.values()];
+        if (knownClaims.length || order.claims !== undefined) order.claims = knownClaims;
+        return order;
+      }
     }
     throw new Error('plan rejected: ' + problems.join('; '));
   }

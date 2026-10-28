@@ -5,7 +5,7 @@ import { pathAllowed } from './sites.ts';
 
 export type EditOp = 'create' | 'replace' | 'replace-range' | 'insert-after' | 'insert-before' | 'append' | 'delete';
 export type EditStep = { n: number; file: string; do: EditOp; anchor?: string; endAnchor?: string; text?: string; note?: string };
-export type WorkOrder = { title: string; steps: EditStep[]; mustContain: string[]; forbiddenPaths: string[]; doneWhen: string; analysis?: string };
+export type WorkOrder = { title: string; steps: EditStep[]; mustContain: string[]; forbiddenPaths: string[]; doneWhen: string; analysis?: string; claims?: { claim: string; source: string }[] };
 
 const ops: EditOp[] = ['create', 'replace', 'replace-range', 'insert-after', 'insert-before', 'append', 'delete'];
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -56,19 +56,23 @@ export function parseOrder(reply: string, o: { allowedPaths?: string[] } = {}): 
       ...(typeof step.note === 'string' ? { note: step.note } : {}) });
   });
   if (problems.length) throw new Error('Invalid work order: ' + problems.join('; '));
+  const rawClaims = Array.isArray(data.claims) ? data.claims : record(data.meta) && Array.isArray(data.meta.claims) ? data.meta.claims : undefined;
+  const claims = rawClaims?.filter((item): item is { claim: string; source: string } => record(item) && nonempty(item.claim) && nonempty(item.source))
+    .map(({ claim, source }) => ({ claim, source }));
   return { title: data.title as string, steps, mustContain: mustContain as string[], forbiddenPaths: forbiddenPaths as string[], doneWhen: doneWhen as string,
-    ...(typeof data.analysis === 'string' ? { analysis: data.analysis } : {}) };
+    ...(typeof data.analysis === 'string' ? { analysis: data.analysis } : {}), ...(claims !== undefined ? { claims } : {}) };
 }
 
 const HEADER = [
   'You are an executor, not a designer. Do exactly the numbered steps below. Do not improve, reformat, rename, refactor, translate, shorten or add anything.',
   'Only the files named in the steps may change. Do not touch any other file. Never run installs, network access, or git commands that write. Read-only commands (ls, cat, grep, git diff, git status) are allowed.',
   'If a step cannot be done exactly as written (an anchor is missing, or occurs more than once, or the file does not exist when it should), change NOTHING and make your last line `BLOCKED: <one-line reason>`.',
+  'Block ONLY for mechanical reasons (anchor missing or ambiguous, file missing, text that cannot be placed). NEVER block, edit, soften or question the CONTENT of a text block: its facts were checked by the planner against the sources listed under VERIFIED CLAIMS and a reviewer checks it afterwards.',
   'Text blocks below are copied character for character, including indentation and blank lines. Keep it that way.',
   'Operations: create writes the whole file (replacing it if it exists); replace swaps ANCHOR for TEXT; replace-range swaps everything from ANCHOR up to END ANCHOR (not included) for TEXT; insert-after / insert-before put TEXT next to ANCHOR; append adds TEXT at the end of the file; delete removes ANCHOR.',
 ].join('\n');
 const DONE = 'Your last message must be `DONE` followed by one line per step (`1 ok`, `2 ok`, ...). Nothing else.';
-const rulesBlock = (rules: string): string[] => rules ? ['RULES (hard limits):', rules] : [];
+const rulesBlock = (rules: string): string[] => rules ? ['SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):', rules] : [];
 
 export function orderPrompt(order: WorkOrder, rules: string): string {
   const blocks = order.steps.map((step) => [
@@ -78,7 +82,7 @@ export function orderPrompt(order: WorkOrder, rules: string): string {
     ...(step.endAnchor !== undefined ? ['END ANCHOR (first occurrence AFTER the anchor; everything from the start of ANCHOR up to, but NOT including, END ANCHOR is replaced by TEXT):', '<<<ENDANCHOR', step.endAnchor, 'ENDANCHOR>>>'] : []),
     ...(step.text !== undefined ? ['TEXT:', '<<<TEXT', step.text, 'TEXT>>>'] : []),
   ].join('\n'));
-  return [HEADER, '', `ORDER: ${order.title}`, ...rulesBlock(rules), '', blocks.join('\n\n'), '',
+  return [HEADER, '', `ORDER: ${order.title}`, ...rulesBlock(rules), ...(order.claims?.length ? ['VERIFIED CLAIMS (each one was checked by the planner against the source shown; they are not yours to re-verify):', ...order.claims.map(({ claim, source }) => `- ${claim.slice(0, 300)} [source: ${source.slice(0, 300)}]`)] : []), '', blocks.join('\n\n'), '',
     `FORBIDDEN PATHS: ${order.forbiddenPaths.join(', ') || 'none'}`,
     `DONE WHEN: ${order.doneWhen || 'all steps are applied'}`, DONE].join('\n');
 }

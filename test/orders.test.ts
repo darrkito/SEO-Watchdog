@@ -68,8 +68,8 @@ test('orderPrompt preserves exact blocks and requested structure', () => {
   assert.ok(prompt.includes('STEP 1: insert-after in a.txt\nNOTE: Exact'));
   assert.ok(prompt.includes('<<<ANCHOR\n' + anchor + '\nANCHOR>>>'));
   assert.ok(prompt.includes('<<<TEXT\n' + text + '\nTEXT>>>'));
-  assert.ok(prompt.includes('RULES (hard limits):\nKeep spacing'));
-  assert.ok(!orderPrompt(value, '').includes('RULES (hard limits):'));
+  assert.ok(prompt.includes('SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):\nKeep spacing'));
+  assert.ok(!orderPrompt(value, '').includes('SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):'));
   assert.ok(prompt.includes('FORBIDDEN PATHS: none'));
   assert.ok(prompt.includes('DONE WHEN: all steps are applied'));
   assert.ok(prompt.endsWith(done));
@@ -83,8 +83,8 @@ test('fixPrompt shares header, caps error and lists files and rules', () => {
   assert.ok(prompt.includes('A check failed after your edit. Fix ONLY what this error says. Change nothing else.'));
   assert.ok(prompt.includes('ERROR:\n' + 'x'.repeat(3000) + '\nFILES YOU MAY CHANGE: a.txt, b.txt'));
   assert.ok(!prompt.includes('x'.repeat(3001)));
-  assert.ok(prompt.includes('RULES (hard limits):\nKeep spacing'));
-  assert.ok(!fixPrompt('oops', [], '').includes('RULES (hard limits):'));
+  assert.ok(prompt.includes('SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):\nKeep spacing'));
+  assert.ok(!fixPrompt('oops', [], '').includes('SITE RULES (already applied by the planner and checked afterwards by a reviewer; you only execute, never enforce them):'));
   assert.ok(prompt.endsWith(done));
 });
 
@@ -136,8 +136,8 @@ test('orderPrompt describes replace-range and preserves its end anchor block', (
   assert.ok(prompt.includes('ANCHOR (must occur exactly once in the file; the replaced range starts here):\n<<<ANCHOR\nold\nANCHOR>>>'));
   assert.ok(prompt.includes('ANCHOR>>>\nEND ANCHOR (first occurrence AFTER the anchor; everything from the start of ANCHOR up to, but NOT including, END ANCHOR is replaced by TEXT):\n<<<ENDANCHOR\n' + endAnchor + '\nENDANCHOR>>>\nTEXT:'));
   const operations = 'Operations: create writes the whole file (replacing it if it exists); replace swaps ANCHOR for TEXT; replace-range swaps everything from ANCHOR up to END ANCHOR (not included) for TEXT; insert-after / insert-before put TEXT next to ANCHOR; append adds TEXT at the end of the file; delete removes ANCHOR.';
-  assert.equal(prompt.split('\n')[4], operations);
-  assert.equal(fixPrompt('oops', ['a.txt'], '').split('\n')[4], operations);
+  assert.equal(prompt.split('\n')[5], operations);
+  assert.equal(fixPrompt('oops', ['a.txt'], '').split('\n')[5], operations);
 });
 
 test('applyCheck checks replace-range text and old anchors', (t) => {
@@ -251,4 +251,23 @@ test('parseOrder keeps string analysis, ignores other types and omits it from pr
   for (const analysis of [42, null, false, {}, []]) {
     assert.deepEqual(parseOrder(JSON.stringify({ ...order(), analysis })), order());
   }
+});
+
+
+test('claims are parsed from meta, filtered, and overridden by top-level claims', () => {
+  const valid = { claim: 'A fact', source: 'a.txt' };
+  const meta = { claims: [valid, null, {}, { claim: ' ', source: 'x' }, { claim: 'x', source: '' }] };
+  assert.deepEqual(parseOrder(JSON.stringify({ ...order(), meta })).claims, [valid]);
+  assert.deepEqual(parseOrder(JSON.stringify({ ...order(), meta, claims: [{ claim: 'Other', source: 'url' }] })).claims, [{ claim: 'Other', source: 'url' }]);
+  assert.equal(parseOrder(JSON.stringify({ ...order(), meta: { claims: 'bad' } })).claims, undefined);
+});
+
+test('executor prompt includes verified claims and mechanical blocking instruction', () => {
+  const claim = 'c'.repeat(301), source = 's'.repeat(301);
+  const prompt = orderPrompt({ ...order(), claims: [{ claim, source }] }, 'rules');
+  assert.ok(prompt.includes('Block ONLY for mechanical reasons (anchor missing or ambiguous, file missing, text that cannot be placed). NEVER block, edit, soften or question the CONTENT of a text block: its facts were checked by the planner against the sources listed under VERIFIED CLAIMS and a reviewer checks it afterwards.'));
+  assert.ok(prompt.includes('VERIFIED CLAIMS (each one was checked by the planner against the source shown; they are not yours to re-verify):\n- ' + claim.slice(0, 300) + ' [source: ' + source.slice(0, 300) + ']'));
+  assert.ok(prompt.indexOf('VERIFIED CLAIMS (each') > prompt.indexOf('rules\n'));
+  assert.ok(prompt.indexOf('VERIFIED CLAIMS (each') < prompt.indexOf('STEP 1:'));
+  assert.ok(!orderPrompt(order(), '').includes('VERIFIED CLAIMS (each'));
 });

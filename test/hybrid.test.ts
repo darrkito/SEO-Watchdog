@@ -221,3 +221,18 @@ test('revisePrompt includes original brief, previous order, and problems when no
   assert.ok(prompt.includes('=== PROBLEMS ===\n- executor refused\n- text is not allowed'));
   assert.ok(prompt.includes('empty means nothing was written'));
 });
+
+test('change orders retain verified claims and replace duplicates by claim text', async (t) => {
+  const { d, input, codex } = fixture(t, [apply(initial), apply(change), apply(initial)]);
+  const firstClaims = [{ claim: 'Fact', source: 'old' }, { claim: 'Other', source: 'repo' }, { claim: 'Fact', source: 'new' }];
+  d.plan = async () => raw({ ...initial, claims: firstClaims });
+  let reviews = 0;
+  d.review = async () => ++reviews === 1 ? { ok: false, problems: ['change'], changeOrder: raw(change) }
+    : reviews === 2 ? { ok: false, problems: ['change again'], changeOrder: raw({ ...initial, claims: [{ claim: 'Fact', source: 'latest' }] }) } : approved;
+  await runHybrid(d, input);
+  assert.ok(codex.prompts[1].includes('- Fact [source: new]'));
+  assert.ok(codex.prompts[1].includes('- Other [source: repo]'));
+  assert.equal(codex.prompts[1].split('- Fact [source:').length - 1, 1);
+  assert.ok(codex.prompts[2].includes('- Fact [source: latest]'));
+  assert.equal(codex.prompts[2].split('- Fact [source:').length - 1, 1);
+});

@@ -113,3 +113,9 @@ test('plan omits authorized facts section when facts is empty', () => {
   assert.ok(!prompt.includes('DATOS AUTORIZADOS DEL REPO'));
   assert.ok(prompt.includes('REGLAS DEL SITIO (límites duros)\nReglas\nEstilo\n\nLectores'));
 });
+
+test('both planners require sourced factual claims', () => {
+  const rule = '8. Toda afirmación factual del texto (cifras, fechas, temporadas, normas, comparaciones) va en meta.claims con su fuente: una URL que abriste o un archivo del repo. Si no tienes fuente, quita la afirmación del texto en lugar de escribirla. El ejecutor y el revisor ven esa lista.';
+  assert.ok(planPrompt(plan).includes(rule));
+  assert.ok(fixerPlanPrompt(fixer).includes(rule));
+});
