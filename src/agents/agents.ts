@@ -67,7 +67,9 @@ export const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
 const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
 export async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number }): Promise<string> {
+  const t0 = Date.now();
   const r = await runClaude(o);
+  c.log(`claude [${o.tools.join('+') || 'no tools'}, <=${o.maxTurns} turns, prompt ${Math.round(o.prompt.length / 1000)}k chars]: ${Math.round((Date.now() - t0) / 1000)}s, ${r.tokensIn} in / ${r.tokensOut} out${r.ok ? '' : `, FAILED${r.limited ? ' (limit)' : ''}: ${(r.error ?? '').slice(0, 200)}`}`);
   c.usage.push(r);
   if (r.limited) throw new LimitError(r.error ?? 'usage limit');
   if (!r.ok) throw new Error(r.error ?? 'claude failed');
@@ -331,12 +333,15 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const defaults: HybridDeps = {
     plan: async (p) => {
       const t = await ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 20, timeoutMs: 1_200_000 });
+      c.log(`plan reply starts: ${t.slice(0, 160).replace(/\s+/g, ' ')}`);
       planReplies.push(t);
       return t;
     },
     revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: async (p) => {
+      const t0 = Date.now();
       const r = await runCodex({ prompt: p, cwd: wt, write: true, timeoutMs: 900_000 });
+      c.log(`codex [write, prompt ${Math.round(p.length / 1000)}k chars]: ${Math.round((Date.now() - t0) / 1000)}s, ${r.ok ? 'ok' : r.blocked ? 'BLOCKED' : r.limited ? 'LIMIT' : 'FAILED'}${r.error ? ': ' + r.error.slice(0, 200) : ''}`);
       codexRuns++;
       return r;
     },
