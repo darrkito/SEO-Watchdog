@@ -36,6 +36,9 @@ export function isDue(e: { days: number[]; at: string }, now: { hm: string; dow:
   return h.lastAtMs == null || nowMs - h.lastAtMs >= 30 * 60_000;
 }
 
+/** The global switch ("Pause all agents"): nothing new starts, clicked jobs stay in the queue, nothing is cancelled. */
+export const isPaused = (db: DatabaseSync): boolean => (db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined)?.enabled === 0;
+
 export const isEnabled = (db: DatabaseSync, agent: string, siteId: number): boolean => {
   const g = db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined;
   if (g && !g.enabled) return false;
@@ -64,10 +67,12 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   const detail = args?.slug ?? (args?.ids ? `ids:${args.ids.join(',')}` : args?.topicId != null ? `topic:${args.topicId}` : '');
   const key = `${agent}:${site.id}:${detail}`;
   if (queued.has(key)) return Promise.resolve();
-  queued.add(key);
   if (slot === null) db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail); // manual click: survives a restart
-  let limited = false;
+  if (isPaused(db)) return Promise.resolve(); // parked: the row stays, resume restores it
+  queued.add(key);
+  let limited = false, parked = false;
   return serial(async () => {
+    if (isPaused(db)) { parked = true; return; } // paused while this waited in line: step aside, keep the queue row
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
     const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
     let status = 'ok', output = '', error: string | null = null;
@@ -83,7 +88,8 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
       setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limitRetryMs).unref();
       return;
     }
-    queued.delete(key); db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail);
+    queued.delete(key);
+    if (!parked) db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail);
   });
 }
 
@@ -109,15 +115,22 @@ export function decide(db: DatabaseSync, id: number, action: 'approve' | 'reject
   if (action === 'approve') void serial(() => publish(db, id)).catch((e) => console.error(`publish #${id}:`, e));
 }
 
+/** Clicked jobs that a restart interrupted, a pause parked or a limit delayed: run them again, in click order (paused: they stay put). */
+export function resumeQueued(db: DatabaseSync): number {
+  let n = 0;
+  for (const q of db.prepare('SELECT * FROM agent_queue ORDER BY id').all() as { agent: string; site_id: number; slug: string }[]) {
+    const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
+    if (!site || !AGENTS[q.agent] || queued.has(`${q.agent}:${q.site_id}:${q.slug}`)) continue;
+    n++; void runAgent(db, q.agent, site, null, q.slug.startsWith('ids:') ? { ids: q.slug.slice(4).split(',').map(Number) } : q.slug.startsWith('topic:') ? { topicId: Number(q.slug.slice(6)) } : q.slug ? { slug: q.slug } : undefined);
+  }
+  return n;
+}
+
 export function startScheduler(db: DatabaseSync): void {
   seedSettings(db);
   // Approved but never published (a restart dropped the in-memory publish): publish them now, oldest first.
   for (const a of db.prepare("SELECT id FROM approvals WHERE status = 'approved' ORDER BY id").all() as { id: number }[]) void serial(() => publish(db, a.id)).catch((e) => console.error(`publish #${a.id}:`, e));
-  // Clicked jobs that a restart interrupted or never started: run them again, in click order.
-  for (const q of db.prepare('SELECT * FROM agent_queue ORDER BY id').all() as { agent: string; site_id: number; slug: string }[]) {
-    const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
-    if (site && AGENTS[q.agent]) void runAgent(db, q.agent, site, null, q.slug.startsWith('ids:') ? { ids: q.slug.slice(4).split(',').map(Number) } : q.slug.startsWith('topic:') ? { topicId: Number(q.slug.slice(6)) } : q.slug ? { slug: q.slug } : undefined);
-  }
+  resumeQueued(db);
   setTimeout(() => tick(db), 10_000);
   setInterval(() => tick(db), 60_000).unref();
 }

@@ -1,7 +1,7 @@
 // Dashboard "Agents" tab: what each agent did, what waits for approval, and the controls (pause, autonomy, run now, kill switch).
 import type { DatabaseSync } from 'node:sqlite';
 import { h, raw, layout, chip, ago, type Html, type Sev } from '../html.ts';
-import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent, inFlight, cfgOf, capable } from './scheduler.ts';
+import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent, inFlight, cfgOf, capable, isPaused, resumeQueued } from './scheduler.ts';
 import { LLM_AGENTS } from './agents.ts';
 import { blogScores } from './blogscore.ts';
 import { TARGET, type Segment } from './audience.ts';
@@ -78,9 +78,9 @@ function workingBanner(db: DatabaseSync, only?: number): Html | '' {
 }
 
 function killCard(db: DatabaseSync): Html {
-  const killed = (db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined)?.enabled === 0;
-  return h`<div class="card row">${killed ? h`<span>${chip('critical', 'All agents stopped')}</span>` : h`<span>${chip('good', 'Fleet running')}</span>`}
-    <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${killed ? 1 : 0}"><button class="btn ${killed ? 'primary' : ''}">${killed ? 'Resume all agents' : 'Stop all agents'}</button></form></div>`;
+  const paused = isPaused(db), waiting = (db.prepare('SELECT COUNT(*) n FROM agent_queue').get() as { n: number }).n;
+  return h`<div class="card row">${paused ? h`<span>${chip('warn', 'Paused')} <span class="small">${waiting} job${waiting === 1 ? '' : 's'} waiting in the queue. Nothing is cancelled; Resume continues them in order.</span></span>` : h`<span>${chip('good', 'Fleet running')}${waiting ? h` <span class="small muted">${waiting} in the queue</span>` : ''}</span>`}
+    <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${paused ? 1 : 0}"><button class="btn ${paused ? 'primary' : ''}">${paused ? 'Resume all agents' : 'Pause all agents'}</button></form></div>`;
 }
 
 const runsList = (db: DatabaseSync, siteId?: number): Html => {
@@ -173,16 +173,16 @@ export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: 
 export function agentsPost(db: DatabaseSync, action: string, form: URLSearchParams): string {
   const agent = form.get('agent') ?? '', site = Number(form.get('site'));
   const known = () => { if (!ALL_AGENTS.includes(agent) || !agentSites(db).some((s) => s.id === site)) throw new Error('Unknown agent or site.'); };
-  if (action === 'kill') { db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, ?) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = excluded.enabled").run(form.get('enabled') === '1' ? 1 : 0); return form.get('enabled') === '1' ? 'Agents resumed.' : 'All agents stopped.'; }
+  if (action === 'kill') { db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, ?) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = excluded.enabled").run(form.get('enabled') === '1' ? 1 : 0); if (form.get('enabled') === '1') { const n = resumeQueued(db); return `Agents resumed${n ? `: ${n} queued job${n === 1 ? '' : 's'} continue in order` : ''}.`; } return 'Paused. Jobs already running finish; everything else waits in the queue and nothing is cancelled.'; }
   if (action === 'decide') { const id = Number(form.get('id')), a = form.get('action'); if (a !== 'approve' && a !== 'reject') throw new Error('Bad action.'); decide(db, id, a); return a === 'approve' ? 'Approved. Publishing now: it goes live after the deploy is confirmed.' : 'Rejected.'; }
   if (action === 'fix-all') return queueFix(db, site, 'all');
   if (action === 'write-topic') {
     const s = agentSites(db).find((x) => x.id === site); if (!s || !capable(s, 'writer')) throw new Error('The writer is not enabled for this site.');
-    if ((db.prepare("SELECT enabled FROM agent_settings WHERE agent = '*' AND site_id = 0").get() as { enabled: number } | undefined)?.enabled === 0) throw new Error('All agents are stopped: resume them first.');
     const t = db.prepare('SELECT id, title, status FROM topics WHERE id = ? AND site_id = ?').get(Number(form.get('topic')), site) as { id: number; title: string; status: string } | undefined;
     if (!t) throw new Error('That topic is not in this site\'s backlog.');
     if (t.status !== 'new') throw new Error(`"${t.title}" is already ${t.status}.`);
     void runAgent(db, 'writer', s, null, { topicId: t.id });
+    if (isPaused(db)) return `Saved in the queue: "${t.title}". The fleet is paused, so it starts when you press Resume.`;
     return `Writer started on "${t.title}". It takes about 5 to 10 minutes; the draft then appears under "Waiting for you". Nothing is published until you approve it.`;
   }
   if (action !== 'improve' && action !== 'improve-low') known();
@@ -199,6 +199,7 @@ export function agentsPost(db: DatabaseSync, action: string, form: URLSearchPara
     if (!slugs.length) throw new Error('No posts match: they are all improved or in progress.');
     if (slugs.some((x) => !rows.some((r) => r.slug === x))) throw new Error('That post is not in the latest crawl.');
     for (const slug of slugs) void runAgent(db, 'improver', s, null, { slug });
+    if (isPaused(db)) return `Saved in the queue (${slugs.length} post${slugs.length === 1 ? '' : 's'}). The fleet is paused, so they start when you press Resume.`;
     const names = slugs.map((x) => `"${rows.find((r) => r.slug === x)!.title}"`).join(', ');
     return `Queued for the writer: ${names}. Each takes about 2 minutes, then appears under "Waiting for you" as "Improve: <post name>".`;
   }

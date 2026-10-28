@@ -286,3 +286,24 @@ test('a clicked job that hits the usage limit stays queued and runs again later;
   assert.equal(calls, 1);
   setLimitRetry(30 * 60_000);
 });
+
+test('pause: clicked jobs are parked in the queue, nothing is cancelled, and Resume runs them', async () => {
+  const { runAgent, inFlight, isPaused, resumeQueued } = await import('../src/agents/scheduler.ts');
+  const { AGENTS } = await import('../src/agents/agents.ts');
+  const db = openDb(join(process.env.WATCHDOG_DATA!, 'pause.db'));
+  db.prepare("INSERT INTO sites (id, url, kind) VALUES (51, 'https://studioyume.mx/', 'own')").run();
+  const site = db.prepare('SELECT * FROM sites WHERE id = 51').get() as any;
+  let calls = 0; (AGENTS as any).collect = async () => { calls++; return 'ran'; };
+  db.prepare("INSERT INTO agent_settings (agent, site_id, enabled) VALUES ('*', 0, 0) ON CONFLICT(agent, site_id) DO UPDATE SET enabled = 0").run();
+  assert.equal(isPaused(db), true);
+  await runAgent(db, 'collect', site, null, { slug: 'a' });
+  await runAgent(db, 'collect', site, null, { slug: 'b' });
+  assert.equal(calls, 0, 'nothing runs while paused');
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM agent_queue WHERE site_id = 51').get() as { n: number }).n, 2, 'both clicks are kept');
+  assert.deepEqual(inFlight().filter((k) => k.startsWith('collect:51')), [], 'and they are not in flight');
+  db.prepare("UPDATE agent_settings SET enabled = 1 WHERE agent = '*' AND site_id = 0").run();
+  assert.equal(resumeQueued(db), 2);
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(calls, 2, 'resume ran both, in order');
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM agent_queue WHERE site_id = 51').get() as { n: number }).n, 0);
+});
