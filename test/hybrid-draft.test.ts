@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { draftTopicHybrid, factsOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { lintDetails, draftTopicHybrid, factsOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
 import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
 import { openDb } from '../src/db.ts';
 
@@ -134,4 +134,18 @@ test('factsOf normalizes newlines, caps text and skips missing files', (t) => {
   assert.deepEqual(factsOf(cfg, root, 7), [{ file: 'facts.txt', text: 'uno\ndos' }]);
   assert.deepEqual(factsOf(cfg, root), [{ file: 'facts.txt', text: 'uno\ndos' }]);
   assert.deepEqual(factsOf({ ...cfg, factFiles: undefined }, root), []);
+});
+
+
+test('lintDetails reports added copy with locations, context, and a limit', () => {
+  const line = 'a'.repeat(60) + '—' + 'b'.repeat(60);
+  const chunk = (file: string, lines: string) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n${lines}\n`;
+  const diff = chunk('copy.txt', `+${line}\n+El mejor del mundo`) + chunk('other.txt', '+certificado ISO');
+  assert.deepEqual(lintDetails(diff, ['copy.txt']), [
+    `copy.txt: em-dash in new copy: "…${'a'.repeat(45)}—${'b'.repeat(44)}…"`,
+    'copy.txt: unverifiable superlative or certification claim: "El mejor del mundo"',
+  ]);
+  assert.deepEqual(lintDetails(diff, ['other.txt']), ['other.txt: unverifiable superlative or certification claim: "certificado ISO"']);
+  assert.deepEqual(lintDetails(chunk('copy.txt', '+clean copy')), []);
+  assert.equal(lintDetails(chunk('copy.txt', Array(10).fill('+bad — copy').join('\n'))).length, 8);
 });

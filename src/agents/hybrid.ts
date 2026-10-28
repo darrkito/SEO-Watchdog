@@ -8,6 +8,7 @@ export type HybridDeps = {
   revise: (prompt: string) => Promise<string>;
   execute: (prompt: string) => Promise<CodexResult>;
   verify: () => string | null;
+  lint?: () => string[];
   addedText: () => string;
   diff: () => string;
   review: (order: WorkOrder, diff: string) => Promise<Review>;
@@ -61,26 +62,29 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
   for (;;) {
     orders.push(order);
     const expected = simulateOrder(order, d.root).files;
-    const check = (): string[] => {
-      const problems = [...compareFiles(expected, d.root), ...verbatimCheck(order, d.addedText())];
-      if (problems.length) return problems;
-      const v = d.verify();
-      return v ? [v] : [];
-    };
+    const deviations = (): string[] => [...compareFiles(expected, d.root), ...verbatimCheck(order, d.addedText())];
     const files = writeStepFiles(order, d.root);
     let r: CodexResult;
     try { r = await d.execute(orderPrompt(order, input.rules, files)); }
     finally { clearStepFiles(d.root); }
     stages.executions++;
     if (r.limited) throw new HybridLimit(r.error ?? 'codex usage limit');
-    let problems = r.ok ? check() : ['executor: ' + (r.error ?? r.text)];
+    let problems = r.ok ? deviations() : ['executor: ' + (r.error ?? r.text)];
     if (problems.length && r.ok) {
       let r2: CodexResult;
       try { r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules)); }
       finally { clearStepFiles(d.root); }
       stages.executions++;
       if (r2.limited) throw new HybridLimit(r2.error ?? 'codex usage limit');
-      problems = r2.ok ? check() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
+      problems = r2.ok ? deviations() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
+    }
+    if (r.ok && !problems.length) {
+      const other = d.lint?.() ?? [];
+      if (!other.length) {
+        const v = d.verify();
+        if (v) other.push(v);
+      }
+      problems = other.map((p) => 'check: ' + p);
     }
     let changeRaw: string | undefined;
     if (!problems.length) {

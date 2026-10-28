@@ -74,8 +74,8 @@ test('forbidden API edit reaches verify, exhausts rounds, and resets the worktre
     execute: async () => { executions++; return apply(order); },
     revise: async (p) => { revisions++; assert.match(p, /forbidden files were changed, revert them: src\/app\/api\/x.ts/); return JSON.stringify(order); },
     review: async () => { assert.fail('forbidden edits must never reach review'); },
-  }), /not approved after 3 rounds: forbidden files were changed/);
-  assert.equal(executions, 6); assert.equal(revisions, 2);
+  }), /not approved after 3 rounds: check: forbidden files were changed/);
+  assert.equal(executions, 3); assert.equal(revisions, 2);
   assert.equal(git(o.wt, 'status', '--porcelain'), '');
   assert.equal(readFileSync(join(o.wt, 'a.txt'), 'utf8'), 'x\n');
 });

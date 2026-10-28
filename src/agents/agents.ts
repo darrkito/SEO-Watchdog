@@ -108,6 +108,27 @@ export function lintAdded(diff: string, only?: string[]): string[] {
   return bad;
 }
 
+export function lintDetails(diff: string, only?: string[]): string[] {
+  const bad: string[] = [];
+  for (const chunk of diff.split(/^diff --git /m)) {
+    const file = chunk.match(/^a\/(\S+) /)?.[1];
+    if (!file || (only && !pathAllowed(only, file))) continue;
+    for (const line of addedLines(chunk)) {
+      const trimmed = line.trim(), dash = trimmed.indexOf('—');
+      if (dash !== -1) {
+        const start = Math.max(0, Math.min(dash - 45, trimmed.length - 90));
+        const end = Math.min(trimmed.length, start + 90);
+        const context = (start > 0 ? '…' : '') + trimmed.slice(start, end) + (end < trimmed.length ? '…' : '');
+        bad.push(`${file}: em-dash in new copy: "${context}"`);
+      }
+      const claim = line.match(/\b(100% garantizad|el mejor del mundo|certificad[oa] iso)/i);
+      if (claim) bad.push(`${file}: unverifiable superlative or certification claim: "${claim[0]}"`);
+      if (bad.length >= 8) return bad.slice(0, 8);
+    }
+  }
+  return bad;
+}
+
 // ---------- non-LLM jobs ----------
 export const crawlAgent: AgentFn = async ({ db, site, log }) => {
   const r = await runSite(db, site, { concurrency: 2, log });
@@ -354,6 +375,11 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return r;
     },
     verify: makeVerify(cfg, wt, opts),
+    lint: () => {
+      git(wt, 'add', '-A');
+      git(wt, 'reset', '-q', '--', 'node_modules');
+      return lintDetails(git(wt, 'diff', '--cached'), cfg.lintPaths);
+    },
     addedText: () => {
       git(wt, 'add', '-A');
       git(wt, 'reset', '-q', '--', 'node_modules');
@@ -442,6 +468,11 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f));
       if (bad.length) return `forbidden files were changed, revert them: ${bad.join(', ')}`;
       return typecheck(o.cfg);
+    },
+    lint: () => {
+      git(o.wt, 'add', '-A');
+      git(o.wt, 'reset', '-q', '--', 'node_modules');
+      return lintDetails(git(o.wt, 'diff', '--cached'), o.cfg.lintPaths);
     },
     addedText: () => {
       git(o.wt, 'add', '-A');

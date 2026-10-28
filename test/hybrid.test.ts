@@ -148,16 +148,44 @@ test('usage limit throws HybridLimit before review or revision', async (t) => {
   await assert.rejects(runHybrid(d, input), (e) => e instanceof HybridLimit && e.message === 'codex usage limit');
 });
 
-test('persistent verification failure gets a fix then revision', async (t) => {
-  const { d, input } = fixture(t, [apply(initial), (prompt) => {
-    assert.match(prompt, /Fix ONLY/); assert.match(prompt, /validator failed/); return ok;
-  }, apply(change)]);
+test('verification failure goes directly to revision', async (t) => {
+  const { d, input, codex } = fixture(t, [apply(initial), apply(change)]);
   let checks = 0;
-  d.verify = () => ++checks <= 2 ? 'validator failed' : null;
-  d.revise = async (prompt) => { assert.match(prompt, /validator failed/); return raw(change); };
+  d.verify = () => ++checks === 1 ? 'validator failed' : null;
+  d.revise = async (prompt) => {
+    assert.equal(codex.prompts.length, 1);
+    assert.match(prompt, /check: validator failed/);
+    return raw(change);
+  };
   const result = await runHybrid(d, input);
-  assert.deepEqual(result.stages, { plans: 1, revisions: 1, executions: 3, reviews: 1, rounds: 1 });
-  assert.equal(checks, 3);
+  assert.deepEqual(result.stages, { plans: 1, revisions: 1, executions: 2, reviews: 1, rounds: 1 });
+  assert.equal(checks, 2);
+});
+
+test('lint failure goes directly to revision before verification', async (t) => {
+  const { d, input, codex } = fixture(t, [apply(initial), apply(change)]);
+  let lintCalls = 0, checks = 0;
+  d.lint = () => ++lintCalls === 1 ? ['a.txt: em-dash in new copy'] : [];
+  d.verify = () => { checks++; return null; };
+  d.revise = async (prompt) => {
+    assert.equal(codex.prompts.length, 1);
+    assert.match(prompt, /check: a.txt: em-dash in new copy/);
+    return raw(change);
+  };
+  const result = await runHybrid(d, input);
+  assert.equal(result.stages.executions, 2);
+  assert.equal(checks, 1);
+});
+
+test('lint waits until deviations are fixed', async (t) => {
+  const { d, input } = fixture(t, [(_prompt, root) => {
+    writeFileSync(join(root, 'a.txt'), 'wrong'); return ok;
+  }, apply(initial)]);
+  let lintCalls = 0;
+  d.lint = () => { lintCalls++; return []; };
+  const result = await runHybrid(d, input);
+  assert.equal(result.stages.executions, 2);
+  assert.equal(lintCalls, 1);
 });
 
 test('change order preflight retries use revise and report problems', async (t) => {
