@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { draftTopicHybrid, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { draftTopicHybrid, factsOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
 import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
 import { openDb } from '../src/db.ts';
 
+const factText = 'Authorized price: 1200 MXN.\nContact: ventas@example.test.';
 const publishAt = '2026-11-02';
 const lastPost = '  {\n    slug: "second",\n    title: "Second post",\n  },\n';
 const newPost = '  {\n    slug: "new-post",\n    title: "New hybrid post",\n  },\n';
@@ -26,6 +27,7 @@ function fixture(t: TestContext) {
   git(owner, 'config', 'user.email', 't@t');
   git(owner, 'config', 'user.name', 't');
   writeFileSync(join(owner, 'blog.ts'), 'export const posts = [\n  {\n    slug: "first",\n    title: "First post",\n  },\n' + lastPost + '];\n');
+  writeFileSync(join(owner, 'facts.txt'), factText);
   mkdirSync(join(owner, 'src/lib'), { recursive: true });
   writeFileSync(join(owner, 'src/lib/i18n.ts'), 'export const EN_SLUG_MAP = {};\n');
   git(owner, 'add', '.');
@@ -33,6 +35,7 @@ function fixture(t: TestContext) {
   git(owner, 'push', '-q', 'origin', 'main');
   const cfg: any = {
     repo: owner, worktree: join(root, 'wt'), remote: 'origin', typecheck: ['true'],
+    factFiles: ['facts.txt'],
     contentPaths: ['blog.ts'], orderPaths: ['blog.ts'], rules: '', writerRules: '',
     postBrief: () => 'Write a short new post.',
     listPosts: (wt: string) => [...readFileSync(join(wt, 'blog.ts'), 'utf8').matchAll(/slug: "([^"]+)"/g)].map((m) => ({ slug: m[1] })),
@@ -57,20 +60,25 @@ function fixture(t: TestContext) {
     for (const [file, text] of result.files) writeFileSync(join(s.wt, file), text);
     return { ok: true, limited: false, blocked: false, text: 'DONE' };
   };
+  const planPrompts: string[] = [];
   const override = {
-    plan: async () => JSON.stringify(order),
+    plan: async (prompt: string) => { planPrompts.push(prompt); return JSON.stringify(order); },
     revise: async () => { throw new Error('unexpected revision'); },
     execute: async () => apply(order),
     review: async () => ({ ok: true, problems: [] }),
     verify: () => null,
   };
-  return { c, topic, s, order, apply, override };
+  return { c, topic, s, order, apply, override, planPrompts };
 }
 
 test('hybrid draft commits the post and creates a pending approval', async (t) => {
-  const { c, topic, s, override } = fixture(t);
+  const { c, topic, s, override, planPrompts } = fixture(t);
   const out = await draftTopicHybrid(c, topic, publishAt, s, override);
   assert.match(out, /hybrid:/);
+  assert.equal(planPrompts.length, 1);
+  assert.ok(planPrompts[0].includes('DATOS AUTORIZADOS DEL REPO'));
+  assert.ok(planPrompts[0].includes('=== facts.txt ==='));
+  assert.ok(planPrompts[0].includes(factText));
   const rows = c.db.prepare('SELECT kind, status, payload_json FROM approvals').all();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, 'post');
@@ -115,4 +123,15 @@ test('hybrid repeated review rejection stops after three rounds without approval
   assert.equal(revisions, 2);
   assert.equal(c.db.prepare('SELECT COUNT(*) n FROM approvals').get()!.n, 0);
   assert.equal(git(s.wt, 'status', '--porcelain'), '');
+});
+
+test('factsOf normalizes newlines, caps text and skips missing files', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'wd-facts-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'facts.txt'), 'uno\r\ndos');
+  const cfg = { factFiles: ['missing.txt', 'facts.txt'] } as import('../src/agents/sites.ts').AgentSite;
+  assert.deepEqual(factsOf(cfg, root, 5), [{ file: 'facts.txt', text: 'uno\nd\n[cut]' }]);
+  assert.deepEqual(factsOf(cfg, root, 7), [{ file: 'facts.txt', text: 'uno\ndos' }]);
+  assert.deepEqual(factsOf(cfg, root), [{ file: 'facts.txt', text: 'uno\ndos' }]);
+  assert.deepEqual(factsOf({ ...cfg, factFiles: undefined }, root), []);
 });

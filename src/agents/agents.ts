@@ -317,6 +317,13 @@ export async function finishDraft(c: Ctx, topic: Draftable, publishAt: string, s
   return `draft #${id} "${topic.title}" for ${publishAt}: ${files.length} files`;
 };
 
+export function factsOf(cfg: AgentSite, wt: string, capPerFile = 14000): { file: string; text: string }[] {
+  return (cfg.factFiles ?? []).filter((file) => existsSync(join(wt, file))).map((file) => {
+    const text = readFileSync(join(wt, file), 'utf8').replace(/\r\n/g, '\n');
+    return { file, text: text.length > capPerFile ? text.slice(0, capPerFile) + '\n[cut]' : text };
+  });
+}
+
 export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: string, s: ReturnType<typeof startDraft>, override: Partial<HybridDeps> = {}): Promise<string> {
   const { cfg, branch, wt, merge, opts, brief } = s;
   if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
@@ -324,6 +331,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
   const prompt = planPrompt({
     brief, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
+    facts: factsOf(cfg, wt),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
     insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths,
@@ -337,7 +345,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       planReplies.push(t);
       return t;
     },
-    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
+    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 }),
     execute: async (p) => {
       const t0 = Date.now();
       const r = await runCodex({ prompt: p, cwd: wt, write: true, timeoutMs: 900_000 });
@@ -357,7 +365,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return git(wt, 'diff', '--cached', '-U25');
     },
     review: async (order, diff): Promise<Review> => {
-      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };

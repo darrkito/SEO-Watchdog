@@ -5,6 +5,7 @@ import type { PlanInput } from '../src/agents/prompts.ts';
 
 const plan: PlanInput = {
   brief: 'Escribir un post', miniAudit: 'Mini auditoría', rules: 'Reglas', writerRules: 'Estilo',
+  facts: [],
   audience: 'Lectores', example: 'Ejemplo literal', current: 'Texto actual',
   ranges: [
     { file: 'posts/a.ts', whole: false, anchor: 'inicio\n"texto"', endAnchor: 'fin\n' },
@@ -33,9 +34,9 @@ const review = {
 };
 
 test('plan preserves section order, JSON anchors, paths, and literal JSON escape instructions', () => {
-  const prompt = planPrompt(plan);
+  const prompt = planPrompt({ ...plan, facts: [{ file: 'facts.txt', text: 'Medida: 20 cm' }, { file: 'contact.txt', text: 'Dirección autorizada' }] });
   let previous = -1;
-  for (const heading of ['Eres el CEREBRO', 'TU TAREA', 'REGLAS DEL SITIO', 'EJEMPLO REAL', 'TEXTO ACTUAL DEL POST', 'DÓNDE ESTÁ EL POST', 'DÓNDE METER UN POST NUEVO', 'CÓMO RESPONDER', 'OPERACIONES', 'REGLAS DE LA ORDEN']) {
+  for (const heading of ['Eres el CEREBRO', 'TU TAREA', 'REGLAS DEL SITIO', 'DATOS AUTORIZADOS DEL REPO', 'Lectores', 'EJEMPLO REAL', 'TEXTO ACTUAL DEL POST', 'DÓNDE ESTÁ EL POST', 'DÓNDE METER UN POST NUEVO', 'CÓMO RESPONDER', 'OPERACIONES', 'REGLAS DE LA ORDEN']) {
     const index = prompt.indexOf(heading);
     assert.ok(index > previous, heading);
     previous = index;
@@ -46,11 +47,12 @@ test('plan preserves section order, JSON anchors, paths, and literal JSON escape
   assert.ok(prompt.includes('- Nuevo | new.ts | create\n\n'));
   assert.ok(prompt.includes('3. Solo puedes tocar estas rutas: posts/a.ts, index.ts'));
   assert.ok(prompt.includes(String.raw`5. En JSON, los saltos de línea van como \n y las comillas dobles como \". Verifica que el JSON sea válido.`));
-  assert.ok(prompt.includes('REGLAS DEL SITIO (límites duros)\nReglas\nEstilo\n\nLectores'));
+  assert.ok(prompt.includes('REGLAS DEL SITIO (límites duros)\nReglas\nEstilo\n\nDATOS AUTORIZADOS DEL REPO'));
+  assert.ok(prompt.includes('=== facts.txt ===\nMedida: 20 cm\n=== contact.txt ===\nDirección autorizada\n\nLectores'));
 });
 
 test('plan omits empty optional sections without extra separators', () => {
-  const prompt = planPrompt({ ...plan, miniAudit: '', rules: '', writerRules: '', audience: '', example: '', current: '', ranges: [], insertPoints: [] });
+  const prompt = planPrompt({ ...plan, facts: [], miniAudit: '', rules: '', writerRules: '', audience: '', example: '', current: '', ranges: [], insertPoints: [] });
   for (const heading of ['EJEMPLO REAL', 'TEXTO ACTUAL DEL POST', 'DÓNDE ESTÁ EL POST', 'DÓNDE METER UN POST NUEVO', 'REGLAS DEL SITIO']) {
     assert.ok(!prompt.includes(heading), heading);
   }
@@ -104,4 +106,10 @@ test('planners share identical operations, introduction, and order rules', () =>
   assert.equal(operations(post), operations(fix));
   assert.equal(post.split('\n\nTU TAREA')[0], fix.split('\n\nTU TAREA')[0]);
   assert.equal(post.split('\n\nREGLAS DE LA ORDEN')[1], fix.split('\n\nREGLAS DE LA ORDEN')[1]);
+});
+
+test('plan omits authorized facts section when facts is empty', () => {
+  const prompt = planPrompt({ ...plan, facts: [] });
+  assert.ok(!prompt.includes('DATOS AUTORIZADOS DEL REPO'));
+  assert.ok(prompt.includes('REGLAS DEL SITIO (límites duros)\nReglas\nEstilo\n\nLectores'));
 });

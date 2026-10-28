@@ -166,6 +166,8 @@ test('change order preflight retries use revise and report problems', async (t) 
   d.review = async () => ++reviews === 1 ? { ok: false, problems: ['improve'], changeOrder: raw(invalid) } : approved;
   d.revise = async (prompt) => {
     assert.equal(codex.prompts.length, 1);
+    assert.ok(prompt.includes(input.planPrompt));
+    assert.ok(prompt.includes(JSON.stringify(initial, null, 2)));
     assert.match(prompt, /Your previous order failed validation/);
     assert.match(prompt, /occurs 0 times/);
     return raw(++revisions === 1 ? invalid : change);
@@ -198,8 +200,24 @@ test('revision generated change orders count each attempt once', async (t) => {
 });
 
 test('revisePrompt caps only diff and preserves exact instructions', () => {
-  const suffix = '\nReturn a CHANGE ORDER: the same JSON format as before (title, steps, mustContain, forbiddenPaths, doneWhen) whose steps fix ONLY these problems against the CURRENT state of the files. Every anchor must occur exactly once in the current files: copy it from the diff context. JSON only, no prose.';
-  const prefix = 'Your order was executed but it is not approved yet. Problems:\n- one\n- two\nCurrent changes in the worktree (diff with context):\n';
-  assert.equal(revisePrompt(['one', 'two'], 'x'.repeat(60000) + 'OVER'), prefix + 'x'.repeat(60000) + '\n[diff cut]' + suffix);
-  assert.equal(revisePrompt(['one', 'two'], 'x'.repeat(60000)), prefix + 'x'.repeat(60000) + suffix);
+  const ctx = { planPrompt: 'Original brief', previousOrder: initial };
+  const suffix = '\n=== END OF DIFF ===\nReturn a CHANGE ORDER: the same JSON format as in the brief (analysis, title, meta, steps, mustContain, forbiddenPaths, doneWhen). If the diff is empty, nothing was written: the steps must then apply to the ORIGINAL files exactly as in the brief (use the verified anchors from the brief). If the diff is not empty, the steps fix ONLY the problems against the CURRENT state of the files, and every anchor must occur exactly once in the current files: copy it from the diff context. If a problem says text is not allowed or not in the repo facts, REMOVE that text instead of rewording it. JSON only, no prose.';
+  const prefix = [
+    'Below is the ORIGINAL BRIEF you were given, then the order you wrote from it, then why it is not approved. Write a corrected order.',
+    '=== ORIGINAL BRIEF ===', ctx.planPrompt, '=== END OF ORIGINAL BRIEF ===',
+    '=== YOUR PREVIOUS ORDER (JSON) ===', JSON.stringify(initial, null, 2), '=== END OF PREVIOUS ORDER ===',
+    '=== PROBLEMS ===', '- one', '- two',
+    '=== CURRENT CHANGES IN THE WORKTREE (diff with context; empty means nothing was written) ===', '',
+  ].join('\n');
+  assert.equal(revisePrompt(['one', 'two'], 'x'.repeat(60000) + 'OVER', ctx), prefix + 'x'.repeat(60000) + '\n[diff cut]' + suffix);
+  assert.equal(revisePrompt(['one', 'two'], 'x'.repeat(60000), ctx), prefix + 'x'.repeat(60000) + suffix);
+});
+
+test('revisePrompt includes original brief, previous order, and problems when nothing was written', () => {
+  const prompt = revisePrompt(['executor refused', 'text is not allowed'], '', { planPrompt: 'Original planning brief with verified anchors', previousOrder: initial });
+  assert.ok(prompt.includes('Original planning brief with verified anchors'));
+  assert.ok(prompt.includes(initial.title));
+  assert.ok(prompt.includes(JSON.stringify(initial, null, 2)));
+  assert.ok(prompt.includes('=== PROBLEMS ===\n- executor refused\n- text is not allowed'));
+  assert.ok(prompt.includes('empty means nothing was written'));
 });

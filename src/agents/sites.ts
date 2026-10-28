@@ -16,6 +16,7 @@ export type AgentSite = {
   segments: boolean;     // classify queries by customer segment (needs an audience brief with segments)
   listPosts: (repo: string) => { slug: string; title: string }[]; // posts that already exist, so nothing is duplicated
   postFiles?: (slug: string) => string[]; // repo-relative files that can hold this post's Spanish/primary text, in search order
+  factFiles?: string[]; // repo files whose content is the ONLY authorized source for specs, figures, prices and contact data; handed to the planner
   wholeFile?: boolean; // the post is a whole file (Vexon .mdx), not an object inside a big file
   repo: string;          // the owner's checkout; never edited by agents
   worktree: string;      // agents' own checkout (git worktree of `repo`)
@@ -76,6 +77,7 @@ const improveBrief = (o: BriefOpts, modified: string, langs: string) =>
 
 export const AGENT_SITES: Record<string, AgentSite> = {
   'studioyume.mx': {
+    factFiles: ['src/content/products.ts'],
     short: 'yume', label: 'Yume (studioyume.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: true, listPosts: blogTsPosts, postFiles: () => ['src/content/blog.ts', 'src/content/blog-dulceros.ts'],
     research: {
       context: 'Puedes leer el repo (src/content/products.ts, blog.ts) y buscar en la web para validar demanda y qué responde la competencia. El tema debe conectar con productos o servicios reales de Yume. Solo temas que Yume pueda cumplir con lo que de verdad produce.',
@@ -110,6 +112,7 @@ export const AGENT_SITES: Record<string, AgentSite> = {
 // Luvory deploys from Lovable: a push to main is NOT enough to go live (2026-10-02: production stayed on the old build two days after a push, until the
 // owner pressed Publish). So the live check waits long, and the alert says what the owner has to do.
 AGENT_SITES['luvory.com.mx'] = {
+  factFiles: ['src/data/pricing.ts', 'src/data/business.ts'],
   short: 'luvory', label: 'Luvory (luvory.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: luvoryPosts, postFiles: () => ['src/data/blog-posts.ts'],
   research: {
     context: 'Luvory es una empresa real de renta de baños portátiles de lujo, remolques sanitarios y baños VIP para bodas, conciertos, festivales, eventos deportivos y corporativos en Guadalajara, Zapopan, Tlaquepaque, Tlajomulco y Tequila. Puedes leer el repo (src/data/blog-posts.ts, src/data/pricing.ts, PLAN-trafico-ventas.md, SEO.md) y buscar en la web para validar demanda y qué publica la competencia. Solo temas que Luvory pueda cumplir y respaldar con su oferta real.',
@@ -150,6 +153,7 @@ AGENT_SITES['luvory.com.mx'] = {
 
 // Vexon (Astro): the owner's checkout has an HTTPS remote and this machine has no HTTPS credentials, so agents use the SSH URL (set per command).
 AGENT_SITES['vexonmexico.com.mx'] = {
+  factFiles: ['src/data/modelos.ts', 'src/lib/site.ts', 'src/data/faqs.ts'],
   short: 'vexon', label: 'Vexon (vexonmexico.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: mdxPosts, postFiles: (slug) => [`src/content/blog/${slug}.mdx`], wholeFile: true,
   pendingNote: 'Search Console is not connected for this site yet (no service account has access to vexonmexico.com.mx), so the analyst and the blog score have no Google data until you add one.',
   research: {
@@ -186,6 +190,7 @@ AGENT_SITES['vexonmexico.com.mx'] = {
 // so src/agents/dizayn/prep.py stands in for it. It is proven by replay (selftest.py regenerates a committed post byte for byte), which is why the
 // writer and improver are on here. The fixer stays off: it edits arbitrary files, and nothing replays those.
 AGENT_SITES['dizaynseo.com'] = {
+  factFiles: ['_src/config.py'],
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts, postFiles: () => ['_src/posts.py', '_src/posts_funnel.py', '_src/posts_agent.py'],
   pendingNote: "Posts are written into _src/posts_agent.py (or the post's own file when improving) and the generated files are rebuilt by dizayn/prep.py, a stand-in for the partner's missing generator that is checked against the committed output. The fixer is off for this site.",
   repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com',

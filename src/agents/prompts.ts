@@ -5,6 +5,7 @@ export type PlanInput = {
   miniAudit: string;
   rules: string;
   writerRules: string;
+  facts: { file: string; text: string }[];
   audience: string;
   example: string;
   current: string;
@@ -59,6 +60,10 @@ export function planPrompt(i: PlanInput): string {
     i.brief ? [`TU TAREA`, i.brief].join('\n') : '',
     i.miniAudit,
     siteRules(i.rules, i.writerRules),
+    i.facts.length ? [
+      'DATOS AUTORIZADOS DEL REPO (única fuente permitida para medidas, especificaciones, cifras, precios, teléfonos y direcciones; si un dato no está aquí ni en una fuente primaria que abriste en la web, NO lo escribas):',
+      ...i.facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
+    ].join('\n') : '',
     i.audience,
     i.example ? [`EJEMPLO REAL DE UN POST DE ESTE SITIO (copia su forma exacta, campo por campo, con el mismo orden y las mismas comillas):`, `<<<EJEMPLO`, i.example, `EJEMPLO>>>`].join('\n') : '',
     i.current ? [`TEXTO ACTUAL DEL POST (esto es lo que vas a reescribir o ampliar):`, `<<<ACTUAL`, i.current, `ACTUAL>>>`].join('\n') : '',

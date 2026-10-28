@@ -17,11 +17,16 @@ export type HybridDeps = {
 export type HybridInput = { planPrompt: string; rules: string; allowedPaths: string[]; maxRounds?: number };
 export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; revisions: number; executions: number; reviews: number; rounds: number } };
 
-export function revisePrompt(problems: string[], diff: string): string {
-  return 'Your order was executed but it is not approved yet. Problems:\n- ' + problems.join('\n- ')
-    + '\nCurrent changes in the worktree (diff with context):\n'
-    + diff.slice(0, 60000) + (diff.length > 60000 ? '\n[diff cut]' : '')
-    + '\nReturn a CHANGE ORDER: the same JSON format as before (title, steps, mustContain, forbiddenPaths, doneWhen) whose steps fix ONLY these problems against the CURRENT state of the files. Every anchor must occur exactly once in the current files: copy it from the diff context. JSON only, no prose.';
+export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt: string; previousOrder: WorkOrder }): string {
+  return [
+    'Below is the ORIGINAL BRIEF you were given, then the order you wrote from it, then why it is not approved. Write a corrected order.',
+    '=== ORIGINAL BRIEF ===', ctx.planPrompt, '=== END OF ORIGINAL BRIEF ===',
+    '=== YOUR PREVIOUS ORDER (JSON) ===', JSON.stringify(ctx.previousOrder, null, 2), '=== END OF PREVIOUS ORDER ===',
+    '=== PROBLEMS ===', ...problems.map((problem) => '- ' + problem),
+    '=== CURRENT CHANGES IN THE WORKTREE (diff with context; empty means nothing was written) ===',
+    diff.slice(0, 60000) + (diff.length > 60000 ? '\n[diff cut]' : ''), '=== END OF DIFF ===',
+    'Return a CHANGE ORDER: the same JSON format as in the brief (analysis, title, meta, steps, mustContain, forbiddenPaths, doneWhen). If the diff is empty, nothing was written: the steps must then apply to the ORIGINAL files exactly as in the brief (use the verified anchors from the brief). If the diff is not empty, the steps fix ONLY the problems against the CURRENT state of the files, and every anchor must occur exactly once in the current files: copy it from the diff context. If a problem says text is not allowed or not in the repo facts, REMOVE that text instead of rewording it. JSON only, no prose.',
+  ].join('\n');
 }
 
 export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<HybridResult> {
@@ -77,11 +82,11 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     if (stages.rounds >= (input.maxRounds ?? 3)) {
       throw new Error('not approved after ' + stages.rounds + ' rounds: ' + problems.join('; '));
     }
-    if (changeRaw === undefined) changeRaw = await revise(revisePrompt(problems, d.diff()));
+    if (changeRaw === undefined) changeRaw = await revise(revisePrompt(problems, d.diff(), { planPrompt: input.planPrompt, previousOrder: order }));
     let first = true;
     order = await getOrder((prompt) => {
       if (first) { first = false; return Promise.resolve(changeRaw!); }
       return revise(prompt);
-    }, revisePrompt(problems, d.diff()));
+    }, revisePrompt(problems, d.diff(), { planPrompt: input.planPrompt, previousOrder: order }));
   }
 }
