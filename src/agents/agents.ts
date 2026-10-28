@@ -11,9 +11,23 @@ import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
 import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from './audience.ts';
-import { runClaude, extractJson, type ClaudeResult } from './runner.ts';
+import { runClaude, extractJson, assertCodexSubscription, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
+
+let executorFallbackWarned = false;
+export function executorMode(): 'hybrid' | 'claude' {
+  if (process.env.AGENT_EXECUTOR === 'claude') return 'claude';
+  try { assertCodexSubscription(); return 'hybrid'; }
+  catch (e) {
+    if (!executorFallbackWarned) {
+      executorFallbackWarned = true;
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn('[agents] Codex is not available, falling back to the Claude-only executor: ' + message);
+    }
+    return 'claude';
+  }
+}
 
 export class LimitError extends Error {}
 export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
@@ -43,11 +57,11 @@ export function nextFreeDate(db: DatabaseSync, siteId: number, from = mxNow().da
 }
 
 const sh = (cwd: string, cmd: string, args: string[], timeout = 600_000) => execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
-const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
+export const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
 /** git against the site's remote. With `remoteUrl` the remote is defined for this one command only (the owner's checkout stays untouched). */
 const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
-async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number }): Promise<string> {
+export async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number }): Promise<string> {
   const r = await runClaude(o);
   c.usage.push(r);
   if (r.limited) throw new LimitError(r.error ?? 'usage limit');
@@ -55,7 +69,7 @@ async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; ma
   return r.text;
 }
 
-const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname) + seoPlaybook();
+export const audience = (c: Ctx) => audienceBrief(new URL(c.site.url).hostname) + seoPlaybook();
 /** Ranking used to pick the next topic: the owner's target customers first, bulk/industrial last. */
 export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corporate-event' THEN 3 WHEN 'planner' THEN 3 WHEN 'bulk' THEN -4 ELSE 0 END)";
 
@@ -73,7 +87,7 @@ export function prepareWorktree(cfg: AgentSite, branch: string): string {
 }
 // node_modules is a symlink to the owner's install: some repos ignore `node_modules/` (directories only), so it must never be staged.
 export const changedFiles = (wt: string) => { git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
-const typecheck = (cfg: AgentSite) => { try { sh(cfg.worktree, cfg.typecheck[0], cfg.typecheck.slice(1), 900_000); return null; } catch (e) { return String((e as any).stdout ?? e).slice(0, 1500); } };
+export const typecheck = (cfg: AgentSite) => { try { sh(cfg.worktree, cfg.typecheck[0], cfg.typecheck.slice(1), 900_000); return null; } catch (e) { return String((e as any).stdout ?? e).slice(0, 1500); } };
 const commit = (wt: string, msg: string) => git(wt, 'commit', '-m', `${msg}\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`);
 
 /** Added lines only: the em-dash rule applies to new copy, not to what already exists. */
@@ -229,7 +243,7 @@ function approvalFor(c: Ctx, kind: string, title: string, payload: object, diff:
 }
 
 /** From the Get Found playbook: compare against the #1 result before writing, and place the keyword where it counts. Operational, so the writer cannot skip it. */
-const MINI_AUDIT = `Antes de escribir haz la mini auditoría del playbook: busca en la web la consulta principal, abre los 3 primeros resultados y anota sus palabras, sus H2 y cuántas veces usan la palabra clave. Tu texto cubre lo mismo con tus propias palabras (no copies encabezados idénticos) y supera ligeramente al #1 en profundidad útil, no en relleno. La palabra clave principal va en title (<=60 caracteres), meta description (80 a 156), URL, H1 y al menos un H2. Mínimo 3 enlaces internos, al menos uno a la página que vende (producto o servicio) con ancla descriptiva de 1 a 5 palabras. Cada H2 abre con una respuesta directa de 40 a 60 palabras. Si algo no lo puedes verificar, déjalo fuera.`;
+export const MINI_AUDIT = `Antes de escribir haz la mini auditoría del playbook: busca en la web la consulta principal, abre los 3 primeros resultados y anota sus palabras, sus H2 y cuántas veces usan la palabra clave. Tu texto cubre lo mismo con tus propias palabras (no copies encabezados idénticos) y supera ligeramente al #1 en profundidad útil, no en relleno. La palabra clave principal va en title (<=60 caracteres), meta description (80 a 156), URL, H1 y al menos un H2. Mínimo 3 enlaces internos, al menos uno a la página que vende (producto o servicio) con ancla descriptiva de 1 a 5 palabras. Cada H2 abre con una respuesta directa de 40 a 60 palabras. Si algo no lo puedes verificar, déjalo fuera.`;
 
 type Draftable = { id: number | null; title: string; slug: string; query: string; why: string; action: string; improve?: boolean };
 
@@ -259,7 +273,7 @@ export const improverAgent: AgentFn = async (c) => {
     why: `${row.reasons.join('; ')}${row.impressions ? `. Search Console 90d: ${row.impressions} impresiones, ${row.clicks} clics, posición media ${row.position}` : '. Sin datos de búsqueda aún'}` }, mxNow().date);
 };
 
-async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
+export function startDraft(c: Ctx, topic: Draftable, publishAt: string) {
   const cfg = c.cfg!;
   // unique per run: a re-run (restart, retry) must never reset the branch of a draft that is still waiting for approval
   const branch = `agent/post-${topic.slug}${topic.improve ? '-' + publishAt : ''}-${Date.now().toString(36)}`;
@@ -268,6 +282,36 @@ async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<
   if (!cfg.postBrief) throw new Error('this site has no writer brief configured');
   const opts = { slug: merge ?? topic.slug, improve: !!topic.improve, merge };
   const brief = cfg.postBrief({ kind: topic.improve ? 'improve' : merge ? 'merge' : 'new', title: topic.title, slug: topic.slug, query: topic.query, why: topic.why, merge, publishAt });
+  return { cfg, branch, wt, merge, opts, brief };
+}
+
+/** Deterministic checks after every model edit: regenerate derived files, typecheck, then the site's "is it wired in everywhere" rules. */
+export function makeVerify(cfg: AgentSite, wt: string, opts: PostOpts): () => string | null {
+  return () => {
+    try { cfg.postEdit?.(wt, opts); } catch (e) { return `post-edit step failed: ${String((e as any).stderr ?? (e as Error).message).slice(0, 600)}`; }
+    const tc = typecheck(cfg); if (tc) return tc;
+    const v = cfg.validate?.(wt, opts) ?? [];
+    return v.length ? `The post is not wired in correctly:\n- ${v.join('\n- ')}` : null;
+  };
+}
+
+export async function finishDraft(c: Ctx, topic: Draftable, publishAt: string, s: { cfg: AgentSite; branch: string; wt: string; merge: string | null }, text: string, err: string | null, extra?: Record<string, unknown>): Promise<string> {
+  const { cfg, branch, wt, merge } = s;
+  const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
+  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths)];
+  if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
+  const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
+  commit(wt, `content(blog): ${topic.title}`);
+  const slug = merge ?? meta.slug ?? topic.slug;
+  const enSlug = enSlugFor(cfg, slug, meta.enSlug);
+  const id = approvalFor(c, 'post', `${topic.improve ? 'Improve' : merge ? 'Update' : 'New post'}: ${topic.title}`, { branch, slug, enSlug, topicId: topic.id ?? null, publishAt, files, claims: meta.claims ?? [], urls: cfg.blogUrl(slug, enSlug), marker: pickMarker(diff), ...extra }, diff);
+  if (topic.id) c.db.prepare("UPDATE topics SET status = 'drafted' WHERE id = ?").run(topic.id);
+  await sendAlert(`✍️ Borrador listo para aprobar: ${topic.title} (${topic.improve ? 'mejora de post existente' : 'publicar ' + publishAt}). Revisa en el dashboard: /agents`);
+  return `draft #${id} "${topic.title}" for ${publishAt}: ${files.length} files`;
+};
+
+async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
+  const { cfg, branch, wt, merge, opts, brief } = startDraft(c, topic, publishAt);
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
     prompt: `Eres el redactor de ${c.site.url}. ${brief}
@@ -279,27 +323,11 @@ ${audience(c)}
 Al terminar responde SOLO con JSON: {"slug":"...","enSlug":"...","claims":[{"claim":"afirmación factual del post","source":"archivo del repo o URL abierta"}]}
 ${extra}`,
   });
-  /** Deterministic checks after every model edit: regenerate derived files, typecheck, then the site's "is it wired in everywhere" rules. */
-  const verify = (): string | null => {
-    try { cfg.postEdit?.(wt, opts); } catch (e) { return `post-edit step failed: ${String((e as any).stderr ?? (e as Error).message).slice(0, 600)}`; }
-    const tc = typecheck(cfg); if (tc) return tc;
-    const v = cfg.validate?.(wt, opts) ?? [];
-    return v.length ? `The post is not wired in correctly:\n- ${v.join('\n- ')}` : null;
-  };
+  const verify = makeVerify(cfg, wt, opts);
   let text = await run();
   let err = verify();
   if (err) { text = await run(`Los chequeos automáticos fallaron, corrige solo esto:\n${err}`); err = verify(); }
-  const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
-  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths)];
-  if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
-  const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
-  commit(wt, `content(blog): ${topic.title}`);
-  const slug = merge ?? meta.slug ?? topic.slug;
-  const enSlug = enSlugFor(cfg, slug, meta.enSlug);
-  const id = approvalFor(c, 'post', `${topic.improve ? 'Improve' : merge ? 'Update' : 'New post'}: ${topic.title}`, { branch, slug, enSlug, topicId: topic.id ?? null, publishAt, files, claims: meta.claims ?? [], urls: cfg.blogUrl(slug, enSlug), marker: pickMarker(diff) }, diff);
-  if (topic.id) c.db.prepare("UPDATE topics SET status = 'drafted' WHERE id = ?").run(topic.id);
-  await sendAlert(`✍️ Borrador listo para aprobar: ${topic.title} (${topic.improve ? 'mejora de post existente' : 'publicar ' + publishAt}). Revisa en el dashboard: /agents`);
-  return `draft #${id} "${topic.title}" for ${publishAt}: ${files.length} files`;
+  return finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, text, err);
 };
 
 
