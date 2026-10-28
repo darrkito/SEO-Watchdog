@@ -16,7 +16,7 @@ import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeR
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
 import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
-import { planPrompt, reviewPrompt, type PlanInput } from './prompts.ts';
+import { planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 
@@ -407,6 +407,67 @@ ${extra}`,
 
 
 // ---------- fixer ----------
+export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; list: any[]; picked: boolean }, override: Partial<HybridDeps> = {}): Promise<string> {
+  const scout = await runCodex({ prompt: scoutPrompt(o.list.map((f) => ({ id: f.id, rule: f.rule_id, subject: f.subject, message: f.message })), ''), cwd: o.wt, write: false, timeoutMs: 600_000 });
+  if (scout.limited) throw new LimitError(scout.error ?? 'codex usage limit');
+  const scoutText = scout.ok ? scout.text : '';
+  const planReplies: string[] = [];
+  const planPrompt = fixerPlanPrompt({
+    siteUrl: c.site.url,
+    findings: o.list.map((f) => ({ id: f.id, rule: f.rule_id, severity: f.severity, subject: f.subject, message: f.message })),
+    scout: scoutText || '(the scout found nothing; skip findings you cannot place with certainty)',
+    rules: o.cfg.rules, audience: audience(c),
+    allowedPathsNote: 'cualquier archivo del repo EXCEPTO pagos, checkout, emails, rutas de API, vercel.json, .env y package.json (están prohibidos)',
+    picked: o.picked,
+  });
+  const defaults: HybridDeps = {
+    plan: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 12, timeoutMs: 1_200_000 }),
+    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
+    execute: (p) => runCodex({ prompt: p, cwd: o.wt, write: true, timeoutMs: 900_000 }),
+    verify: () => {
+      const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f));
+      if (bad.length) return `forbidden files were changed, revert them: ${bad.join(', ')}`;
+      return typecheck(o.cfg);
+    },
+    addedText: () => {
+      git(o.wt, 'add', '-A');
+      git(o.wt, 'reset', '-q', '--', 'node_modules');
+      return addedLines(git(o.wt, 'diff', '--cached')).join('\n');
+    },
+    diff: () => {
+      git(o.wt, 'add', '-A');
+      git(o.wt, 'reset', '-q', '--', 'node_modules');
+      return git(o.wt, 'diff', '--cached', '-U25');
+    },
+    review: async (order, diff): Promise<Review> => {
+      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
+      const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
+      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };
+    },
+    root: o.wt, log: c.log,
+  };
+  const deps = { ...defaults, ...override };
+  const plan = deps.plan;
+  deps.plan = async (p) => { const reply = await plan(p); planReplies.push(reply); return reply; };
+  try { await runHybrid(deps, { planPrompt, rules: o.cfg.rules, allowedPaths: ['*'] }); }
+  catch (e) {
+    git(o.wt, 'reset', '--hard');
+    git(o.wt, 'clean', '-fd', '-e', 'node_modules');
+    if (e instanceof HybridLimit) throw new LimitError(e.message);
+    throw e;
+  }
+  for (const reply of planReplies) {
+    try {
+      const { meta } = extractJson<{ meta?: { fixed?: unknown[]; skipped?: unknown[] } }>(reply);
+      if (meta && typeof meta === 'object' && !Array.isArray(meta) && Array.isArray(meta.fixed)) {
+        return JSON.stringify({ fixed: meta.fixed ?? [], skipped: meta.skipped ?? [] });
+      }
+    } catch { /* Try the next planner reply. */ }
+  }
+  return JSON.stringify({ fixed: [], skipped: [] });
+}
+
 export const fixerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
   const cfg = c.cfg;
@@ -420,7 +481,7 @@ export const fixerAgent: AgentFn = async (c) => {
   const autonomy = (c.db.prepare("SELECT autonomy FROM agent_settings WHERE agent = 'fixer' AND site_id = ?").get(c.site.id) as { autonomy: string } | undefined)?.autonomy ?? 'approve';
   const branch = ids ? `agent/fix-${mxNow().date}-${Date.now().toString(36)}` : `agent/fix-${mxNow().date}`; // a picked batch never overwrites an earlier pending branch
   const wt = prepareWorktree(cfg, branch);
-  const text = await ask(c, {
+  const text = executorMode() === 'hybrid' ? await fixerHybridText(c, { cfg, wt, list, picked: !!ids }) : await ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write'], maxTurns: 40, timeoutMs: 1_800_000,
     prompt: `Eres el agente corrector SEO de ${c.site.url}. Estos son los hallazgos abiertos del Watchdog (datos reales, cada uno con la URL afectada):
 ${JSON.stringify(list)}

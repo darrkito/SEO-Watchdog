@@ -2,7 +2,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { h, raw, layout, chip, ago, type Html, type Sev } from '../html.ts';
 import { SCHEDULE, ALL_AGENTS, agentSites, decide, runAgent, inFlight, cfgOf, capable, isPaused, resumeQueued } from './scheduler.ts';
-import { LLM_AGENTS } from './agents.ts';
+import { LLM_AGENTS, executorMode } from './agents.ts';
 import { blogScores } from './blogscore.ts';
 import { TARGET, type Segment } from './audience.ts';
 import type { Site } from '../db.ts';
@@ -51,12 +51,14 @@ const sev = (s: string): Sev => (s === 'ok' ? 'good' : s === 'failed' ? 'critica
 const fmt = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n ?? 0));
 const hostOf = (s: Site) => new URL(s.url).hostname;
 
-function approvalCard(a: any, siteName?: string): Html {
+export function approvalCard(a: any, siteName?: string): Html {
   const p = JSON.parse(a.payload_json);
   return h`<div class="card" id="approval-${a.id}" style="margin-bottom:12px">
     <div class="row"><h3>${chip('info', a.kind === 'post' ? 'Post' : a.kind === 'page' ? 'Page' : 'Fix')} ${a.title}</h3><span class="muted small">${siteName ? `${siteName} · ` : ''}#${a.id} · ${ago(a.created_at)}</span></div>
     ${p.urls?.[0] ? h`<p class="small">Post being changed: <a href="${p.urls[0]}" target="_blank" rel="noopener">${p.urls[0]}</a></p>` : ''}
     ${p.publishAt ? h`<p class="small">Scheduled for <b>${p.publishAt}</b>. Files: ${(p.files ?? []).join(', ')}</p>` : h`<p class="small">Files: ${(p.files ?? []).join(', ')}</p>`}
+    ${p.hybrid ? h`<p class="small">Built in hybrid mode: ${p.hybrid.plans} plan, ${p.hybrid.executions} Codex run(s), ${p.hybrid.reviews} review(s), ${p.hybrid.rounds} extra round(s).</p>
+    <details><summary class="small">Claude's analysis and review</summary>${p.hybrid.analysis ? h`<p>${p.hybrid.analysis}</p>` : ''}${p.hybrid.reviewNotes?.length ? h`<ul>${p.hybrid.reviewNotes.map((note: string) => h`<li>${note}</li>`)}</ul>` : ''}</details>` : ''}
     ${p.claims?.length ? h`<details><summary class="small">Facts the writer relied on (${p.claims.length})</summary><ul class="urls">${p.claims.map((c: any) => h`<li><span class="u">${c.claim}<br><span class="m">${c.source}</span></span></li>`)}</ul></details>` : ''}
     <details><summary class="small">Diff</summary><pre style="overflow-x:auto;font-size:12px;max-height:520px">${a.diff.slice(0, 60_000)}</pre></details>
     <div class="row" style="justify-content:flex-start;margin-top:8px">
@@ -80,7 +82,8 @@ function workingBanner(db: DatabaseSync, only?: number): Html | '' {
 function killCard(db: DatabaseSync): Html {
   const paused = isPaused(db), waiting = (db.prepare('SELECT COUNT(*) n FROM agent_queue').get() as { n: number }).n;
   return h`<div class="card row">${paused ? h`<span>${chip('warn', 'Paused')} <span class="small">${waiting} job${waiting === 1 ? '' : 's'} waiting in the queue. Nothing is cancelled; Resume continues them in order.</span></span>` : h`<span>${chip('good', 'Fleet running')}${waiting ? h` <span class="small muted">${waiting} in the queue</span>` : ''}</span>`}
-    <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${paused ? 1 : 0}"><button class="btn ${paused ? 'primary' : ''}">${paused ? 'Resume all agents' : 'Pause all agents'}</button></form></div>`;
+    <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${paused ? 1 : 0}"><button class="btn ${paused ? 'primary' : ''}">${paused ? 'Resume all agents' : 'Pause all agents'}</button></form></div>
+    <p class="small muted">${executorMode() === 'hybrid' ? 'Executor: hybrid (Claude plans and reviews, Codex builds)' : 'Executor: Claude only (Codex is not available, or AGENT_EXECUTOR=claude)'}</p>`;
 }
 
 const runsList = (db: DatabaseSync, siteId?: number): Html => {
