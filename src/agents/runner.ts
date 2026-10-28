@@ -118,7 +118,7 @@ export function runCodex(o: { prompt: string; cwd: string; write: boolean; timeo
           const blocked = /^BLOCKED:/m.test(text), failed = code !== 0 || text === '';
           const limited = failed && /usage limit|rate.?limit|limit reached|quota|too many requests|429/i.test(stderr + stdout + text);
           const ok = !failed && !blocked;
-          finish({ ok, limited, blocked, text, ...(!ok ? { error: blocked ? text.split('\n').find((line) => line.startsWith('BLOCKED:'))! : (stderr || stdout || `exit ${code}`).slice(0, 500) } : {}) });
+          finish({ ok, limited, blocked, text, ...(!ok ? { error: blocked ? text.split('\n').find((line) => line.startsWith('BLOCKED:'))! : (limited ? ((stderr + stdout).split('\n').find((line) => /usage limit|rate.?limit|limit reached|quota|too many requests|429/i.test(line)) ?? 'usage limit') : (stderr || stdout || `exit ${code}`)).slice(0, 500) } : {}) });
         } catch (e) { fail(e as Error); }
       });
       child.stdin.end(o.prompt);
