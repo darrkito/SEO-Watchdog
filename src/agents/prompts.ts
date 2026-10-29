@@ -2,6 +2,7 @@ import type { WorkOrder } from './orders.ts';
 
 export type PlanInput = {
   brief: string;
+  priorFailure?: string;
   miniAudit: string;
   rules: string;
   writerRules: string;
@@ -63,10 +64,17 @@ const guideSection = (guides: { file: string; text: string }[]): string => guide
   ...guides.flatMap((guide) => [`=== ${guide.file} ===`, guide.text]),
 ].join('\n') : '';
 
+const priorFailureSection = (failure?: string): string => failure ? [
+  'INTENTO ANTERIOR FALLIDO (corrige la causa, no repitas el mismo error)',
+  failure.slice(0, 1500),
+  'Escribe la orden de modo que este fallo no pueda ocurrir otra vez; si el fallo fue del revisor, ajusta el texto; si fue de un archivo generado o una ruta, no lo toques.',
+].join('\n') : '';
+
 export function planPrompt(i: PlanInput): string {
   return sections([
     INTRO,
     i.brief ? [`TU TAREA`, i.brief].join('\n') : '',
+    priorFailureSection(i.priorFailure),
     i.miniAudit,
     siteRules(i.rules, i.writerRules),
     i.facts.length ? [
@@ -135,7 +143,7 @@ If you cannot find it, write \`FINDING <id>\` then \`NOT FOUND: <reason>\`.`,
   ].join('\n');
 }
 
-export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; derivedPaths?: string[]; picked: boolean }): string {
+export function fixerPlanPrompt(i: { priorFailure?: string; siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; derivedPaths?: string[]; picked: boolean }): string {
   return sections([
     INTRO,
     [`TU TAREA`,
@@ -146,6 +154,7 @@ export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; ru
       `<<<INFORME`, i.scout.slice(0, 40000), `INFORME>>>`,
       `Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (falta un dato que no tienes, o toca pagos, checkout, emails o rutas), sáltalo y dilo en "analysis". Respeta el posicionamiento de la marca: solo se corrige lo técnico o SEO.`,
     ].join('\n'),
+    priorFailureSection(i.priorFailure),
     siteRules(i.rules), guideSection(i.guides), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
   ]);
 }

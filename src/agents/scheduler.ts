@@ -59,6 +59,9 @@ export function seedSettings(db: DatabaseSync): void {
 
 const queued = new Set<string>();
 let limitRetryMs = 30 * 60_000;
+export const MAX_AUTO_ATTEMPTS = 3;
+export let autoRetryMs = 120_000;
+export const setAutoRetry = (ms: number): void => { autoRetryMs = ms; };
 /** Test hook: how long a clicked job waits after the usage limit before it runs again. */
 export const setLimitRetry = (ms: number): void => { limitRetryMs = ms; };
 /** Agent jobs running or waiting in line right now, as `agent:siteId:detail` (the dashboard shows them so a click is never silent). */
@@ -70,16 +73,17 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   if (queued.has(key)) return Promise.resolve();
   if (slot === null) {
     db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail);
-    db.prepare("UPDATE agent_queue SET state = 'queued', last_error = NULL, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ? AND state = 'failed'").run(agent, site.id, detail);
+    db.prepare("UPDATE agent_queue SET state = 'queued', attempts = 0, last_error = NULL, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ? AND state = 'failed'").run(agent, site.id, detail);
   }
   if (isPaused(db)) return Promise.resolve(); // parked: the row stays, resume restores it
   queued.add(key);
-  let limited = false, parked = false, status = 'failed';
+  let limited = false, retry = false, parked = false, status = 'failed';
   return serial(async () => {
     if (isPaused(db)) { parked = true; return; } // paused while this waited in line: step aside, keep the queue row
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
     if (slot === null) db.prepare("UPDATE agent_queue SET state = 'running', attempts = attempts + 1, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(agent, site.id, detail);
-    const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
+    const q = slot === null ? db.prepare('SELECT attempts, last_error FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').get(agent, site.id, detail) as { attempts: number; last_error: string | null } | undefined : undefined;
+    const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args, priorFailure: q && q.attempts > 1 ? q.last_error ?? undefined : undefined };
     ctx.progress = (s, n) => setStage(db, id, s, n);
     status = 'ok';
     let output = '', error: string | null = null;
@@ -87,13 +91,14 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
     catch (e) { status = e instanceof LimitError ? 'limited' : 'failed'; error = String((e as Error).message ?? e).slice(0, 1000); }
     db.prepare("UPDATE agent_runs SET finished_at = datetime('now'), status = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?, output = ?, error = ? WHERE id = ?")
       .run(status, ctx.usage.reduce((a, u) => a + u.tokensIn, 0), ctx.usage.reduce((a, u) => a + u.tokensOut, 0), ctx.usage.reduce((a, u) => a + u.costUsd, 0), output.slice(0, 20_000), error, id);
-    if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' ? 'queued' : 'failed', status === 'limited' ? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
-    if (status === 'failed') await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
+    retry = slot === null && status === 'failed' && (q?.attempts ?? 0) < MAX_AUTO_ATTEMPTS;
+    if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' || retry ? 'queued' : 'failed', status === 'limited' ? q?.last_error ?? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
+    if (status === 'failed' && !retry) await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
     if (status === 'limited') { limited = slot === null; console.log(`[${agent}] usage limit reached; ${slot === null ? 'the click stays queued and retries' : 'the schedule retries'} in ${Math.round(limitRetryMs / 60_000)} min`); }
   }).catch((e) => console.error(`[${agent}]`, e)).finally(() => {
-    if (limited) {
+    if (limited || retry) {
       // A clicked job must not vanish when the Claude session limit is hit: keep its queue row (survives a restart) and its dedupe key, try again later.
-      setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limitRetryMs).unref();
+      setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limited ? limitRetryMs : autoRetryMs).unref();
       return;
     }
     queued.delete(key);
@@ -142,7 +147,7 @@ export function retryQueued(db: DatabaseSync, queueId: number): void {
   if (!q) return;
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
   if (!site || !AGENTS[q.agent]) return;
-  db.prepare("UPDATE agent_queue SET state = 'queued', last_error = NULL, updated_at = datetime('now') WHERE id = ? AND state = 'failed'").run(queueId);
+  db.prepare("UPDATE agent_queue SET state = 'queued', attempts = 0, last_error = NULL, updated_at = datetime('now') WHERE id = ? AND state = 'failed'").run(queueId);
   void runAgent(db, q.agent, site, null, queueArgs(q.slug));
 }
 

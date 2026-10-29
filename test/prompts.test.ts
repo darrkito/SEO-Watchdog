@@ -152,3 +152,19 @@ test('planner and reviewer describe generated paths', () => {
   assert.ok(planPrompt(plan).includes('Los archivos generados (ninguno)'));
   assert.ok(reviewPrompt({ ...review, derivedNote: 'gen/x' }).includes('ARCHIVOS GENERADOS (los produce el hook del repo, no son parte del trabajo; ignóralos aunque no estén en la orden): gen/x'));
 });
+
+
+test('planner prompts include capped prior failure immediately after the task', () => {
+  const heading = 'INTENTO ANTERIOR FALLIDO (corrige la causa, no repitas el mismo error)';
+  const instruction = 'Escribe la orden de modo que este fallo no pueda ocurrir otra vez; si el fallo fue del revisor, ajusta el texto; si fue de un archivo generado o una ruta, no lo toques.';
+  for (const [plain, withFailure] of [
+    [planPrompt(plan), planPrompt({ ...plan, priorFailure: 'x'.repeat(1500) + 'CUT' })],
+    [fixerPlanPrompt(fixer), fixerPlanPrompt({ ...fixer, priorFailure: 'x'.repeat(1500) + 'CUT' })],
+  ]) {
+    assert.ok(!plain.includes(heading));
+    assert.ok(withFailure.includes(`${heading}\n${'x'.repeat(1500)}\n${instruction}`));
+    assert.ok(!withFailure.includes('CUT'));
+    assert.ok(withFailure.indexOf(heading) > withFailure.indexOf('TU TAREA'));
+    assert.ok(withFailure.indexOf(heading) < withFailure.indexOf('REGLAS DEL SITIO'));
+  }
+});

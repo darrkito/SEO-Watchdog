@@ -6,6 +6,7 @@ import { LLM_AGENTS, executorMode } from './agents.ts';
 import { blogScores } from './blogscore.ts';
 import { TARGET, type Segment } from './audience.ts';
 import type { Site } from '../db.ts';
+import { listJobs } from './jobs.ts';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const when = (a: string) => { const e = SCHEDULE.find((s) => s.agent === a)!; return `${e.days.length === 7 ? 'daily' : e.days.map((d) => DAYS[d]).join(' + ')} ${e.at} (Mexico City)`; };
@@ -79,10 +80,12 @@ function workingBanner(db: DatabaseSync, only?: number): Html | '' {
   return h`<div class="banner info"><b>Working now:</b> ${label}. This page refreshes by itself; a draft appears under "Waiting for you" (newest first) when it is ready.</div>`;
 }
 
-function killCard(db: DatabaseSync): Html {
+function killCard(db: DatabaseSync, siteId?: number): Html {
   const paused = isPaused(db), waiting = (db.prepare('SELECT COUNT(*) n FROM agent_queue').get() as { n: number }).n;
+  const retrying = listJobs(db, siteId).waiting.filter((job) => job.note);
   return h`<div class="card row">${paused ? h`<span>${chip('warn', 'Paused')} <span class="small">${waiting} job${waiting === 1 ? '' : 's'} waiting in the queue. Nothing is cancelled; Resume continues them in order.</span></span>` : h`<span>${chip('good', 'Fleet running')}${waiting ? h` <span class="small muted">${waiting} in the queue</span>` : ''}</span>`}
     <form method="post" action="/agents/kill"><input type="hidden" name="enabled" value="${paused ? 1 : 0}"><button class="btn ${paused ? 'primary' : ''}">${paused ? 'Resume all agents' : 'Pause all agents'}</button></form></div>
+    ${retrying.map((job) => h`<p class="small muted">${job.label}: ${job.note}</p>`)}
     <p class="small muted">${executorMode() === 'hybrid' ? 'Executor: hybrid (Claude plans and reviews, Codex builds)' : 'Executor: Claude only (Codex is not available, or AGENT_EXECUTOR=claude)'}</p>`;
 }
 
@@ -155,7 +158,7 @@ export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: 
   return layout(`Agents · ${cfg.label}`, h`<p class="small"><a href="/agents">← All agents</a> · <a href="/site/${id}">Site health →</a></p>
     <h1>${cfg.label}</h1>
     ${msg?.error ? h`<div class="banner warn">${msg.error}</div>` : ''}${msg?.ok ? h`<div class="banner info">${msg.ok}</div>` : ''}
-    ${workingBanner(db, id)}${killCard(db)}
+    ${workingBanner(db, id)}${killCard(db, id)}
     <h2>Waiting for you${pending.length ? ` (${pending.length})` : ''}</h2>
     ${pending.length ? pending.map((a) => approvalCard(a)) : h`<div class="card empty">Nothing to approve.</div>`}
     <h2>Agents</h2>

@@ -41,7 +41,8 @@ export function listJobs(db: DatabaseSync, siteId?: number): { running: Job[]; w
   const queueJob = (q: any, kind: 'waiting' | 'failed'): Job => ({ id: q.id, queueId: q.id, kind, agent: q.agent, siteId: q.site_id, detail: q.slug, label: jobLabel(db, q.site_id, q.agent, q.slug), attempts: q.attempts, steps: [], ...(kind === 'failed' ? { error: q.last_error ?? '' } : {}) });
   return {
     running: runs("r.status = 'running'", 'ORDER BY r.id').map((r) => runJob(r, 'running')),
-    waiting: queue('queued', 'ASC').map((q, i) => ({ ...queueJob(q, 'waiting'), position: i + 1 })),
+    // Keep in sync with scheduler's MAX_AUTO_ATTEMPTS; importing it would create a cycle.
+    waiting: queue('queued', 'ASC').map((q, i) => ({ ...queueJob(q, 'waiting'), position: i + 1, ...(q.attempts > 0 && q.last_error ? { note: `retrying automatically (attempt ${Math.min(q.attempts + 1, 3)} of 3): ${q.last_error.slice(0, 160)}` } : {}) })),
     failed: queue('failed', 'DESC').map((q) => queueJob(q, 'failed')),
     recent: runs("r.status IN ('ok','failed','limited') AND r.agent IN ('improver','writer','fixer')", 'ORDER BY r.id DESC LIMIT 10').map((r) => runJob(r, 'recent')),
   };
