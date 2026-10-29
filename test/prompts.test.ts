@@ -229,3 +229,17 @@ test('review compacts long step text across orders and retains short text and fi
   for (const marker of ['anchor: anchor', 'note: note', 'mustContain: ["required"]']) assert.ok(prompt.includes(marker));
   assert.ok(!prompt.includes('x'.repeat(401)));
 });
+
+test('planner prompts include never-write entries immediately before the checklist only when present', () => {
+  const heading = 'NUNCA ESCRIBAS (rechazos reales anteriores del revisor de este sitio; si tu texto cae en alguno, se rechaza y se repite el trabajo):';
+  const section = `${heading}\n- Primera regla\n- Segunda regla\n\nANTES DE ESCRIBIR`;
+  for (const makePrompt of [
+    (neverWrite?: string[]) => planPrompt({ ...plan, neverWrite }),
+    (neverWrite?: string[]) => slimPlanPrompt({ ...plan, neverWrite }),
+    (neverWrite?: string[]) => fixerPlanPrompt({ ...fixer, neverWrite }),
+  ]) {
+    assert.ok(makePrompt(['Primera regla', 'Segunda regla']).includes(section));
+    assert.ok(!makePrompt([]).includes(heading));
+    assert.ok(!makePrompt().includes(heading));
+  }
+});

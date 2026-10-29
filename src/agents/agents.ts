@@ -400,7 +400,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
   const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : await researchFor(c, topic, brief);
   const planInput = {
-    brief, research, priorFailure: c.priorFailure, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
+    brief, research, priorFailure: c.priorFailure, neverWrite: cfg.neverWrite, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
     facts: factsOf(cfg, wt), guides: guidesOf(cfg),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
@@ -512,7 +512,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
   const scoutText = scout.ok ? scout.text : '';
   const planReplies: string[] = [];
   const planPrompt = fixerPlanPrompt({
-    siteUrl: c.site.url, priorFailure: c.priorFailure,
+    siteUrl: c.site.url, priorFailure: c.priorFailure, neverWrite: o.cfg.neverWrite,
     findings: o.list.map((f) => ({ id: f.id, rule: f.rule_id, severity: f.severity, subject: f.subject, message: f.message })),
     scout: scoutText || '(the scout found nothing; skip findings you cannot place with certainty)',
     rules: o.cfg.rules, guides: guidesOf(o.cfg), audience: audience(c),

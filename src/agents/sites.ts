@@ -11,6 +11,7 @@ export type AgentSite = {
   label: string;         // heading on the dashboard
   capabilities: string[]; // agents this site runs (the rest are shown as waiting, with `pendingNote`)
   pendingNote?: string;
+  neverWrite?: string[];
   lang: 'es' | 'en';     // language topics and posts are written in
   research: { context: string; priority: string }; // site-specific lines of the researcher prompt
   segments: boolean;     // classify queries by customer segment (needs an audience brief with segments)
@@ -79,6 +80,14 @@ const improveBrief = (o: BriefOpts, modified: string, langs: string) =>
 
 export const AGENT_SITES: Record<string, AgentSite> = {
   'studioyume.mx': {
+  neverWrite: [
+    "Consejos, recomendaciones o instrucciones prácticas genéricas (cuántas piezas extra pedir, cómo entregar, cómo pegar, cómo preparar el archivo) que no estén en los DATOS AUTORIZADOS ni en una fuente abierta: se quitan, no se reescriben.",
+    "Afirmaciones físicas o de material (se moja, se decolora, se rasga, resolución, trazos finos, pixelado) sin fuente abierta citada en meta.claims.",
+    "Requisitos de archivo (formatos, PPI, medidas mínimas) presentados como requisitos de Yume si no están en los DATOS AUTORIZADOS; si vienen de un competidor, di que son una referencia de ese competidor o quítalos.",
+    "Fuentes como texto plano dentro de body: las fuentes van en el campo `sources` del post, con el mismo formato que usan otros posts de src/content/blog.ts (copia el formato del ejemplo).",
+    "Frases como \"lee la guía de ...\" o \"compara con ...\" sin enlace: todo enlace interno es un enlace markdown real a una URL que existe en el repo, con ancla descriptiva.",
+    "Atribuir reglas a Google u otra entidad sin haber abierto su página oficial y sin añadir esa URL en `sources` y en meta.claims.",
+  ],
   guideFiles: ['AGENTS.md', 'CLAUDE.md'],
     factFiles: ['src/content/products.ts'],
     short: 'yume', label: 'Yume (studioyume.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: true, listPosts: blogTsPosts, postFiles: () => ['src/content/blog.ts', 'src/content/blog-dulceros.ts'],
@@ -114,6 +123,11 @@ export const AGENT_SITES: Record<string, AgentSite> = {
 // Luvory deploys from Lovable: a push to main is NOT enough to go live (2026-10-02: production stayed on the old build two days after a push, until the
 // owner pressed Publish). So the live check waits long, and the alert says what the owner has to do.
 AGENT_SITES['luvory.com.mx'] = {
+  neverWrite: [
+    "Medidas, capacidades, cifras técnicas o listas de especificaciones de remolques o baños escritas a mano: solo las que estén literalmente en los archivos de datos del repo; si no, se quitan.",
+    "Crear un post completo nuevo (y sus entradas en sitemap o blog-index) cuando la tarea es mejorar o corregir uno existente: el alcance de la orden es el post indicado.",
+    "Afirmaciones sin fuente que la propia orden declara no verificables: se eliminan, no se dejan \"para revisar\".",
+  ],
   guideFiles: ['CLAUDE.md', 'SEO.md'],
   factFiles: ['src/data/pricing.ts', 'src/data/business.ts'],
   short: 'luvory', label: 'Luvory (luvory.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: luvoryPosts, postFiles: () => ['src/data/blog-posts.ts'],
@@ -194,6 +208,10 @@ AGENT_SITES['vexonmexico.com.mx'] = {
 // so src/agents/dizayn/prep.py stands in for it. It is proven by replay (selftest.py regenerates a committed post byte for byte), which is why the
 // writer and improver are on here. The fixer stays off: it edits arbitrary files, and nothing replays those.
 AGENT_SITES['dizaynseo.com'] = {
+  neverWrite: [
+    "Tocar archivos generados (api/, md/, blog/, llms*.txt, sitemap.xml, vercel.json, agent-tools.js): los regenera el hook.",
+    "Crear o editar páginas fuera de _src/posts_agent.py (posts nuevos) o del archivo donde vive el post que se mejora.",
+  ],
   guideFiles: [],
   factFiles: ['_src/config.py'],
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts, postFiles: () => ['_src/posts.py', '_src/posts_funnel.py', '_src/posts_agent.py'],

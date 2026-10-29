@@ -11,3 +11,11 @@ test('site rules do not instruct models to read guide files', () => {
     assert.deepEqual(cfg.guideFiles, guides[host]);
   }
 });
+
+test('sites with reviewer rejections have non-empty never-write entries', () => {
+  for (const host of ['studioyume.mx', 'luvory.com.mx', 'dizaynseo.com']) {
+    const entries = AGENT_SITES[host].neverWrite;
+    assert.ok(entries?.length, host);
+    for (const entry of entries) assert.ok(typeof entry === 'string' && entry.trim().length > 0, host);
+  }
+});

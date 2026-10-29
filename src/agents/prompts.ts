@@ -3,6 +3,7 @@ import type { WorkOrder } from './orders.ts';
 export type PlanInput = {
   brief: string;
   priorFailure?: string;
+  neverWrite?: string[];
   research?: string;
   miniAudit: string;
   rules: string;
@@ -24,6 +25,11 @@ NO tienes acceso a los archivos del repo: no puedes leerlos ni editarlos. Tienes
 
 const POST_META = `{ "slug": "...", "enSlug": "... (solo si el sitio tiene versión en inglés con otro slug)", "claims": [ { "claim": "afirmación factual del post", "source": "archivo del repo o URL que abriste" } ] }`;
 const FIXER_META = `{ "fixed": [ids], "skipped": [ { "id": n, "reason": "..." } ] }`;
+
+const neverWriteSection = (items?: string[]) => items?.length ? [
+  'NUNCA ESCRIBAS (rechazos reales anteriores del revisor de este sitio; si tu texto cae en alguno, se rechaza y se repite el trabajo):',
+  ...items.map((item) => `- ${item}`),
+].join('\n') : '';
 
 const PRE_WRITE_CHECK = `ANTES DE ESCRIBIR, comprueba cada punto en tu cabeza (el revisor rechaza el borrador por cualquiera de ellos):
 1. Ninguna raya larga (—) en texto nuevo.
@@ -121,7 +127,7 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
       `DÓNDE METER UN POST NUEVO (puntos ya verificados; cada anchor existe exactamente una vez; cópialo tal cual):`,
       ...i.insertPoints.map((p) => [`- ${p.label}`, p.file, p.do, ...(p.anchor !== undefined ? [`anchor=${JSON.stringify(p.anchor)}`] : []), ...(p.note ? [p.note] : [])].join(' | ')),
     ].join('\n') : '',
-    PRE_WRITE_CHECK, response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', '), i.derivedPaths),
+    neverWriteSection(i.neverWrite), PRE_WRITE_CHECK, response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', '), i.derivedPaths),
   ]);
 }
 
@@ -174,7 +180,7 @@ If you cannot find it, write \`FINDING <id>\` then \`NOT FOUND: <reason>\`.`,
   ].join('\n');
 }
 
-export function fixerPlanPrompt(i: { priorFailure?: string; siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; derivedPaths?: string[]; picked: boolean }): string {
+export function fixerPlanPrompt(i: { priorFailure?: string; neverWrite?: string[]; siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; derivedPaths?: string[]; picked: boolean }): string {
   return sections([
     INTRO,
     [`TU TAREA`,
@@ -186,6 +192,6 @@ export function fixerPlanPrompt(i: { priorFailure?: string; siteUrl: string; fin
       `Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (falta un dato que no tienes, o toca pagos, checkout, emails o rutas), sáltalo y dilo en "analysis". Respeta el posicionamiento de la marca: solo se corrige lo técnico o SEO.`,
     ].join('\n'),
     priorFailureSection(i.priorFailure),
-    siteRules(i.rules), guideSection(i.guides), i.audience, PRE_WRITE_CHECK, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
+    siteRules(i.rules), guideSection(i.guides), i.audience, neverWriteSection(i.neverWrite), PRE_WRITE_CHECK, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
   ]);
 }
