@@ -3,6 +3,7 @@ import type { WorkOrder } from './orders.ts';
 export type PlanInput = {
   brief: string;
   priorFailure?: string;
+  research?: string;
   miniAudit: string;
   rules: string;
   writerRules: string;
@@ -70,11 +71,24 @@ const priorFailureSection = (failure?: string): string => failure ? [
   'Escribe la orden de modo que este fallo no pueda ocurrir otra vez; si el fallo fue del revisor, ajusta el texto; si fue de un archivo generado o una ruta, no lo toques.',
 ].join('\n') : '';
 
+export function researchPrompt(i: { siteUrl: string; brief: string; title: string; query?: string; audience: string }): string {
+  return `Eres el investigador para ${i.siteUrl}. Usa WebSearch y WebFetch para investigar SOLO lo que necesita el tema: datos actuales, cifras, normas y enfoque de los competidores. Abre páginas reales y nunca cites una página que no hayas abierto. No escribas el post y no edites nada.
+
+Tema: ${i.title}
+Consulta: ${i.query ?? ''}
+Contexto: ${i.brief.slice(0, 2000)}
+Audiencia: ${i.audience.slice(0, 1500)}
+
+Responde solo con JSON, sin nada más, en un máximo de 900 palabras y con hasta 12 hallazgos:
+{ "findings": [ { "point": "...", "source": "https://..." } ], "angle": "qué omiten los competidores y qué debe responder este post", "avoid": ["afirmaciones que no pudiste verificar"] }`;
+}
+
 export function planPrompt(i: PlanInput): string {
   return sections([
-    INTRO,
+    i.research ? INTRO.replace('Tienes WebSearch y WebFetch para investigar. Todo lo que necesitas del repo está en este mensaje.', 'No tienes herramientas en este paso: usa solo lo que está en este mensaje.') : INTRO,
     i.brief ? [`TU TAREA`, i.brief].join('\n') : '',
     priorFailureSection(i.priorFailure),
+    i.research ? ['INVESTIGACIÓN YA HECHA (la hiciste en el paso anterior con fuentes abiertas; en este paso NO tienes herramientas web: toda afirmación factual de meta.claims debe salir de esta lista o de los DATOS AUTORIZADOS DEL REPO)', i.research.slice(0, 6000)].join('\n') : '',
     i.miniAudit,
     siteRules(i.rules, i.writerRules),
     i.facts.length ? [

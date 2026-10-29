@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lintDetails, draftTopicHybrid, factsOf, guidesOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { lintDetails, draftTopicHybrid, researchFor, researchPlanOptions, factsOf, guidesOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
 import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
 import { openDb } from '../src/db.ts';
 
@@ -160,4 +160,29 @@ test('lintDetails reports added copy with locations, context, and a limit', () =
   assert.deepEqual(guidesOf(cfg, 5), [{ file: 'CLAUDE.md', text: 'uno\nd\n[cut]' }]);
   assert.deepEqual(guidesOf(cfg, 7), [{ file: 'CLAUDE.md', text: 'uno\ndos' }]);
   assert.deepEqual(guidesOf({ ...cfg, guideFiles: undefined }), []);
+});
+
+
+test('research is cached by site, slug and date; failures restore planner web tools', async (t) => {
+  const db = openDb(':memory:');
+  t.after(() => db.close());
+  const logs: string[] = [];
+  const c = { db, site: { id: 7, url: 'https://example.test' }, log: (s: string) => logs.push(s), usage: [] } as unknown as Ctx;
+  const topic = { id: 1, title: 'Topic', slug: 'topic', query: 'query', why: '', action: 'new' };
+  let calls = 0;
+  const stub: typeof import('../src/agents/agents.ts').ask = async (_c, o) => {
+    calls++;
+    assert.deepEqual(o.tools, ['WebSearch', 'WebFetch']);
+    assert.equal(o.maxTurns, 10);
+    return 'research result';
+  };
+  assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');
+  assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');
+  assert.equal(calls, 1);
+  assert.deepEqual(researchPlanOptions('research result'), { tools: [], maxTurns: 3 });
+  const failed = await researchFor(c, { ...topic, slug: 'other' }, 'brief', async () => { throw new Error('offline'); });
+  assert.equal(failed, '');
+  assert.match(logs[0], /offline/);
+  assert.deepEqual(researchPlanOptions(failed), { tools: ['WebSearch', 'WebFetch'], maxTurns: 20 });
+  await assert.rejects(researchFor(c, { ...topic, slug: 'limit' }, 'brief', async () => { throw new LimitError('limit'); }), LimitError);
 });

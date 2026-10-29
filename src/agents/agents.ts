@@ -17,7 +17,7 @@ import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeR
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
 import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
-import { planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
+import { researchPrompt, planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { stripOrderDerived } from './orders.ts';
@@ -368,14 +368,34 @@ export function guidesOf(cfg: AgentSite, capPerFile = 14000): { file: string; te
   });
 }
 
+export async function researchFor(c: Ctx, topic: Draftable, brief: string, askFn: typeof ask = ask): Promise<string> {
+  try {
+    const key = `${c.site.id}|${topic.slug}|${new Date().toISOString().slice(0, 10)}`;
+    const cached = c.db.prepare('SELECT text FROM research_cache WHERE key = ?').get(key) as { text: string } | undefined;
+    if (cached) return cached.text;
+    const text = await askFn(c, { prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname) }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 10, timeoutMs: 900_000 });
+    c.db.prepare('INSERT OR REPLACE INTO research_cache (key, site_id, slug, text) VALUES (?, ?, ?, ?)').run(key, c.site.id, topic.slug, text);
+    return text;
+  } catch (e) {
+    if (e instanceof LimitError) throw e;
+    c.log(`research failed: ${e instanceof Error ? e.message : String(e)}`);
+    return '';
+  }
+}
+
+export function researchPlanOptions(research: string): { tools: string[]; maxTurns: number } {
+  return { tools: research ? [] : ['WebSearch', 'WebFetch'], maxTurns: research ? 3 : 20 };
+}
+
 export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: string, s: ReturnType<typeof startDraft>, override: Partial<HybridDeps> = {}): Promise<string> {
   c.progress?.('preparing');
   const { cfg, branch, wt, merge, opts, brief } = s;
   if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
   const host = new URL(c.site.url).hostname.replace(/^www\./, '');
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
+  const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : await researchFor(c, topic, brief);
   const prompt = planPrompt({
-    brief, priorFailure: c.priorFailure, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
+    brief, research, priorFailure: c.priorFailure, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
     facts: factsOf(cfg, wt), guides: guidesOf(cfg),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
@@ -386,7 +406,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const defaults: HybridDeps = {
     stage: (s, n) => c.progress?.(s as Stage, n),
     plan: async (p) => {
-      const t = await ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 20, timeoutMs: 1_200_000 });
+      const t = await ask(c, { prompt: p, cwd: tmpdir(), ...researchPlanOptions(research), timeoutMs: 1_200_000 });
       c.log(`plan reply starts: ${t.slice(0, 160).replace(/\s+/g, ' ')}`);
       planReplies.push(t);
       return t;

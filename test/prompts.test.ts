@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt } from '../src/agents/prompts.ts';
+import { researchPrompt, planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt } from '../src/agents/prompts.ts';
 import type { PlanInput } from '../src/agents/prompts.ts';
 
 const plan: PlanInput = {
@@ -167,4 +167,22 @@ test('planner prompts include capped prior failure immediately after the task', 
     assert.ok(withFailure.indexOf(heading) > withFailure.indexOf('TU TAREA'));
     assert.ok(withFailure.indexOf(heading) < withFailure.indexOf('REGLAS DEL SITIO'));
   }
+});
+
+
+test('research prompt requests sourced findings without site instructions', () => {
+  const prompt = researchPrompt({ siteUrl: 'https://example.test', brief: 'brief context', title: 'Topic', query: 'query', audience: 'audience context' });
+  for (const part of ['WebSearch', 'WebFetch', '900 palabras', '12 hallazgos', '"findings"', '"point"', '"source"', '"angle"', '"avoid"', 'brief context', 'audience context']) assert.ok(prompt.includes(part), part);
+  for (const part of ['REGLAS DEL SITIO', 'GUÍAS DEL REPO', 'EJEMPLO REAL', 'playbook']) assert.ok(!prompt.includes(part), part);
+});
+
+test('research changes the planner tools and is limited to 6000 characters', () => {
+  const prompt = planPrompt({ ...plan, research: 'R'.repeat(6000) + 'CUT_RESEARCH' });
+  assert.ok(prompt.includes('INVESTIGACIÓN YA HECHA'));
+  assert.ok(prompt.includes('R'.repeat(6000)));
+  assert.ok(!prompt.includes('CUT_RESEARCH'));
+  assert.ok(prompt.includes('No tienes herramientas en este paso: usa solo lo que está en este mensaje.'));
+  assert.ok(!prompt.includes('Tienes WebSearch y WebFetch para investigar.'));
+  assert.ok(planPrompt(plan).includes('Tienes WebSearch y WebFetch para investigar.'));
+  assert.ok(!planPrompt(plan).includes('INVESTIGACIÓN YA HECHA'));
 });
