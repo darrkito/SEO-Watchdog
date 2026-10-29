@@ -12,7 +12,7 @@ export type HybridDeps = {
   lint?: () => string[];
   addedText: () => string;
   diff: () => string;
-  review: (order: WorkOrder, diff: string) => Promise<Review>;
+  review: (orders: WorkOrder[], diff: string) => Promise<Review>;
   root: string;
   log: (m: string) => void;
 };
@@ -96,7 +96,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     let changeRaw: string | undefined;
     if (!problems.length) {
       d.stage?.('reviewing');
-      const review = await d.review(order, d.diff());
+      const review = await d.review([...orders], d.diff());
       stages.reviews++;
       if (review.ok) return { orders, review, stages };
       problems = review.problems.map((p) => 'reviewer: ' + p);

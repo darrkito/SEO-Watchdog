@@ -5,7 +5,7 @@ import type { PlanInput } from '../src/agents/prompts.ts';
 
 const plan: PlanInput = {
   brief: 'Escribir un post', miniAudit: 'Mini auditoría', rules: 'Reglas', writerRules: 'Estilo',
-  facts: [],
+  facts: [], guides: [],
   audience: 'Lectores', example: 'Ejemplo literal', current: 'Texto actual',
   ranges: [
     { file: 'posts/a.ts', whole: false, anchor: 'inicio\n"texto"', endAnchor: 'fin\n' },
@@ -23,14 +23,14 @@ const findings = [
 ];
 const fixer = {
   siteUrl: 'https://example.com', findings, scout: 'Informe literal', rules: 'Reglas',
-  audience: 'Lectores', allowedPathsNote: 'src/**', picked: true,
+  guides: [], audience: 'Lectores', allowedPathsNote: 'src/**', picked: true,
 };
 const review = {
   rules: 'Reglas', writerRules: 'Estilo', audience: 'Lectores', diff: '',
-  order: {
+  orders: [{
     title: 'Orden', doneWhen: '', mustContain: [], forbiddenPaths: [],
     steps: [{ n: 1, do: 'create' as const, file: 'a.ts', text: 'a' }, { n: 2, do: 'append' as const, file: 'b.ts', text: 'b' }],
-  },
+  }],
 };
 
 test('plan preserves section order, JSON anchors, paths, and literal JSON escape instructions', () => {
@@ -62,7 +62,7 @@ test('plan omits empty optional sections without extra separators', () => {
 
 test('review lists steps, caps diff, and preserves the JSON answer contract', () => {
   const prompt = reviewPrompt({ ...review, diff: 'x'.repeat(70000) });
-  assert.ok(prompt.includes('ORDEN EJECUTADA\nOrden: todos los pasos aplicados\n1. create en a.ts\n2. append en b.ts'));
+  assert.ok(prompt.includes('ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)\nORDEN 1 (original): Orden: todos los pasos aplicados\n1. create en a.ts\n2. append en b.ts'));
   assert.equal(prompt.split('DIFF (con contexto)\n')[1].split('\n\nQUÉ REVISAR')[0], 'x'.repeat(60000) + '\n[diff cut]');
   assert.ok(prompt.includes(`CÓMO RESPONDER: solo un objeto JSON:
 {
@@ -71,7 +71,7 @@ test('review lists steps, caps diff, and preserves the JSON answer contract', ()
   "changeOrder": null | { "title": "...", "steps": [ ...mismo formato de pasos que la orden original... ], "mustContain": [ ], "forbiddenPaths": [ ], "doneWhen": "..." }
 }`));
   assert.ok(!reviewPrompt({ ...review, diff: 'x'.repeat(60000) }).includes('[diff cut]'));
-  assert.ok(reviewPrompt({ ...review, order: { ...review.order, doneWhen: 'Terminado' } }).includes('Orden: Terminado'));
+  assert.ok(reviewPrompt({ ...review, orders: [{ ...review.orders[0], doneWhen: 'Terminado' }] }).includes('Orden: Terminado'));
 });
 
 test('scout lists each finding and includes rules only when supplied', () => {
@@ -118,4 +118,28 @@ test('both planners require sourced factual claims', () => {
   const rule = '8. Toda afirmación factual del texto (cifras, fechas, temporadas, normas, comparaciones) va en meta.claims con su fuente: una URL que abriste o un archivo del repo. Si no tienes fuente, quita la afirmación del texto en lugar de escribirla. El ejecutor y el revisor ven esa lista.';
   assert.ok(planPrompt(plan).includes(rule));
   assert.ok(fixerPlanPrompt(fixer).includes(rule));
+});
+
+ test('guide sections appear before the audience only when supplied', () => {
+  const guides = [{ file: 'CLAUDE.md', text: 'Instrucciones' }];
+  const post = planPrompt({ ...plan, facts: [{ file: 'facts', text: 'Datos' }], guides });
+  assert.ok(post.indexOf('DATOS AUTORIZADOS') < post.indexOf('GUÍAS DEL REPO'));
+  for (const prompt of [post, fixerPlanPrompt({ ...fixer, guides })]) {
+    assert.ok(prompt.includes('=== CLAUDE.md ===\nInstrucciones'));
+    assert.ok(prompt.indexOf('GUÍAS DEL REPO') < prompt.indexOf('Lectores'));
+  }
+  assert.ok(!planPrompt(plan).includes('GUÍAS DEL REPO'));
+  assert.ok(!fixerPlanPrompt(fixer).includes('GUÍAS DEL REPO'));
+});
+
+test('review includes all orders and deduplicated, capped claims', () => {
+  const claim = { claim: 'c'.repeat(301), source: 's'.repeat(301) };
+  const prompt = reviewPrompt({ ...review, orders: [{ ...review.orders[0], claims: [claim] }, { ...review.orders[0], title: 'Corrección', claims: [claim, { claim: 'Otra', source: 'fuente' }] }] });
+  assert.ok(prompt.includes('ORDEN 1 (original)'));
+  assert.ok(prompt.includes('ORDEN 2 (corrección): Corrección'));
+  assert.ok(prompt.includes('el DIFF es el resultado ACUMULADO de todas'));
+  assert.ok(prompt.includes('AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR'));
+  assert.equal(prompt.split(`- ${'c'.repeat(300)} [fuente: ${'s'.repeat(300)}]`).length, 2);
+  assert.ok(prompt.includes('- Otra [fuente: fuente]'));
+  assert.ok(!reviewPrompt(review).includes('AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR'));
 });

@@ -346,6 +346,13 @@ export function factsOf(cfg: AgentSite, wt: string, capPerFile = 14000): { file:
   });
 }
 
+export function guidesOf(cfg: AgentSite, capPerFile = 14000): { file: string; text: string }[] {
+  return (cfg.guideFiles ?? []).filter((file) => existsSync(join(cfg.repo, file))).map((file) => {
+    const text = readFileSync(join(cfg.repo, file), 'utf8').replace(/\r\n/g, '\n');
+    return { file, text: text.length > capPerFile ? text.slice(0, capPerFile) + '\n[cut]' : text };
+  });
+}
+
 export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: string, s: ReturnType<typeof startDraft>, override: Partial<HybridDeps> = {}): Promise<string> {
   c.progress?.('preparing');
   const { cfg, branch, wt, merge, opts, brief } = s;
@@ -354,7 +361,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
   const prompt = planPrompt({
     brief, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
-    facts: factsOf(cfg, wt),
+    facts: factsOf(cfg, wt), guides: guidesOf(cfg),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
     insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths,
@@ -393,8 +400,8 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       git(wt, 'reset', '-q', '--', 'node_modules');
       return git(wt, 'diff', '--cached', '-U25');
     },
-    review: async (order, diff): Promise<Review> => {
-      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+    review: async (orders, diff): Promise<Review> => {
+      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)}`);
@@ -463,7 +470,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     siteUrl: c.site.url,
     findings: o.list.map((f) => ({ id: f.id, rule: f.rule_id, severity: f.severity, subject: f.subject, message: f.message })),
     scout: scoutText || '(the scout found nothing; skip findings you cannot place with certainty)',
-    rules: o.cfg.rules, audience: audience(c),
+    rules: o.cfg.rules, guides: guidesOf(o.cfg), audience: audience(c),
     allowedPathsNote: 'cualquier archivo del repo EXCEPTO pagos, checkout, emails, rutas de API, vercel.json, .env y package.json (están prohibidos)',
     picked: o.picked,
   });
@@ -492,8 +499,8 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       git(o.wt, 'reset', '-q', '--', 'node_modules');
       return git(o.wt, 'diff', '--cached', '-U25');
     },
-    review: async (order, diff): Promise<Review> => {
-      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), order, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+    review: async (orders, diff): Promise<Review> => {
+      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };

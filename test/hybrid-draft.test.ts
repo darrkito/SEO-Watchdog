@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lintDetails, draftTopicHybrid, factsOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { lintDetails, draftTopicHybrid, factsOf, guidesOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
 import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
 import { openDb } from '../src/db.ts';
 
@@ -148,4 +148,16 @@ test('lintDetails reports added copy with locations, context, and a limit', () =
   assert.deepEqual(lintDetails(diff, ['other.txt']), ['other.txt: unverifiable superlative or certification claim: "certificado ISO"']);
   assert.deepEqual(lintDetails(chunk('copy.txt', '+clean copy')), []);
   assert.equal(lintDetails(chunk('copy.txt', Array(10).fill('+bad — copy').join('\n'))).length, 8);
+});
+
+ test('guidesOf reads the owner repo, normalizes and caps guides, and skips missing files', (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'guides-repo-'));
+  const worktree = mkdtempSync(join(tmpdir(), 'guides-wt-'));
+  t.after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(worktree, { recursive: true, force: true }); });
+  writeFileSync(join(repo, 'CLAUDE.md'), 'uno\r\ndos');
+  writeFileSync(join(worktree, 'CLAUDE.md'), 'wrong');
+  const cfg = { repo, worktree, guideFiles: ['CLAUDE.md', 'missing'] } as Parameters<typeof guidesOf>[0];
+  assert.deepEqual(guidesOf(cfg, 5), [{ file: 'CLAUDE.md', text: 'uno\nd\n[cut]' }]);
+  assert.deepEqual(guidesOf(cfg, 7), [{ file: 'CLAUDE.md', text: 'uno\ndos' }]);
+  assert.deepEqual(guidesOf({ ...cfg, guideFiles: undefined }), []);
 });

@@ -16,6 +16,7 @@ export type AgentSite = {
   segments: boolean;     // classify queries by customer segment (needs an audience brief with segments)
   listPosts: (repo: string) => { slug: string; title: string }[]; // posts that already exist, so nothing is duplicated
   postFiles?: (slug: string) => string[]; // repo-relative files that can hold this post's Spanish/primary text, in search order
+  guideFiles?: string[]; // project guide files, read from the owner's checkout and handed to the planner as text
   factFiles?: string[]; // repo files whose content is the ONLY authorized source for specs, figures, prices and contact data; handed to the planner
   wholeFile?: boolean; // the post is a whole file (Vexon .mdx), not an object inside a big file
   repo: string;          // the owner's checkout; never edited by agents
@@ -77,6 +78,7 @@ const improveBrief = (o: BriefOpts, modified: string, langs: string) =>
 
 export const AGENT_SITES: Record<string, AgentSite> = {
   'studioyume.mx': {
+  guideFiles: ['AGENTS.md', 'CLAUDE.md'],
     factFiles: ['src/content/products.ts'],
     short: 'yume', label: 'Yume (studioyume.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: true, listPosts: blogTsPosts, postFiles: () => ['src/content/blog.ts', 'src/content/blog-dulceros.ts'],
     research: {
@@ -94,7 +96,6 @@ export const AGENT_SITES: Record<string, AgentSite> = {
       : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (secciones/FAQ nuevas, actualiza modifiedAt a ${o.publishAt}), no crees un post nuevo.`
       : `${header(o)}\nCrea un post NUEVO con slug "${o.slug}", publishedAt "${o.publishAt}", en ES (blog.ts) y EN (blog.en.ts) + entrada en BLOG_SLUG_EN. Si el tema es de dulceros, usa los archivos blog-dulceros*.`,
     rules: `Yume rules (hard limits, from the owner):
-- Read CLAUDE.md and AGENTS.md in this repo first and follow them.
 - Spanish (Mexico), "tú", clear and concrete.
 - NEVER use em-dashes (—) in new copy. Use commas, periods or colons.
 - Never type a price, shipping time, branch or production day by hand: use priceOf()/tierPriceRows and the constants already used in src/content/blog.ts. When you mention a price, lead with "Primeras 100 piezas"; above 100 pieces it is "precio mayoreo".
@@ -112,6 +113,7 @@ export const AGENT_SITES: Record<string, AgentSite> = {
 // Luvory deploys from Lovable: a push to main is NOT enough to go live (2026-10-02: production stayed on the old build two days after a push, until the
 // owner pressed Publish). So the live check waits long, and the alert says what the owner has to do.
 AGENT_SITES['luvory.com.mx'] = {
+  guideFiles: ['CLAUDE.md', 'SEO.md'],
   factFiles: ['src/data/pricing.ts', 'src/data/business.ts'],
   short: 'luvory', label: 'Luvory (luvory.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: luvoryPosts, postFiles: () => ['src/data/blog-posts.ts'],
   research: {
@@ -135,7 +137,6 @@ AGENT_SITES['luvory.com.mx'] = {
 2) src/lib/i18n.ts: agrega "/blog/${o.slug}": "/blog/<slug-en-inglés-en-kebab-case>" a EN_SLUG_MAP.
 3) public/sitemap.xml: agrega dos bloques <url> (ES y EN) copiando exactamente el formato de un post existente (lastmod ${o.publishAt}, hreflang es/en/x-default); omite <image:image> si el post no tiene imagen propia.`,
   rules: `Reglas de Luvory (límites duros del dueño):
-- Lee primero CLAUDE.md y SEO.md de este repo y síguelos.
 - Español de México, trato de "tú", claro y concreto. Es un negocio real de renta de baños portátiles de lujo para eventos, no una demo.
 - NUNCA uses rayas largas (—) en texto nuevo. Usa comas, puntos o dos puntos.
 - No inventes reseñas, eventos atendidos, resultados, cifras, premios ni certificaciones. "Más de 100 eventos atendidos" es un dato aprobado por el dueño: no lo infles ni lo amplíes. No cites a nadie que no esté en src/data/google-reviews.ts.
@@ -153,6 +154,7 @@ AGENT_SITES['luvory.com.mx'] = {
 
 // Vexon (Astro): the owner's checkout has an HTTPS remote and this machine has no HTTPS credentials, so agents use the SSH URL (set per command).
 AGENT_SITES['vexonmexico.com.mx'] = {
+  guideFiles: ['README.md'],
   factFiles: ['src/data/modelos.ts', 'src/lib/site.ts', 'src/data/faqs.ts'],
   short: 'vexon', label: 'Vexon (vexonmexico.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: mdxPosts, postFiles: (slug) => [`src/content/blog/${slug}.mdx`], wholeFile: true,
   pendingNote: 'Search Console is not connected for this site yet (no service account has access to vexonmexico.com.mx), so the analyst and the blog score have no Google data until you add one.',
@@ -173,7 +175,6 @@ AGENT_SITES['vexonmexico.com.mx'] = {
     : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" en src/content/blog/${o.merge}.mdx (secciones/FAQ nuevas), pon updated a ${o.publishAt}, no crees un post nuevo.`
     : `${header(o)}\nCrea un post NUEVO en src/content/blog/${o.slug}.mdx con date ${o.publishAt}.`,
   rules: `Reglas de Vexon (límites duros del dueño):
-- Lee primero README.md de este repo y síguelo.
 - Español de México, trato de "tú", claro y concreto, para residentes de obra, compras de constructoras y negocios en remodelación. Es renta de oficinas móviles (línea VX) en Guadalajara, Zapopan y la ZMG.
 - NUNCA uses rayas largas (—) en texto nuevo; en una tabla escribe "No aplica" o "-".
 - Las especificaciones de cada modelo (medidas, personas, mesas, lámparas, clima) salen SOLO de src/data/modelos.ts; teléfono, dirección y horario de src/lib/site.ts. No escribas a mano ninguno que no esté ahí.
@@ -190,6 +191,7 @@ AGENT_SITES['vexonmexico.com.mx'] = {
 // so src/agents/dizayn/prep.py stands in for it. It is proven by replay (selftest.py regenerates a committed post byte for byte), which is why the
 // writer and improver are on here. The fixer stays off: it edits arbitrary files, and nothing replays those.
 AGENT_SITES['dizaynseo.com'] = {
+  guideFiles: [],
   factFiles: ['_src/config.py'],
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts, postFiles: () => ['_src/posts.py', '_src/posts_funnel.py', '_src/posts_agent.py'],
   pendingNote: "Posts are written into _src/posts_agent.py (or the post's own file when improving) and the generated files are rebuilt by dizayn/prep.py, a stand-in for the partner's missing generator that is checked against the committed output. The fixer is off for this site.",
@@ -206,7 +208,7 @@ AGENT_SITES['dizaynseo.com'] = {
     : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (busca su slug en _src/posts.py o _src/posts_funnel.py): secciones nuevas con su respuesta directa, sin crear un post nuevo. Escribe en inglés.`
     : `${header(o)}\nCrea un post NUEVO en inglés: agrega UN dict al final de POSTS en _src/posts_agent.py con slug "${o.slug}", stage (unaware|problem|solution|product), cat (una categoría que ya use otro post), title de 25 a 62 caracteres con la palabra clave al inicio, h1, desc de 80 a 156 caracteres, lede (2 frases), mins (entero: minutos de lectura) y body en HTML. Las fuentes van como L("Nombre (fecha)", "https://...") en S, las tablas como T([...], [[...]]) en TABLES, y en el body se usan como %(clave)s. Copia la forma de un post existente de _src/posts_funnel.py. No edites nada más: la página, el gemelo markdown, el sitemap, llms.txt y demás archivos generados los reconstruye prep.py solo.`,
   rules: `Reglas de Dizayn SEO (límites duros del dueño, 2026-10-27):
-- Lee primero _src/posts_agent.py y un post parecido de _src/posts_funnel.py y copia su estructura.
+- Copia la estructura del ejemplo real de un post que se te da en el mensaje.
 - Escribe en inglés claro y directo, para el dueño de un negocio pequeño o mediano de EE.UU. Mercado: solo Estados Unidos.
 - NUNCA uses rayas largas (—) en texto nuevo. Usa comas, puntos o dos puntos.
 - Dizayn tiene su sede en San Antonio, Texas. NO menciones México, "nearshore" ni "cuesta menos por la ubicación del equipo". No hables de pagos en cripto.

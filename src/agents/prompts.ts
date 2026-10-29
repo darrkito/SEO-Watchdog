@@ -6,6 +6,7 @@ export type PlanInput = {
   rules: string;
   writerRules: string;
   facts: { file: string; text: string }[];
+  guides: { file: string; text: string }[];
   audience: string;
   example: string;
   current: string;
@@ -55,6 +56,11 @@ const siteRules = (rules: string, writerRules = ''): string => rules || writerRu
   ? [`REGLAS DEL SITIO (límites duros)`, ...[rules, writerRules].filter((part) => part !== '')].join('\n')
   : '';
 
+const guideSection = (guides: { file: string; text: string }[]): string => guides.length ? [
+  'GUÍAS DEL REPO (las escribió el dueño para este proyecto; síguelas. Codex no las lee: tú sí):',
+  ...guides.flatMap((guide) => [`=== ${guide.file} ===`, guide.text]),
+].join('\n') : '';
+
 export function planPrompt(i: PlanInput): string {
   return sections([
     INTRO,
@@ -65,6 +71,7 @@ export function planPrompt(i: PlanInput): string {
       'DATOS AUTORIZADOS DEL REPO (única fuente permitida para medidas, especificaciones, cifras, precios, teléfonos y direcciones; si un dato no está aquí ni en una fuente primaria que abriste en la web, NO lo escribas):',
       ...i.facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
     ].join('\n') : '',
+    guideSection(i.guides),
     i.audience,
     i.example ? [`EJEMPLO REAL DE UN POST DE ESTE SITIO (copia su forma exacta, campo por campo, con el mismo orden y las mismas comillas):`, `<<<EJEMPLO`, i.example, `EJEMPLO>>>`].join('\n') : '',
     i.current ? [`TEXTO ACTUAL DEL POST (esto es lo que vas a reescribir o ampliar):`, `<<<ACTUAL`, i.current, `ACTUAL>>>`].join('\n') : '',
@@ -80,12 +87,17 @@ export function planPrompt(i: PlanInput): string {
   ]);
 }
 
-export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; order: WorkOrder; diff: string }): string {
+export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string }): string {
   return sections([
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
     i.audience,
-    [`ORDEN EJECUTADA`, `${i.order.title}: ${i.order.doneWhen || 'todos los pasos aplicados'}`, ...i.order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`)].join('\n'),
+    ['ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)', ...i.orders.flatMap((order, index) => [`ORDEN ${index + 1} (${index === 0 ? 'original' : 'corrección'}): ${order.title}: ${order.doneWhen || 'todos los pasos aplicados'}`, ...order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`)])].join('\n'),
+    (() => {
+      const claims = new Map<string, { claim: string; source: string }>();
+      for (const order of i.orders) for (const item of order.claims ?? []) claims.set(JSON.stringify([item.claim, item.source]), item);
+      return claims.size ? ['AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR (cada una con la fuente que abrió; no las des por falsas sin una razón concreta):', ...[...claims.values()].map((item) => `- ${item.claim.slice(0, 300)} [fuente: ${item.source.slice(0, 300)}]`)].join('\n') : '';
+    })(),
     [`DIFF (con contexto)`, i.diff.slice(0, 60000) + (i.diff.length > 60000 ? '\n[diff cut]' : '')].join('\n'),
     `QUÉ REVISAR, en este orden
 1. ¿Cumple CADA regla del sitio? (rayas largas nuevas, datos o cifras inventados, precios, ubicaciones, promesas que el dueño no aprobó, enlaces rotos o con formato incorrecto).
@@ -120,7 +132,7 @@ If you cannot find it, write \`FINDING <id>\` then \`NOT FOUND: <reason>\`.`,
   ].join('\n');
 }
 
-export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; audience: string; allowedPathsNote: string; picked: boolean }): string {
+export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; picked: boolean }): string {
   return sections([
     INTRO,
     [`TU TAREA`,
@@ -131,6 +143,6 @@ export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; ru
       `<<<INFORME`, i.scout.slice(0, 40000), `INFORME>>>`,
       `Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (falta un dato que no tienes, o toca pagos, checkout, emails o rutas), sáltalo y dilo en "analysis". Respeta el posicionamiento de la marca: solo se corrige lo técnico o SEO.`,
     ].join('\n'),
-    siteRules(i.rules), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote),
+    siteRules(i.rules), guideSection(i.guides), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote),
   ]);
 }

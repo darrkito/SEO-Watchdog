@@ -52,7 +52,7 @@ const apply = (order: WorkOrder) => (_prompt: string, root: string) => applyOrde
 test('first order succeeds with exact stage counters', async (t) => {
   const { d, input, root } = fixture(t, [apply(initial)]);
   d.plan = async (prompt) => { assert.equal(prompt, input.planPrompt); return raw(initial); };
-  d.review = async (order, diff) => { assert.deepEqual(order, initial); assert.equal(diff, d.diff()); return approved; };
+  d.review = async (orders, diff) => { assert.deepEqual(orders, [initial]); assert.equal(diff, d.diff()); return approved; };
   const result = await runHybrid(d, input);
   assert.deepEqual(result.stages, { plans: 1, revisions: 0, executions: 1, reviews: 1, rounds: 0 });
   assert.deepEqual(result.orders, [initial]);
@@ -111,7 +111,10 @@ test('blocked executor goes directly to revision', async (t) => {
 test('reviewer supplied change order skips revise', async (t) => {
   const { d, input } = fixture(t, [apply(initial), apply(change)]);
   let reviews = 0;
-  d.review = async () => ++reviews === 1 ? { ok: false, problems: ['improve'], changeOrder: raw(change) } : approved;
+  d.review = async (orders) => {
+    assert.deepEqual(orders, reviews === 0 ? [initial] : [initial, change]);
+    return ++reviews === 1 ? { ok: false, problems: ['improve'], changeOrder: raw(change) } : approved;
+  };
   const result = await runHybrid(d, input);
   assert.equal(result.stages.rounds, 1);
   assert.equal(result.orders.length, 2);
