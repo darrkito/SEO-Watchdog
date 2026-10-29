@@ -2,9 +2,9 @@ import { systemPrompt, EFFORT, type Role } from './templates/roles.ts';
 import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, symlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Site } from '../db.ts';
@@ -621,14 +621,73 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   gitRemote(cfg, 'fetch', cfg.remote, 'main');
   try { git(wt, 'rebase', `${cfg.remote}/main`); }
   catch (e) {
+    if (!(cfg.unionPaths && post && resolveRebaseByUnion(cfg, post))) {
     try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
     // Sites with generated pages (Dizayn SEO): two drafts made from the same base both rewrite the same one-line pages, so git cannot merge them.
     // Re-apply only the draft's SOURCE change on the latest main and regenerate everything else.
     if (!cfg.regenerateFrom || !post || !cfg.postEdit) throw new Error(`rebase conflict: ${String((e as any).stderr ?? e).slice(0, 300)}`);
     regenerateOnLatest(cfg, post);
+    }
   }
   const err = typecheck(cfg); if (err) throw new Error(`typecheck after rebase: ${err.slice(0, 300)}`);
   gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
+}
+
+/** Resolve append-only conflicts while replaying a draft on the latest main. */
+export function resolveRebaseByUnion(cfg: AgentSite, post: PostOpts): boolean {
+  const wt = cfg.worktree, merged = new Set<string>(), regenerated = new Set<string>();
+  const inProgress = () => ['rebase-merge', 'rebase-apply'].some((name) => {
+    const p = git(wt, 'rev-parse', '--git-path', name).trim();
+    return existsSync(isAbsolute(p) ? p : resolve(wt, p));
+  });
+  try {
+    for (let i = 0; i < 5; i++) {
+      const files = git(wt, 'diff', '--name-only', '--diff-filter=U', '-z').split('\0').filter(Boolean);
+      if (!files.length && !inProgress()) break;
+      if (!files.length) return false;
+      if (files.some((f) => !pathAllowed(cfg.derivedPaths ?? [], f) && !pathAllowed(cfg.unionPaths ?? [], f))) return false;
+      for (const f of files) {
+        if (pathAllowed(cfg.derivedPaths ?? [], f)) {
+          git(wt, 'checkout', '--ours', '--', f); regenerated.add(f);
+        } else {
+          const dir = mkdtempSync(join(tmpdir(), 'wd-union-'));
+          try {
+            const paths = ['ours', 'base', 'theirs'].map((n) => join(dir, n));
+            for (const [index, stage] of [2, 1, 3].entries()) {
+              let data: string;
+              try { data = git(wt, 'show', `:${stage}:${f}`); }
+              catch (e) { if (stage !== 1) throw e; data = ''; }
+              writeFileSync(paths[index], data);
+            }
+            const result = spawnSync('git', ['merge-file', '-p', '--union', ...paths], { cwd: wt, encoding: 'utf8', maxBuffer: 64 << 20 });
+            if (result.error || !result.stdout) throw result.error ?? new Error(`empty union merge: ${f}`);
+            writeFileSync(join(wt, f), result.stdout); merged.add(f);
+          } finally { rmSync(dir, { recursive: true, force: true }); }
+        }
+        git(wt, 'add', '--', f);
+      }
+      const continued = spawnSync('git', ['-c', 'core.editor=true', 'rebase', '--continue'], { cwd: wt, env: { ...process.env, GIT_EDITOR: 'true' }, encoding: 'utf8' });
+      if (continued.error) throw continued.error;
+      if (continued.status !== 0 && !git(wt, 'diff', '--name-only', '--diff-filter=U').trim()) throw new Error(continued.stderr);
+    }
+    if (inProgress()) return false;
+    if (cfg.postEdit) cfg.postEdit(wt, post);
+    git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules');
+    if (git(wt, 'diff', '--cached', '--name-only').trim()) git(wt, 'commit', '--amend', '--no-edit');
+    if (post.slug) {
+      const file = (cfg.unionPaths ?? []).find((f) => existsSync(join(wt, f)));
+      const slug = post.slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (file && (readFileSync(join(wt, file), 'utf8').match(new RegExp(`\\bslug\\s*:\\s*(["'])${slug}\\1`, 'g')) ?? []).length > 1) {
+        if (inProgress()) git(wt, 'rebase', '--abort'); else git(wt, 'reset', '--hard', 'ORIG_HEAD');
+        return false;
+      }
+    }
+    console.log(`[agents] union-merged: ${[...merged].join(', ') || 'none'}; regenerated: ${[...regenerated].join(', ') || 'none'}`);
+    return true;
+  } catch {
+    try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
+    return false;
+  }
 }
 
 /** The draft branch is checked out. Rebuild it on top of the latest main: take what the writer changed under `cfg.regenerateFrom`, apply it, regenerate, commit. */

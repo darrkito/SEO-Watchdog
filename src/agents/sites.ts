@@ -31,6 +31,7 @@ export type AgentSite = {
   typecheck: string[];   // command that must pass before anything is committed or pushed
   orderPaths?: string[]; // paths a hybrid work order may touch (the files the model-less steps generate are not listed here)
   derivedPaths?: string[];
+  unionPaths?: string[]; // append-only content files where two drafts add entries at the same spot
   contentPaths: string[]; // paths a post/fix may touch; a trailing * means "starts with"; anything else is refused
   lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto); same * rule
   regenerateFrom?: string[]; // generated-site repos: on a rebase conflict, re-apply the draft's changes under these paths on the latest main and regenerate
@@ -100,6 +101,7 @@ export const AGENT_SITES: Record<string, AgentSite> = {
     indexnow: ['node', 'scripts/indexnow.mjs'],
     typecheck: ['node_modules/.bin/tsc', '--noEmit', '-p', '.'],
     orderPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts', 'src/lib/i18n.ts'],
+    unionPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts', 'src/lib/i18n.ts'],
     contentPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts', 'src/lib/i18n.ts'],
     lowRiskPaths: ['src/content/blog.ts', 'src/content/blog.en.ts', 'src/content/blog-dulceros.ts', 'src/content/blog-dulceros.en.ts'],
     postBrief: (o) => o.kind === 'improve' ? improveBrief(o, 'modifiedAt', ' y aplica los cambios en ES y en EN')
@@ -141,6 +143,7 @@ AGENT_SITES['luvory.com.mx'] = {
   typecheck: ['sh', '-c', 'node_modules/.bin/tsc --noEmit -p . && node_modules/.bin/vitest run src/data'],
   orderPaths: ['src/data/blog-posts.ts', 'src/lib/i18n.ts', 'public/sitemap.xml'],
   derivedPaths: ['src/data/blog-index.json'],
+  unionPaths: ['src/data/blog-posts.ts', 'public/sitemap.xml', 'src/lib/i18n.ts'],
   contentPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json', 'src/lib/i18n.ts', 'public/sitemap.xml'],
   lowRiskPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json'],
   deployHint: 'Luvory se publica desde Lovable: el cambio ya está en main, pero hay que pulsar Publish en Lovable para que salga en vivo.',
