@@ -1,3 +1,23 @@
+# Continue here (updated 2026-10-29): hybrid fleet is LIVE
+
+**Read first:** `PLAN-hybrid.md` (design), `docs/FIX-LIST-2026-10-29.md` (audit), `docs/TOKEN-AUDIT-2026-10-29.md` (Anthropic-token work and measured results). The older 4a text below is history.
+
+## State on 2026-10-29
+- Fleet runs in **hybrid mode**: Claude plans/reviews (no repo access, rules as `--system-prompt` per role, `src/agents/templates/`), Codex executes work orders. All coding goes through Codex tickets; tickets T1..T23 were written by Claude, executed by Codex via `codex exec -m gpt-6.1-terra`, verified by Claude (tests, diff) before commit.
+- Failed jobs **retry automatically** (3 attempts, 2 min apart) with the failure fed back to the planner; identical repeated failures stop. A usage-limit hit parks the whole queue until the parsed reset time.
+- Generated files (`derivedPaths` per site) are never planned, ordered, linted or reviewed. Per-site `neverWrite` lists come from real reviewer rejections.
+- Web research is a separate cached call (`research_cache`); planning has no tools. Measured: ~335k -> ~217k input tokens per first-attempt draft.
+- **Publish of a second draft made from the same base** no longer fails: `resolveRebaseByUnion` replays the draft's pure insertions on the latest main (context on both sides, `placeInsertion`), regenerates derived files via `postEdit`, refuses (and restores the draft) otherwise. Sites: `unionPaths` in `sites.ts`.
+- Test hygiene: the Dizayn replay test cloned ~100 MB per run into /tmp and filled the disk; it now cleans up. `/tmp` is tmpfs (8 GB): check `df -h /tmp` if commands fail oddly.
+
+## Open
+- Luvory posts #81 #82 #83 are on `main` but **404 until the owner presses Publish in Lovable**. Do not send them to IndexNow/GSC/Bing before they return 200.
+- Vexon: no Search Console property for the logged-in Google account and no Bing site; IndexNow works. Owner must add/verify both.
+- Not built: review-only "recheck" mode for the 50 cancelled re-check jobs (list in /tmp, may be gone), phase-2 prompt templates (static text in files, code pre-fills wiring steps), dashboard job panel with Retry/Dismiss, async publish.
+- Owner items: US phone line for the Dizayn "Text us" link, LEAD_TO/LEAD_WEBHOOK_URL in Vercel, Telegram vars, Bing key for the fleet.
+
+---
+
 # Continue here (written 2026-10-20)
 
 This is the pickup point for the next session. The long-term roadmap is in [PLAN.md](PLAN.md); this file is what's left to finish **Phase 4a (competitor discovery)** and what comes after.
