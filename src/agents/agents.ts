@@ -1,3 +1,4 @@
+import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
 import { execFileSync } from 'node:child_process';
@@ -35,7 +36,7 @@ export function executorMode(): 'hybrid' | 'claude' {
 }
 
 export class LimitError extends Error {}
-export type Ctx = { db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
+export type Ctx = { progress?: (stage: Stage, note?: string) => void; db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
 export type AgentFn = (c: Ctx) => Promise<string>;
 
 // Never touched by an agent push, whatever the prompt says.
@@ -346,6 +347,7 @@ export function factsOf(cfg: AgentSite, wt: string, capPerFile = 14000): { file:
 }
 
 export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: string, s: ReturnType<typeof startDraft>, override: Partial<HybridDeps> = {}): Promise<string> {
+  c.progress?.('preparing');
   const { cfg, branch, wt, merge, opts, brief } = s;
   if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
   const host = new URL(c.site.url).hostname.replace(/^www\./, '');
@@ -360,6 +362,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const planReplies: string[] = [];
   let codexRuns = 0;
   const defaults: HybridDeps = {
+    stage: (s, n) => c.progress?.(s as Stage, n),
     plan: async (p) => {
       const t = await ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 20, timeoutMs: 1_200_000 });
       c.log(`plan reply starts: ${t.slice(0, 160).replace(/\s+/g, ' ')}`);
@@ -415,6 +418,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       if (meta && typeof meta === 'object' && !Array.isArray(meta)) { metaText = JSON.stringify(meta); break; }
     } catch { /* Try the next planner reply. */ }
   }
+  c.progress?.('finishing');
   const out = await finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, metaText, null, { hybrid: {
     analysis: result.orders[0].analysis ?? '', plans: result.stages.plans, revisions: result.stages.revisions,
     executions: result.stages.executions, reviews: result.stages.reviews, rounds: result.stages.rounds,
@@ -426,6 +430,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
 async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
   const s = startDraft(c, topic, publishAt);
   if (executorMode() === 'hybrid') return draftTopicHybrid(c, topic, publishAt, s);
+  c.progress?.('working');
   const { cfg, branch, wt, merge, opts, brief } = s;
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
@@ -442,12 +447,14 @@ ${extra}`,
   let text = await run();
   let err = verify();
   if (err) { text = await run(`Los chequeos automáticos fallaron, corrige solo esto:\n${err}`); err = verify(); }
+  c.progress?.('finishing');
   return finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, text, err);
 };
 
 
 // ---------- fixer ----------
 export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; list: any[]; picked: boolean }, override: Partial<HybridDeps> = {}): Promise<string> {
+  c.progress?.('scouting');
   const scout = await runCodex({ prompt: scoutPrompt(o.list.map((f) => ({ id: f.id, rule: f.rule_id, subject: f.subject, message: f.message })), ''), cwd: o.wt, write: false, timeoutMs: 600_000 });
   if (scout.limited) throw new LimitError(scout.error ?? 'codex usage limit');
   const scoutText = scout.ok ? scout.text : '';
@@ -461,6 +468,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     picked: o.picked,
   });
   const defaults: HybridDeps = {
+    stage: (s, n) => c.progress?.(s as Stage, n),
     plan: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 12, timeoutMs: 1_200_000 }),
     revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: (p) => runCodex({ prompt: p, cwd: o.wt, write: true, timeoutMs: 900_000 }),
@@ -526,6 +534,7 @@ export const fixerAgent: AgentFn = async (c) => {
   const autonomy = (c.db.prepare("SELECT autonomy FROM agent_settings WHERE agent = 'fixer' AND site_id = ?").get(c.site.id) as { autonomy: string } | undefined)?.autonomy ?? 'approve';
   const branch = ids ? `agent/fix-${mxNow().date}-${Date.now().toString(36)}` : `agent/fix-${mxNow().date}`; // a picked batch never overwrites an earlier pending branch
   const wt = prepareWorktree(cfg, branch);
+  if (executorMode() !== 'hybrid') c.progress?.('working');
   const text = executorMode() === 'hybrid' ? await fixerHybridText(c, { cfg, wt, list, picked: !!ids }) : await ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write'], maxTurns: 40, timeoutMs: 1_800_000,
     prompt: `Eres el agente corrector SEO de ${c.site.url}. Estos son los hallazgos abiertos del Watchdog (datos reales, cada uno con la URL afectada):

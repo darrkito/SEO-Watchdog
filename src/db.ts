@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   started_at TEXT NOT NULL DEFAULT (datetime('now')), finished_at TEXT,
   status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running','ok','failed','limited')),
   tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
-  output TEXT, error TEXT);
+  output TEXT, error TEXT, detail TEXT, stage TEXT, progress TEXT);
 CREATE INDEX IF NOT EXISTS agent_runs_slot ON agent_runs(agent, site_id, slot);
 CREATE TABLE IF NOT EXISTS approvals (
   id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS approvals (
 -- Clicked-but-not-finished agent jobs, so a restart re-queues them instead of silently dropping them.
 CREATE TABLE IF NOT EXISTS agent_queue (
   id INTEGER PRIMARY KEY, agent TEXT NOT NULL, site_id INTEGER NOT NULL, slug TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  state TEXT NOT NULL DEFAULT 'queued', last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0, updated_at TEXT,
   UNIQUE (agent, site_id, slug));
 CREATE TABLE IF NOT EXISTS metrics (
   site_id INTEGER NOT NULL, source TEXT NOT NULL, date TEXT NOT NULL, query TEXT NOT NULL DEFAULT '', page TEXT NOT NULL DEFAULT '',
@@ -90,6 +91,9 @@ export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
   // ponytail: additive migrations by try/ALTER; adopt a migrations table when one needs data changes.
   for (const sql of ["ALTER TABLE sites ADD COLUMN ua TEXT NOT NULL DEFAULT ''", 'ALTER TABLE findings ADD COLUMN resolved_at TEXT',
     'ALTER TABLE sites ADD COLUMN gsc_key TEXT', 'ALTER TABLE sites ADD COLUMN gsc_property TEXT',
+    'ALTER TABLE agent_runs ADD COLUMN stage TEXT', 'ALTER TABLE agent_runs ADD COLUMN progress TEXT',
+    "ALTER TABLE agent_queue ADD COLUMN state TEXT NOT NULL DEFAULT 'queued'", 'ALTER TABLE agent_queue ADD COLUMN last_error TEXT',
+    'ALTER TABLE agent_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE agent_queue ADD COLUMN updated_at TEXT',
     'ALTER TABLE discoveries ADD COLUMN serp_json TEXT', 'ALTER TABLE agent_runs ADD COLUMN detail TEXT', "ALTER TABLE topics ADD COLUMN segment TEXT NOT NULL DEFAULT 'other'"]) try { db.exec(sql); } catch { /* already applied */ }
   return db;
 }

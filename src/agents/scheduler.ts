@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { findSite, type Site } from '../db.ts';
 import { sendAlert } from '../alert.ts';
 import { AGENTS, LimitError, mxNow, publish, type Ctx } from './agents.ts';
+import { setStage } from './jobs.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
 export const cfgOf = (site: Site): AgentSite | undefined => AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')];
@@ -67,19 +68,26 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   const detail = args?.slug ?? (args?.ids ? `ids:${args.ids.join(',')}` : args?.topicId != null ? `topic:${args.topicId}` : '');
   const key = `${agent}:${site.id}:${detail}`;
   if (queued.has(key)) return Promise.resolve();
-  if (slot === null) db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail); // manual click: survives a restart
+  if (slot === null) {
+    db.prepare('INSERT OR IGNORE INTO agent_queue (agent, site_id, slug) VALUES (?, ?, ?)').run(agent, site.id, detail);
+    db.prepare("UPDATE agent_queue SET state = 'queued', last_error = NULL, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ? AND state = 'failed'").run(agent, site.id, detail);
+  }
   if (isPaused(db)) return Promise.resolve(); // parked: the row stays, resume restores it
   queued.add(key);
-  let limited = false, parked = false;
+  let limited = false, parked = false, status = 'failed';
   return serial(async () => {
     if (isPaused(db)) { parked = true; return; } // paused while this waited in line: step aside, keep the queue row
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
+    if (slot === null) db.prepare("UPDATE agent_queue SET state = 'running', attempts = attempts + 1, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(agent, site.id, detail);
     const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args };
-    let status = 'ok', output = '', error: string | null = null;
-    try { output = await AGENTS[agent](ctx); }
+    ctx.progress = (s, n) => setStage(db, id, s, n);
+    status = 'ok';
+    let output = '', error: string | null = null;
+    try { ctx.progress('working'); output = await AGENTS[agent](ctx); }
     catch (e) { status = e instanceof LimitError ? 'limited' : 'failed'; error = String((e as Error).message ?? e).slice(0, 1000); }
     db.prepare("UPDATE agent_runs SET finished_at = datetime('now'), status = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?, output = ?, error = ? WHERE id = ?")
       .run(status, ctx.usage.reduce((a, u) => a + u.tokensIn, 0), ctx.usage.reduce((a, u) => a + u.tokensOut, 0), ctx.usage.reduce((a, u) => a + u.costUsd, 0), output.slice(0, 20_000), error, id);
+    if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' ? 'queued' : 'failed', status === 'limited' ? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
     if (status === 'failed') await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
     if (status === 'limited') { limited = slot === null; console.log(`[${agent}] usage limit reached; ${slot === null ? 'the click stays queued and retries' : 'the schedule retries'} in ${Math.round(limitRetryMs / 60_000)} min`); }
   }).catch((e) => console.error(`[${agent}]`, e)).finally(() => {
@@ -89,7 +97,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
       return;
     }
     queued.delete(key);
-    if (!parked) db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail);
+    if (!parked && status === 'ok' && slot === null) db.prepare('DELETE FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').run(agent, site.id, detail);
   });
 }
 
@@ -118,12 +126,35 @@ export function decide(db: DatabaseSync, id: number, action: 'approve' | 'reject
 /** Clicked jobs that a restart interrupted, a pause parked or a limit delayed: run them again, in click order (paused: they stay put). */
 export function resumeQueued(db: DatabaseSync): number {
   let n = 0;
-  for (const q of db.prepare('SELECT * FROM agent_queue ORDER BY id').all() as { agent: string; site_id: number; slug: string }[]) {
+  for (const q of db.prepare("SELECT * FROM agent_queue WHERE state IN ('queued','running') ORDER BY id").all() as { agent: string; site_id: number; slug: string }[]) {
     const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
     if (!site || !AGENTS[q.agent] || queued.has(`${q.agent}:${q.site_id}:${q.slug}`)) continue;
-    n++; void runAgent(db, q.agent, site, null, q.slug.startsWith('ids:') ? { ids: q.slug.slice(4).split(',').map(Number) } : q.slug.startsWith('topic:') ? { topicId: Number(q.slug.slice(6)) } : q.slug ? { slug: q.slug } : undefined);
+    n++; void runAgent(db, q.agent, site, null, queueArgs(q.slug));
   }
   return n;
+}
+
+const queueArgs = (slug: string): { slug?: string; ids?: number[]; topicId?: number } | undefined =>
+  slug.startsWith('ids:') ? { ids: slug.slice(4).split(',').map(Number) } : slug.startsWith('topic:') ? { topicId: Number(slug.slice(6)) } : slug ? { slug } : undefined;
+
+export function retryQueued(db: DatabaseSync, queueId: number): void {
+  const q = db.prepare("SELECT * FROM agent_queue WHERE id = ? AND state = 'failed'").get(queueId) as { agent: string; site_id: number; slug: string } | undefined;
+  if (!q) return;
+  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(q.site_id) as Site | undefined;
+  if (!site || !AGENTS[q.agent]) return;
+  db.prepare("UPDATE agent_queue SET state = 'queued', last_error = NULL, updated_at = datetime('now') WHERE id = ? AND state = 'failed'").run(queueId);
+  void runAgent(db, q.agent, site, null, queueArgs(q.slug));
+}
+
+export function dismissQueued(db: DatabaseSync, queueId: number): void {
+  db.prepare("DELETE FROM agent_queue WHERE id = ? AND state = 'failed'").run(queueId);
+}
+
+export function retryAllFailed(db: DatabaseSync, siteId?: number): number {
+  const rows = (siteId === undefined ? db.prepare("SELECT id FROM agent_queue WHERE state = 'failed' ORDER BY id").all() : db.prepare("SELECT id FROM agent_queue WHERE state = 'failed' AND site_id = ? ORDER BY id").all(siteId)) as { id: number }[];
+  let count = 0;
+  for (const row of rows) { retryQueued(db, row.id); if ((db.prepare('SELECT state FROM agent_queue WHERE id = ?').get(row.id) as { state: string } | undefined)?.state !== 'failed') count++; }
+  return count;
 }
 
 export function startScheduler(db: DatabaseSync): void {

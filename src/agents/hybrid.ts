@@ -4,6 +4,7 @@ import type { CodexResult } from './runner.ts';
 export class HybridLimit extends Error {}
 export type Review = { ok: boolean; problems: string[]; changeOrder?: string };
 export type HybridDeps = {
+  stage?: (stage: string, note?: string) => void;
   plan: (prompt: string) => Promise<string>;
   revise: (prompt: string) => Promise<string>;
   execute: (prompt: string) => Promise<CodexResult>;
@@ -43,6 +44,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       let order: WorkOrder;
       try { order = parseOrder(reply, { allowedPaths: input.allowedPaths }); }
       catch (e) { problems = [(e as Error).message]; continue; }
+      d.stage?.('checking-order');
       problems = preflightOrder(order, d.root);
       if (!problems.length) {
         const claims = new Map(knownClaims.map((item) => [item.claim, item]));
@@ -55,27 +57,32 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     throw new Error('plan rejected: ' + problems.join('; '));
   }
   const revise = (prompt: string): Promise<string> => {
+    d.stage?.('revising', `round ${stages.rounds} of ${input.maxRounds ?? 3}`);
     stages.revisions++;
     return d.revise(prompt);
   };
-  let order = await getOrder((prompt) => { stages.plans++; return d.plan(prompt); }, input.planPrompt);
+  let order = await getOrder((prompt) => { stages.plans++; d.stage?.('planning', `attempt ${stages.plans}`); return d.plan(prompt); }, input.planPrompt);
   for (;;) {
     orders.push(order);
     const expected = simulateOrder(order, d.root).files;
     const deviations = (): string[] => [...compareFiles(expected, d.root), ...verbatimCheck(order, d.addedText())];
     const files = writeStepFiles(order, d.root);
     let r: CodexResult;
+    d.stage?.('building', `round ${stages.rounds + 1}`);
     try { r = await d.execute(orderPrompt(order, input.rules, files)); }
     finally { clearStepFiles(d.root); }
     stages.executions++;
     if (r.limited) throw new HybridLimit(r.error ?? 'codex usage limit');
+    d.stage?.('checking');
     let problems = r.ok ? deviations() : ['executor: ' + (r.error ?? r.text)];
     if (problems.length && r.ok) {
       let r2: CodexResult;
+      d.stage?.('building', 'fixing a deviation');
       try { r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules)); }
       finally { clearStepFiles(d.root); }
       stages.executions++;
       if (r2.limited) throw new HybridLimit(r2.error ?? 'codex usage limit');
+      d.stage?.('checking');
       problems = r2.ok ? deviations() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
     }
     if (r.ok && !problems.length) {
@@ -88,6 +95,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     }
     let changeRaw: string | undefined;
     if (!problems.length) {
+      d.stage?.('reviewing');
       const review = await d.review(order, d.diff());
       stages.reviews++;
       if (review.ok) return { orders, review, stages };
