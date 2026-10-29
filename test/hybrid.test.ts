@@ -99,6 +99,29 @@ test('deviating output gets one deterministic fix', async (t) => {
   assert.equal(result.stages.revisions, 0);
 });
 
+test('verbatim check accepts existing file text and rejects missing text', async (t) => {
+  const order: WorkOrder = { ...change, mustContain: ['already present'] };
+  const present = fixture(t, [apply(order)]);
+  writeFileSync(join(present.root, 'a.txt'), 'hello already present');
+  present.d.plan = async () => raw(order);
+  present.d.addedText = () => '';
+  const result = await runHybrid(present.d, present.input);
+  assert.equal(result.stages.executions, 1);
+  assert.equal(present.codex.prompts.length, 1);
+
+  const missing = fixture(t, [(_prompt, root) => {
+    writeFileSync(join(root, 'a.txt'), 'better'); return ok;
+  }, (prompt) => {
+    assert.match(prompt, /missing in diff: already present/);
+    return ok;
+  }]);
+  writeFileSync(join(missing.root, 'a.txt'), 'hello already present');
+  missing.d.plan = async () => raw(order);
+  missing.d.addedText = () => '';
+  missing.input.maxRounds = 1;
+  await assert.rejects(runHybrid(missing.d, missing.input), /missing in diff: already present/);
+});
+
 test('blocked executor goes directly to revision', async (t) => {
   const { d, input } = fixture(t, [() => ({ ...ok, ok: false, blocked: true, error: 'BLOCKED: anchor missing' }), apply(initial)]);
   d.revise = async (prompt) => { assert.match(prompt, /executor: BLOCKED: anchor missing/); return raw(initial); };

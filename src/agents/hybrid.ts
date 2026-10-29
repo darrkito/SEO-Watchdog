@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
 
@@ -65,7 +67,17 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
   for (;;) {
     orders.push(order);
     const expected = simulateOrder(order, d.root).files;
-    const deviations = (): string[] => [...compareFiles(expected, d.root), ...verbatimCheck(order, d.addedText())];
+    const deviations = (): string[] => {
+      const contents: string[] = [];
+      for (const file of new Set(order.steps.map((step) => step.file))) {
+        try {
+          const path = join(d.root, file);
+          if (existsSync(path)) contents.push(readFileSync(path, 'utf8'));
+        } catch { /* Skip unreadable files. */ }
+      }
+      const present = d.addedText() + '\n' + contents.join('\n');
+      return [...compareFiles(expected, d.root), ...verbatimCheck(order, present)];
+    };
     const files = writeStepFiles(order, d.root);
     let r: CodexResult;
     d.stage?.('building', `round ${stages.rounds + 1}`);
