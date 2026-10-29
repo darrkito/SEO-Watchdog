@@ -143,3 +143,12 @@ test('review includes all orders and deduplicated, capped claims', () => {
   assert.ok(prompt.includes('- Otra [fuente: fuente]'));
   assert.ok(!reviewPrompt(review).includes('AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR'));
 });
+
+
+test('planner and reviewer describe generated paths', () => {
+  const rule = '9. Los archivos generados (gen/*) los regenera el hook del repo: NUNCA los pongas en pasos, mustContain ni forbiddenPaths.';
+  assert.ok(planPrompt({ ...plan, derivedPaths: ['gen/*'] }).includes(rule));
+  assert.ok(fixerPlanPrompt({ ...fixer, derivedPaths: ['gen/*'] }).includes(rule));
+  assert.ok(planPrompt(plan).includes('Los archivos generados (ninguno)'));
+  assert.ok(reviewPrompt({ ...review, derivedNote: 'gen/x' }).includes('ARCHIVOS GENERADOS (los produce el hook del repo, no son parte del trabajo; ignóralos aunque no estén en la orden): gen/x'));
+});

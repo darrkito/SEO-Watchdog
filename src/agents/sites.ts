@@ -29,6 +29,7 @@ export type AgentSite = {
   indexnowKey?: string;  // alternative: path (in the worktree) of the IndexNow key file; the watchdog submits the URLs itself
   typecheck: string[];   // command that must pass before anything is committed or pushed
   orderPaths?: string[]; // paths a hybrid work order may touch (the files the model-less steps generate are not listed here)
+  derivedPaths?: string[];
   contentPaths: string[]; // paths a post/fix may touch; a trailing * means "starts with"; anything else is refused
   lowRiskPaths: string[]; // fixer changes confined to these may auto-publish (when autonomy = auto); same * rule
   regenerateFrom?: string[]; // generated-site repos: on a rebase conflict, re-apply the draft's changes under these paths on the latest main and regenerate
@@ -125,6 +126,7 @@ AGENT_SITES['luvory.com.mx'] = {
   indexnowKey: 'public/e0edb2f799db4fb3967c9fa8023a5558.txt',
   typecheck: ['sh', '-c', 'node_modules/.bin/tsc --noEmit -p . && node_modules/.bin/vitest run src/data'],
   orderPaths: ['src/data/blog-posts.ts', 'src/lib/i18n.ts', 'public/sitemap.xml'],
+  derivedPaths: ['src/data/blog-index.json'],
   contentPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json', 'src/lib/i18n.ts', 'public/sitemap.xml'],
   lowRiskPaths: ['src/data/blog-posts.ts', 'src/data/blog-index.json'],
   deployHint: 'Luvory se publica desde Lovable: el cambio ya está en main, pero hay que pulsar Publish en Lovable para que salga en vivo.',
@@ -168,6 +170,7 @@ AGENT_SITES['vexonmexico.com.mx'] = {
   // `astro check` has 2 old errors in astro.config.mjs (siteLastmod); only errors anywhere else count.
   typecheck: ['sh', '-c', `out=$(node_modules/.bin/astro check 2>&1 | sed 's/\\x1b\\[[0-9;]*m//g'); echo "$out" | grep -q '^Result (' || { echo "$out" | tail -5; exit 1; }; bad=$(echo "$out" | grep -E ' - error ' | grep -v '^astro.config.mjs'); [ -z "$bad" ] || { echo "$bad"; exit 1; }`],
   orderPaths: ['src/content/blog/*'],
+  derivedPaths: ['public/og/blog-*'],
   contentPaths: ['src/content/blog/*', 'public/og/blog-*'],
   lowRiskPaths: ['src/content/blog/*', 'public/og/blog-*'],
   postEdit: vexonPostEdit, validate: vexonValidate,
@@ -199,6 +202,7 @@ AGENT_SITES['dizaynseo.com'] = {
   blogUrl: (s) => [`https://www.dizaynseo.com/blog/${s}`], typecheck: ['true'],
   indexnowKey: 'ffea521f6f9644fc9a526c6c23c1cdb4.txt',
   orderPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
+  derivedPaths: ['api/_index.js', 'blog.html', 'blog/*', 'md/*', 'sitemap.xml', 'llms.txt', 'llms-full.txt', 'agent-tools.js', 'vercel.json'],
   contentPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py', 'blog.html', 'blog/*', 'md/*', 'sitemap.xml', 'llms.txt', 'llms-full.txt', 'api/_index.js', 'agent-tools.js', 'vercel.json'],
   lowRiskPaths: [],
   regenerateFrom: ['_src'],

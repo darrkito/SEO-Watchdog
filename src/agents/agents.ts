@@ -20,6 +20,7 @@ import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.t
 import { planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
+import { stripOrderDerived } from './orders.ts';
 
 let executorFallbackWarned = false;
 export function executorMode(): 'hybrid' | 'claude' {
@@ -98,10 +99,24 @@ export const changedFiles = (wt: string) => { git(wt, 'add', '-A'); git(wt, 'res
 export const typecheck = (cfg: AgentSite) => { try { sh(cfg.worktree, cfg.typecheck[0], cfg.typecheck.slice(1), 900_000); return null; } catch (e) { return String((e as any).stdout ?? e).slice(0, 1500); } };
 const commit = (wt: string, msg: string) => git(wt, 'commit', '-m', `${msg}\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`);
 
+/** Remove generated file blocks from a git diff and report the removed paths. */
+export function stripDerived(diff: string, derived: string[] = []): { diff: string; removed: string[] } {
+  const removed: string[] = [];
+  const chunks = diff.split(/(?=^diff --git )/m);
+  const kept = chunks.filter((chunk) => {
+    const file = chunk.match(/^diff --git a\/(\S+) /)?.[1];
+    if (!file || !pathAllowed(derived, file)) return true;
+    removed.push(file);
+    return false;
+  });
+  return { diff: kept.join(''), removed };
+}
+
 /** Added lines only: the em-dash rule applies to new copy, not to what already exists. */
 export function addedLines(diff: string): string[] { return diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)); }
-export function lintAdded(diff: string, only?: string[]): string[] {
+export function lintAdded(diff: string, only?: string[], derived: string[] = []): string[] {
   // generated files (e.g. llms.txt, whose line format contains " — ") are not copy the model wrote: judge only `only`, when given
+  diff = stripDerived(diff, derived).diff;
   const judged = only ? diff.split(/^diff --git /m).filter((c) => { const f = c.match(/^a\/(\S+) /)?.[1]; return !!f && pathAllowed(only, f); }).join('\n+++ \n') : diff;
   const added = addedLines(judged), bad: string[] = [];
   if (added.some((l) => l.includes('—'))) bad.push('em-dash in new copy');
@@ -109,11 +124,11 @@ export function lintAdded(diff: string, only?: string[]): string[] {
   return bad;
 }
 
-export function lintDetails(diff: string, only?: string[]): string[] {
+export function lintDetails(diff: string, only?: string[], derived: string[] = []): string[] {
   const bad: string[] = [];
   for (const chunk of diff.split(/^diff --git /m)) {
     const file = chunk.match(/^a\/(\S+) /)?.[1];
-    if (!file || (only && !pathAllowed(only, file))) continue;
+    if (!file || (only && !pathAllowed(only, file)) || pathAllowed(derived, file)) continue;
     for (const line of addedLines(chunk)) {
       const trimmed = line.trim(), dash = trimmed.indexOf('—');
       if (dash !== -1) {
@@ -327,7 +342,7 @@ export function makeVerify(cfg: AgentSite, wt: string, opts: PostOpts): () => st
 export async function finishDraft(c: Ctx, topic: Draftable, publishAt: string, s: { cfg: AgentSite; branch: string; wt: string; merge: string | null }, text: string, err: string | null, extra?: Record<string, unknown>): Promise<string> {
   const { cfg, branch, wt, merge } = s;
   const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
-  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths)];
+  const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f) && !pathAllowed(cfg.derivedPaths ?? [], f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths, cfg.derivedPaths)];
   if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
   const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
   commit(wt, `content(blog): ${topic.title}`);
@@ -364,7 +379,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
     facts: factsOf(cfg, wt), guides: guidesOf(cfg),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
-    insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths,
+    insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths, derivedPaths: cfg.derivedPaths,
   } satisfies PlanInput);
   const planReplies: string[] = [];
   let codexRuns = 0;
@@ -388,7 +403,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
     lint: () => {
       git(wt, 'add', '-A');
       git(wt, 'reset', '-q', '--', 'node_modules');
-      return lintDetails(git(wt, 'diff', '--cached'), cfg.lintPaths);
+      return lintDetails(git(wt, 'diff', '--cached'), cfg.lintPaths, cfg.derivedPaths);
     },
     addedText: () => {
       git(wt, 'add', '-A');
@@ -401,15 +416,19 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return git(wt, 'diff', '--cached', '-U25');
     },
     review: async (orders, diff): Promise<Review> => {
-      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const filtered = stripDerived(diff, cfg.derivedPaths);
+      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)}`);
-      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };
+      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), cfg.derivedPaths) } : {}) };
     },
     root: wt, log: c.log,
   };
   const deps = { ...defaults, ...override };
+  const originalPlan = deps.plan, originalRevise = deps.revise;
+  deps.plan = async (p) => stripOrderDerived(await originalPlan(p), cfg.derivedPaths);
+  deps.revise = async (p) => stripOrderDerived(await originalRevise(p), cfg.derivedPaths);
   let result;
   try { result = await runHybrid(deps, { planPrompt: prompt, rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
   catch (e) {
@@ -472,7 +491,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     scout: scoutText || '(the scout found nothing; skip findings you cannot place with certainty)',
     rules: o.cfg.rules, guides: guidesOf(o.cfg), audience: audience(c),
     allowedPathsNote: 'cualquier archivo del repo EXCEPTO pagos, checkout, emails, rutas de API, vercel.json, .env y package.json (están prohibidos)',
-    picked: o.picked,
+    picked: o.picked, derivedPaths: o.cfg.derivedPaths,
   });
   const defaults: HybridDeps = {
     stage: (s, n) => c.progress?.(s as Stage, n),
@@ -480,14 +499,14 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: (p) => runCodex({ prompt: p, cwd: o.wt, write: true, timeoutMs: 900_000 }),
     verify: () => {
-      const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f));
+      const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f) && !pathAllowed(o.cfg.derivedPaths ?? [], f));
       if (bad.length) return `forbidden files were changed, revert them: ${bad.join(', ')}`;
       return typecheck(o.cfg);
     },
     lint: () => {
       git(o.wt, 'add', '-A');
       git(o.wt, 'reset', '-q', '--', 'node_modules');
-      return lintDetails(git(o.wt, 'diff', '--cached'), o.cfg.lintPaths);
+      return lintDetails(git(o.wt, 'diff', '--cached'), o.cfg.lintPaths, o.cfg.derivedPaths);
     },
     addedText: () => {
       git(o.wt, 'add', '-A');
@@ -500,14 +519,18 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       return git(o.wt, 'diff', '--cached', '-U25');
     },
     review: async (orders, diff): Promise<Review> => {
-      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const filtered = stripDerived(diff, o.cfg.derivedPaths);
+      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
-      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: JSON.stringify(j.changeOrder) } : {}) };
+      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), o.cfg.derivedPaths) } : {}) };
     },
     root: o.wt, log: c.log,
   };
   const deps = { ...defaults, ...override };
+  const originalPlan = deps.plan, originalRevise = deps.revise;
+  deps.plan = async (p) => stripOrderDerived(await originalPlan(p), o.cfg.derivedPaths);
+  deps.revise = async (p) => stripOrderDerived(await originalRevise(p), o.cfg.derivedPaths);
   const plan = deps.plan;
   deps.plan = async (p) => { const reply = await plan(p); planReplies.push(reply); return reply; };
   try { await runHybrid(deps, { planPrompt, rules: o.cfg.rules, allowedPaths: ['*'] }); }
@@ -554,7 +577,7 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
   const files = changedFiles(wt);
   if (!files.length) { git(wt, 'reset', '--hard'); return `no changes (${text.slice(0, 200)})`; }
   const diff = git(wt, 'diff', '--cached');
-  const forbidden = files.filter((f) => FORBIDDEN.test(f)), err = typecheck(cfg), lint = lintAdded(diff, cfg.lintPaths);
+  const forbidden = files.filter((f) => FORBIDDEN.test(f) && !pathAllowed(cfg.derivedPaths ?? [], f)), err = typecheck(cfg), lint = lintAdded(diff, cfg.lintPaths, cfg.derivedPaths);
   if (forbidden.length || err || lint.length) { git(wt, 'reset', '--hard'); throw new Error(`fix rejected by checks: ${[...forbidden.map((f) => `forbidden ${f}`), err ? `typecheck ${err.slice(0, 200)}` : '', ...lint].filter(Boolean).join('; ')}`); }
   const meta = (() => { try { return extractJson<{ fixed?: number[]; skipped?: unknown[] }>(text); } catch { return {} as { fixed?: number[]; skipped?: unknown[] }; } })();
   commit(wt, `seo(fix): ${meta.fixed?.length ?? files.length} watchdog findings\n\nFindings: ${(meta.fixed ?? []).join(', ')}`);

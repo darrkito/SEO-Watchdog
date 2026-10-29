@@ -13,6 +13,7 @@ export type PlanInput = {
   ranges: { file: string; anchor?: string; endAnchor?: string; whole: boolean }[];
   insertPoints: { label: string; file: string; do: string; anchor?: string; note?: string }[];
   allowedPaths: string[];
+  derivedPaths?: string[];
 };
 
 const INTRO = `Eres el CEREBRO de un equipo de dos. Tú investigas, decides y escribes. Otro agente (Codex) solo ejecuta tu orden al pie de la letra: no piensa, no corrige, no mejora. Por eso tu orden tiene que ser exacta desde el primer intento.
@@ -41,7 +42,7 @@ const OPERATIONS = `OPERACIONES
 - append: agrega text al final del archivo (no lleva anchor; el text trae su propio salto de línea inicial si hace falta).
 - delete: borra anchor.`;
 
-const orderRules = (paths: string): string => `REGLAS DE LA ORDEN (si alguna falla, Codex se detiene y se pierde el intento)
+const orderRules = (paths: string, derived: string[] = []): string => `REGLAS DE LA ORDEN (si alguna falla, Codex se detiene y se pierde el intento)
 1. Cada anchor debe aparecer EXACTAMENTE UNA VEZ en el archivo en ese momento. Cópialo de los puntos verificados, del ejemplo o del texto actual, carácter por carácter, con sus espacios y saltos de línea.
 2. "text" va literal y completo: sin "...", sin comentarios, sin resúmenes, sin "igual que antes". Todo el texto final del post va escrito.
 3. Solo puedes tocar estas rutas: ${paths}
@@ -49,7 +50,8 @@ const orderRules = (paths: string): string => `REGLAS DE LA ORDEN (si alguna fal
 5. En JSON, los saltos de línea van como \\n y las comillas dobles como \\". Verifica que el JSON sea válido.
 6. mustContain: pon el título, la descripción y cada encabezado nuevo, tal como quedan escritos.
 7. Antes de responder, revisa uno por uno cada anchor contra el texto que te di. Si un anchor no está en este mensaje, no lo inventes: usa otro paso que sí tenga anchor verificado.
-8. Toda afirmación factual del texto (cifras, fechas, temporadas, normas, comparaciones) va en meta.claims con su fuente: una URL que abriste o un archivo del repo. Si no tienes fuente, quita la afirmación del texto en lugar de escribirla. El ejecutor y el revisor ven esa lista.`;
+8. Toda afirmación factual del texto (cifras, fechas, temporadas, normas, comparaciones) va en meta.claims con su fuente: una URL que abriste o un archivo del repo. Si no tienes fuente, quita la afirmación del texto en lugar de escribirla. El ejecutor y el revisor ven esa lista.
+9. Los archivos generados (${derived.join(', ') || "ninguno"}) los regenera el hook del repo: NUNCA los pongas en pasos, mustContain ni forbiddenPaths.`;
 
 const sections = (parts: string[]): string => parts.filter((part) => part !== '').flatMap((part, n) => n ? ['', part] : [part]).join('\n');
 const siteRules = (rules: string, writerRules = ''): string => rules || writerRules
@@ -83,11 +85,11 @@ export function planPrompt(i: PlanInput): string {
       `DÓNDE METER UN POST NUEVO (puntos ya verificados; cada anchor existe exactamente una vez; cópialo tal cual):`,
       ...i.insertPoints.map((p) => [`- ${p.label}`, p.file, p.do, ...(p.anchor !== undefined ? [`anchor=${JSON.stringify(p.anchor)}`] : []), ...(p.note ? [p.note] : [])].join(' | ')),
     ].join('\n') : '',
-    response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', ')),
+    response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', '), i.derivedPaths),
   ]);
 }
 
-export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string }): string {
+export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string; derivedNote?: string }): string {
   return sections([
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
@@ -98,6 +100,7 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
       for (const order of i.orders) for (const item of order.claims ?? []) claims.set(JSON.stringify([item.claim, item.source]), item);
       return claims.size ? ['AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR (cada una con la fuente que abrió; no las des por falsas sin una razón concreta):', ...[...claims.values()].map((item) => `- ${item.claim.slice(0, 300)} [fuente: ${item.source.slice(0, 300)}]`)].join('\n') : '';
     })(),
+    i.derivedNote ? `ARCHIVOS GENERADOS (los produce el hook del repo, no son parte del trabajo; ignóralos aunque no estén en la orden): ${i.derivedNote}` : '',
     [`DIFF (con contexto)`, i.diff.slice(0, 60000) + (i.diff.length > 60000 ? '\n[diff cut]' : '')].join('\n'),
     `QUÉ REVISAR, en este orden
 1. ¿Cumple CADA regla del sitio? (rayas largas nuevas, datos o cifras inventados, precios, ubicaciones, promesas que el dueño no aprobó, enlaces rotos o con formato incorrecto).
@@ -132,7 +135,7 @@ If you cannot find it, write \`FINDING <id>\` then \`NOT FOUND: <reason>\`.`,
   ].join('\n');
 }
 
-export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; picked: boolean }): string {
+export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; rule: string; severity: string; subject: string; message: string }[]; scout: string; rules: string; guides: { file: string; text: string }[]; audience: string; allowedPathsNote: string; derivedPaths?: string[]; picked: boolean }): string {
   return sections([
     INTRO,
     [`TU TAREA`,
@@ -143,6 +146,6 @@ export function fixerPlanPrompt(i: { siteUrl: string; findings: { id: number; ru
       `<<<INFORME`, i.scout.slice(0, 40000), `INFORME>>>`,
       `Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (falta un dato que no tienes, o toca pagos, checkout, emails o rutas), sáltalo y dilo en "analysis". Respeta el posicionamiento de la marca: solo se corrige lo técnico o SEO.`,
     ].join('\n'),
-    siteRules(i.rules), guideSection(i.guides), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote),
+    siteRules(i.rules), guideSection(i.guides), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
   ]);
 }

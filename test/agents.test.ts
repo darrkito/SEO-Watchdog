@@ -307,3 +307,15 @@ test('pause: clicked jobs are parked in the queue, nothing is cancelled, and Res
   assert.equal(calls, 2, 'resume ran both, in order');
   assert.equal((db.prepare('SELECT COUNT(*) n FROM agent_queue WHERE site_id = 51').get() as { n: number }).n, 0);
 });
+
+
+test('derived diff blocks are omitted from lint and review', async () => {
+  const { stripDerived, lintDetails } = await import('../src/agents/agents.ts');
+  const generated = 'diff --git a/gen/x b/gen/x\n+++ b/gen/x\n+old — text\n';
+  const source = 'diff --git a/src/x b/src/x\n+++ b/src/x\n+new — text\n';
+  const diff = generated + source;
+  assert.deepEqual(stripDerived(diff, ['gen/*']), { diff: source, removed: ['gen/x'] });
+  assert.deepEqual(lintAdded(generated, undefined, ['gen/*']), []);
+  assert.deepEqual(lintAdded(diff, undefined, ['gen/*']), ['em-dash in new copy']);
+  assert.equal(lintDetails(diff, ['gen/*', 'src/*'], ['gen/*']).length, 1);
+});
