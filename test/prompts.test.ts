@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { researchPrompt, planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt } from '../src/agents/prompts.ts';
+import { researchPrompt, planPrompt, slimPlanPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt } from '../src/agents/prompts.ts';
 import type { PlanInput } from '../src/agents/prompts.ts';
 
 const plan: PlanInput = {
@@ -185,4 +185,20 @@ test('research changes the planner tools and is limited to 6000 characters', () 
   assert.ok(!prompt.includes('Tienes WebSearch y WebFetch para investigar.'));
   assert.ok(planPrompt(plan).includes('Tienes WebSearch y WebFetch para investigar.'));
   assert.ok(!planPrompt(plan).includes('INVESTIGACIÓN YA HECHA'));
+});
+
+
+test('slim plan keeps correction context and omits heavy sections', () => {
+  const prompt = slimPlanPrompt({ ...plan, priorFailure: 'FAILURE_MARKER', research: 'RESEARCH_MARKER', facts: [{ file: 'facts', text: 'FACT_MARKER' }], guides: [{ file: 'guide', text: 'GUIDE_MARKER' }] });
+  for (const marker of ['Eres el CEREBRO', 'TU TAREA', 'FAILURE_MARKER', 'RESEARCH_MARKER', 'REGLAS DEL SITIO', 'FACT_MARKER', 'DÓNDE ESTÁ EL POST', 'DÓNDE METER UN POST NUEVO', 'CÓMO RESPONDER', 'OPERACIONES', 'REGLAS DE LA ORDEN']) assert.ok(prompt.includes(marker), marker);
+  for (const marker of ['Mini auditoría', 'Lectores', 'GUIDE_MARKER', 'Ejemplo literal', 'Texto actual']) assert.ok(!prompt.includes(marker), marker);
+});
+
+test('review compacts long step text across orders and retains short text and fields', () => {
+  const order = { ...review.orders[0], mustContain: ['required'], steps: [{ n: 1, do: 'replace' as const, file: 'a.ts', anchor: 'anchor', note: 'note', text: 'x'.repeat(401) }, { n: 2, do: 'append' as const, file: 'b.ts', text: 'y'.repeat(400) }] };
+  const prompt = reviewPrompt({ ...review, orders: [order, order] });
+  assert.equal(prompt.split('text: [401 characters, see the DIFF]').length - 1, 2);
+  assert.ok(prompt.includes('text: ' + 'y'.repeat(400)));
+  for (const marker of ['anchor: anchor', 'note: note', 'mustContain: ["required"]']) assert.ok(prompt.includes(marker));
+  assert.ok(!prompt.includes('x'.repeat(401)));
 });

@@ -17,7 +17,7 @@ import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeR
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
 import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
-import { researchPrompt, planPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
+import { researchPrompt, planPrompt, slimPlanPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { stripOrderDerived } from './orders.ts';
@@ -394,13 +394,14 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const host = new URL(c.site.url).hostname.replace(/^www\./, '');
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
   const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : await researchFor(c, topic, brief);
-  const prompt = planPrompt({
+  const planInput = {
     brief, research, priorFailure: c.priorFailure, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
     facts: factsOf(cfg, wt), guides: guidesOf(cfg),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
     insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths, derivedPaths: cfg.derivedPaths,
-  } satisfies PlanInput);
+  } satisfies PlanInput;
+  const prompt = planPrompt(planInput);
   const planReplies: string[] = [];
   let codexRuns = 0;
   const defaults: HybridDeps = {
@@ -450,7 +451,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   deps.plan = async (p) => stripOrderDerived(await originalPlan(p), cfg.derivedPaths);
   deps.revise = async (p) => stripOrderDerived(await originalRevise(p), cfg.derivedPaths);
   let result;
-  try { result = await runHybrid(deps, { planPrompt: prompt, rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
+  try { result = await runHybrid(deps, { planPrompt: prompt, revisePrompt: slimPlanPrompt(planInput), rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
   catch (e) {
     git(wt, 'reset', '--hard');
     git(wt, 'clean', '-fd', '-e', 'node_modules');

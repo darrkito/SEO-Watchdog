@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../src/db.ts';
 import { AGENTS, LimitError } from '../src/agents/agents.ts';
-import { runAgent, resumeQueued, retryQueued, dismissQueued, retryAllFailed, setLimitRetry, setAutoRetry, serial } from '../src/agents/scheduler.ts';
+import { runAgent, resumeQueued, retryQueued, dismissQueued, retryAllFailed, setLimitRetry, setAutoRetry, failureSignature, serial } from '../src/agents/scheduler.ts';
 import { jobLabel, listJobs, setStage } from '../src/agents/jobs.ts';
 
 test('clicked job states, retries, dismissal, limit and resume', async () => {
@@ -91,6 +91,34 @@ test('automatic retry feeds the failure back and alerts only after the third fai
     await runAgent(db, 'collect', site, null, { slug: 'final' });
     const final = db.prepare('SELECT * FROM agent_queue').get() as any;
     assert.equal(final.state, 'failed'); assert.equal(final.attempts, 3); assert.equal(final.last_error, 'final failure'); assert.equal(alerts, 1);
+  } finally {
+    (AGENTS as any).collect = old; globalThis.fetch = oldFetch; setAutoRetry(120000);
+    if (token === undefined) delete process.env.TELEGRAM_BOT_TOKEN; else process.env.TELEGRAM_BOT_TOKEN = token;
+    if (chat === undefined) delete process.env.TELEGRAM_CHAT_ID; else process.env.TELEGRAM_CHAT_ID = chat;
+    db.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('identical failure signatures stop retry while different failures retry', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'same-retry-')); const db = openDb(join(dir, 'db'));
+  const old = AGENTS.collect, oldFetch = globalThis.fetch, token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
+  let alerts = 0;
+  try {
+    process.env.TELEGRAM_BOT_TOKEN = 'test'; process.env.TELEGRAM_CHAT_ID = 'test';
+    globalThis.fetch = async () => { alerts++; return new Response('', { status: 200 }); };
+    db.prepare("INSERT INTO sites (id,url) VALUES (103,'https://example.com')").run();
+    const site = db.prepare('SELECT * FROM sites WHERE id=103').get() as any;
+    setAutoRetry(3600000);
+    assert.equal(failureSignature('ERROR 12  Test'), 'error # test');
+    db.prepare("INSERT INTO agent_queue (agent,site_id,slug,attempts,last_error) VALUES ('collect',103,'same',1,'Error 12 test'),('collect',103,'different',1,'first failure')").run();
+    (AGENTS as any).collect = async (ctx: any) => { throw new Error(ctx.args.slug === 'same' ? 'ERROR 34   test' : 'second failure'); };
+    await runAgent(db, 'collect', site, null, { slug: 'same' });
+    const same = db.prepare("SELECT * FROM agent_queue WHERE slug='same'").get() as any;
+    assert.equal(same.state, 'failed'); assert.equal(same.attempts, 2); assert.equal(alerts, 1);
+    await runAgent(db, 'collect', site, null, { slug: 'different' });
+    const different = db.prepare("SELECT * FROM agent_queue WHERE slug='different'").get() as any;
+    assert.equal(different.state, 'queued'); assert.equal(different.attempts, 2); assert.equal(alerts, 1);
   } finally {
     (AGENTS as any).collect = old; globalThis.fetch = oldFetch; setAutoRetry(120000);
     if (token === undefined) delete process.env.TELEGRAM_BOT_TOKEN; else process.env.TELEGRAM_BOT_TOKEN = token;

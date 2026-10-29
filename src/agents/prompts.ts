@@ -83,22 +83,25 @@ Responde solo con JSON, sin nada más, en un máximo de 900 palabras y con hasta
 { "findings": [ { "point": "...", "source": "https://..." } ], "angle": "qué omiten los competidores y qué debe responder este post", "avoid": ["afirmaciones que no pudiste verificar"] }`;
 }
 
-export function planPrompt(i: PlanInput): string {
+export function planPrompt(i: PlanInput): string { return buildPlanPrompt(i, false); }
+export function slimPlanPrompt(i: PlanInput): string { return buildPlanPrompt(i, true); }
+
+function buildPlanPrompt(i: PlanInput, slim: boolean): string {
   return sections([
     i.research ? INTRO.replace('Tienes WebSearch y WebFetch para investigar. Todo lo que necesitas del repo está en este mensaje.', 'No tienes herramientas en este paso: usa solo lo que está en este mensaje.') : INTRO,
     i.brief ? [`TU TAREA`, i.brief].join('\n') : '',
     priorFailureSection(i.priorFailure),
     i.research ? ['INVESTIGACIÓN YA HECHA (la hiciste en el paso anterior con fuentes abiertas; en este paso NO tienes herramientas web: toda afirmación factual de meta.claims debe salir de esta lista o de los DATOS AUTORIZADOS DEL REPO)', i.research.slice(0, 6000)].join('\n') : '',
-    i.miniAudit,
+    slim ? '' : i.miniAudit,
     siteRules(i.rules, i.writerRules),
     i.facts.length ? [
       'DATOS AUTORIZADOS DEL REPO (única fuente permitida para medidas, especificaciones, cifras, precios, teléfonos y direcciones; si un dato no está aquí ni en una fuente primaria que abriste en la web, NO lo escribas):',
       ...i.facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
     ].join('\n') : '',
-    guideSection(i.guides),
-    i.audience,
-    i.example ? [`EJEMPLO REAL DE UN POST DE ESTE SITIO (copia su forma exacta, campo por campo, con el mismo orden y las mismas comillas):`, `<<<EJEMPLO`, i.example, `EJEMPLO>>>`].join('\n') : '',
-    i.current ? [`TEXTO ACTUAL DEL POST (esto es lo que vas a reescribir o ampliar):`, `<<<ACTUAL`, i.current, `ACTUAL>>>`].join('\n') : '',
+    slim ? '' : guideSection(i.guides),
+    slim ? '' : i.audience,
+    !slim && i.example ? [`EJEMPLO REAL DE UN POST DE ESTE SITIO (copia su forma exacta, campo por campo, con el mismo orden y las mismas comillas):`, `<<<EJEMPLO`, i.example, `EJEMPLO>>>`].join('\n') : '',
+    !slim && i.current ? [`TEXTO ACTUAL DEL POST (esto es lo que vas a reescribir o ampliar):`, `<<<ACTUAL`, i.current, `ACTUAL>>>`].join('\n') : '',
     i.ranges.length ? [
       `DÓNDE ESTÁ EL POST (rangos ya verificados; para reescribirlo usa exactamente estos pasos "replace-range" con este anchor y este endAnchor, copiados tal cual, o "create" con el archivo completo cuando whole sea true):`,
       ...i.ranges.map((r) => [`- ${r.file} | whole=${r.whole}`, ...(r.anchor !== undefined ? [`anchor=${JSON.stringify(r.anchor)}`] : []), ...(r.endAnchor !== undefined ? [`endAnchor=${JSON.stringify(r.endAnchor)}`] : [])].join(' ')),
@@ -116,7 +119,7 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
     i.audience,
-    ['ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)', ...i.orders.flatMap((order, index) => [`ORDEN ${index + 1} (${index === 0 ? 'original' : 'corrección'}): ${order.title}: ${order.doneWhen || 'todos los pasos aplicados'}`, ...order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`)])].join('\n'),
+    ['ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)', ...i.orders.flatMap((order, index) => [`ORDEN ${index + 1} (${index === 0 ? 'original' : 'corrección'}): ${order.title}: ${order.doneWhen || 'todos los pasos aplicados'}`, ...order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`), ...order.steps.flatMap((s) => [`Paso ${s.n}:`, ...Object.entries(s).filter(([key]) => key !== 'n').map(([key, value]) => `${key}: ${key === 'text' && typeof value === 'string' && value.length > 400 ? `[${value.length} characters, see the DIFF]` : value}`)]), `mustContain: ${JSON.stringify(order.mustContain)}`])].join('\n'),
     (() => {
       const claims = new Map<string, { claim: string; source: string }>();
       for (const order of i.orders) for (const item of order.claims ?? []) claims.set(JSON.stringify([item.claim, item.source]), item);

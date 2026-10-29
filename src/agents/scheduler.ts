@@ -60,6 +60,7 @@ export function seedSettings(db: DatabaseSync): void {
 const queued = new Set<string>();
 let limitRetryMs = 30 * 60_000;
 export const MAX_AUTO_ATTEMPTS = 3;
+export const failureSignature = (s: string): string => s.toLowerCase().replace(/[0-9]+/g, '#').replace(/\s+/g, ' ').slice(0, 120);
 export let autoRetryMs = 120_000;
 export const setAutoRetry = (ms: number): void => { autoRetryMs = ms; };
 /** Test hook: how long a clicked job waits after the usage limit before it runs again. */
@@ -91,7 +92,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
     catch (e) { status = e instanceof LimitError ? 'limited' : 'failed'; error = String((e as Error).message ?? e).slice(0, 1000); }
     db.prepare("UPDATE agent_runs SET finished_at = datetime('now'), status = ?, tokens_in = ?, tokens_out = ?, cost_usd = ?, output = ?, error = ? WHERE id = ?")
       .run(status, ctx.usage.reduce((a, u) => a + u.tokensIn, 0), ctx.usage.reduce((a, u) => a + u.tokensOut, 0), ctx.usage.reduce((a, u) => a + u.costUsd, 0), output.slice(0, 20_000), error, id);
-    retry = slot === null && status === 'failed' && (q?.attempts ?? 0) < MAX_AUTO_ATTEMPTS;
+    retry = slot === null && status === 'failed' && (q?.attempts ?? 0) < MAX_AUTO_ATTEMPTS && !(q && q.attempts > 1 && q.last_error !== null && error !== null && failureSignature(q.last_error) === failureSignature(error));
     if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' || retry ? 'queued' : 'failed', status === 'limited' ? q?.last_error ?? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
     if (status === 'failed' && !retry) await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
     if (status === 'limited') { limited = slot === null; console.log(`[${agent}] usage limit reached; ${slot === null ? 'the click stays queued and retries' : 'the schedule retries'} in ${Math.round(limitRetryMs / 60_000)} min`); }

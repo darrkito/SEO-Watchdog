@@ -244,8 +244,11 @@ test('change orders stop after three invalid attempts including supplied order',
 test('revision generated change orders count each attempt once', async (t) => {
   const { d, input } = fixture(t, [apply(initial), apply(change)]);
   let reviews = 0, revisions = 0;
+  input.revisePrompt = 'Slim correction brief';
   d.review = async () => ++reviews === 1 ? { ok: false, problems: ['improve'] } : approved;
   d.revise = async (prompt) => {
+    assert.ok(prompt.includes(input.revisePrompt!));
+    assert.ok(!prompt.includes(input.planPrompt));
     if (++revisions === 1) return 'invalid';
     assert.match(prompt, /Your previous order failed validation/);
     return raw(change);

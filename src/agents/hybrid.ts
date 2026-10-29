@@ -18,7 +18,7 @@ export type HybridDeps = {
   root: string;
   log: (m: string) => void;
 };
-export type HybridInput = { planPrompt: string; rules: string; allowedPaths: string[]; maxRounds?: number };
+export type HybridInput = { planPrompt: string; revisePrompt?: string; rules: string; allowedPaths: string[]; maxRounds?: number };
 export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; revisions: number; executions: number; reviews: number; rounds: number } };
 
 export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt: string; previousOrder: WorkOrder }): string {
@@ -118,11 +118,11 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     if (stages.rounds >= (input.maxRounds ?? 3)) {
       throw new Error('not approved after ' + stages.rounds + ' rounds: ' + problems.join('; '));
     }
-    if (changeRaw === undefined) changeRaw = await revise(revisePrompt(problems, d.diff(), { planPrompt: input.planPrompt, previousOrder: order }));
+    if (changeRaw === undefined) changeRaw = await revise(revisePrompt(problems, d.diff(), { planPrompt: input.revisePrompt ?? input.planPrompt, previousOrder: order }));
     let first = true;
     order = await getOrder((prompt) => {
       if (first) { first = false; return Promise.resolve(changeRaw!); }
       return revise(prompt);
-    }, revisePrompt(problems, d.diff(), { planPrompt: input.planPrompt, previousOrder: order }));
+    }, revisePrompt(problems, d.diff(), { planPrompt: input.revisePrompt ?? input.planPrompt, previousOrder: order }));
   }
 }
