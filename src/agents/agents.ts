@@ -378,7 +378,7 @@ export async function researchFor(c: Ctx, topic: Draftable, brief: string, askFn
     const key = `${c.site.id}|${topic.slug}|${new Date().toISOString().slice(0, 10)}`;
     const cached = c.db.prepare('SELECT text FROM research_cache WHERE key = ?').get(key) as { text: string } | undefined;
     if (cached) return cached.text;
-    const text = await askFn(c, { role: 'research', prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname) }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 10, timeoutMs: 900_000 });
+    const text = await askFn(c, { role: 'research', prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname), improve: !!topic.improve }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 6, timeoutMs: 900_000 });
     c.db.prepare('INSERT OR REPLACE INTO research_cache (key, site_id, slug, text) VALUES (?, ?, ?, ?)').run(key, c.site.id, topic.slug, text);
     return text;
   } catch (e) {

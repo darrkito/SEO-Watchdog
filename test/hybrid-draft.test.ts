@@ -174,7 +174,7 @@ test('research is cached by site, slug and date; failures restore planner web to
     calls++;
     assert.equal(o.role, 'research');
     assert.deepEqual(o.tools, ['WebSearch', 'WebFetch']);
-    assert.equal(o.maxTurns, 10);
+    assert.equal(o.maxTurns, 6);
     return 'research result';
   };
   assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');

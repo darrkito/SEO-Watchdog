@@ -25,6 +25,14 @@ NO tienes acceso a los archivos del repo: no puedes leerlos ni editarlos. Tienes
 const POST_META = `{ "slug": "...", "enSlug": "... (solo si el sitio tiene versión en inglés con otro slug)", "claims": [ { "claim": "afirmación factual del post", "source": "archivo del repo o URL que abriste" } ] }`;
 const FIXER_META = `{ "fixed": [ids], "skipped": [ { "id": n, "reason": "..." } ] }`;
 
+const PRE_WRITE_CHECK = `ANTES DE ESCRIBIR, comprueba cada punto en tu cabeza (el revisor rechaza el borrador por cualquiera de ellos):
+1. Ninguna raya larga (—) en texto nuevo.
+2. El primer párrafo bajo cada encabezado (la respuesta directa) tiene entre 40 y 60 palabras: cuéntalas.
+3. Toda afirmación sobre materiales, medidas, plazos, normas o comparaciones está en meta.claims con fuente (URL abierta o archivo del repo). Si no tiene fuente, quítala o reescríbela sin esa afirmación.
+4. Nada de precios, cifras, ubicaciones o promesas que no estén en los DATOS AUTORIZADOS o en la investigación.
+5. Si el sitio tiene versión en inglés, el bloque EN dice lo mismo que el ES, con las mismas afirmaciones y las mismas fuentes.
+6. Todos los enlaces internos existen en el repo (úsalos solo de la lista dada).`;
+
 const response = (meta: string): string => `CÓMO RESPONDER: solo un objeto JSON, sin texto antes ni después, con esta forma:
 {
   "analysis": "2 a 5 frases: qué encontraste, qué decidiste y por qué",
@@ -71,9 +79,12 @@ const priorFailureSection = (failure?: string): string => failure ? [
   'Escribe la orden de modo que este fallo no pueda ocurrir otra vez; si el fallo fue del revisor, ajusta el texto; si fue de un archivo generado o una ruta, no lo toques.',
 ].join('\n') : '';
 
-export function researchPrompt(i: { siteUrl: string; brief: string; title: string; query?: string; audience: string }): string {
+export function researchPrompt(i: { siteUrl: string; brief: string; title: string; query?: string; audience: string; improve?: boolean }): string {
   return `Eres el investigador para ${i.siteUrl}. Usa WebSearch y WebFetch para investigar SOLO lo que necesita el tema: datos actuales, cifras, normas y enfoque de los competidores. Abre páginas reales y nunca cites una página que no hayas abierto. No escribas el post y no edites nada.
 
+Límites: máximo 6 turnos; abre como máximo 3 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.
+Los datos propios del negocio (precios, productos, enlaces internos, textos del sitio) ya los trae el repo: NO los busques ni los repitas en los hallazgos; investiga solo hechos EXTERNOS (cifras, normas, comparaciones, qué responden los competidores).
+${i.improve ? 'Es una mejora de un post existente: busca como máximo 4 hallazgos externos y solo los que el post actual no cubre.\n' : ''}
 Tema: ${i.title}
 Consulta: ${i.query ?? ''}
 Contexto: ${i.brief.slice(0, 2000)}
@@ -110,7 +121,7 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
       `DÓNDE METER UN POST NUEVO (puntos ya verificados; cada anchor existe exactamente una vez; cópialo tal cual):`,
       ...i.insertPoints.map((p) => [`- ${p.label}`, p.file, p.do, ...(p.anchor !== undefined ? [`anchor=${JSON.stringify(p.anchor)}`] : []), ...(p.note ? [p.note] : [])].join(' | ')),
     ].join('\n') : '',
-    response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', '), i.derivedPaths),
+    PRE_WRITE_CHECK, response(POST_META), OPERATIONS, orderRules(i.allowedPaths.join(', '), i.derivedPaths),
   ]);
 }
 
@@ -173,6 +184,6 @@ export function fixerPlanPrompt(i: { priorFailure?: string; siteUrl: string; fin
       `Cambios mínimos, uno por hallazgo, sin refactors. Si un hallazgo no se puede arreglar con seguridad (falta un dato que no tienes, o toca pagos, checkout, emails o rutas), sáltalo y dilo en "analysis". Respeta el posicionamiento de la marca: solo se corrige lo técnico o SEO.`,
     ].join('\n'),
     priorFailureSection(i.priorFailure),
-    siteRules(i.rules), guideSection(i.guides), i.audience, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
+    siteRules(i.rules), guideSection(i.guides), i.audience, PRE_WRITE_CHECK, response(FIXER_META), OPERATIONS, orderRules(i.allowedPathsNote, i.derivedPaths),
   ]);
 }

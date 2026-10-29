@@ -56,7 +56,7 @@ test('plan omits empty optional sections without extra separators', () => {
   for (const heading of ['EJEMPLO REAL', 'TEXTO ACTUAL DEL POST', 'DÓNDE ESTÁ EL POST', 'DÓNDE METER UN POST NUEVO', 'REGLAS DEL SITIO']) {
     assert.ok(!prompt.includes(heading), heading);
   }
-  assert.ok(prompt.includes('TU TAREA\nEscribir un post\n\nCÓMO RESPONDER'));
+  assert.ok(prompt.includes('TU TAREA\nEscribir un post\n\nANTES DE ESCRIBIR'));
   assert.ok(!prompt.includes('\n\n\n'));
 });
 
@@ -175,6 +175,21 @@ test('research prompt requests sourced findings without site instructions', () =
   const prompt = researchPrompt({ siteUrl: 'https://example.test', brief: 'brief context', title: 'Topic', query: 'query', audience: 'audience context' });
   for (const part of ['WebSearch', 'WebFetch', '900 palabras', '12 hallazgos', '"findings"', '"point"', '"source"', '"angle"', '"avoid"', 'brief context', 'audience context']) assert.ok(prompt.includes(part), part);
   for (const part of ['REGLAS DEL SITIO', 'GUÍAS DEL REPO', 'EJEMPLO REAL', 'playbook']) assert.ok(!prompt.includes(part), part);
+  assert.ok(prompt.includes('Límites: máximo 6 turnos; abre como máximo 3 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.'));
+  assert.ok(prompt.includes('Los datos propios del negocio (precios, productos, enlaces internos, textos del sitio) ya los trae el repo: NO los busques ni los repitas en los hallazgos; investiga solo hechos EXTERNOS (cifras, normas, comparaciones, qué responden los competidores).'));
+  const improveRule = 'Es una mejora de un post existente: busca como máximo 4 hallazgos externos y solo los que el post actual no cubre.';
+  assert.ok(!prompt.includes(improveRule));
+  assert.ok(researchPrompt({ siteUrl: 'https://example.test', brief: '', title: 'Topic', audience: '', improve: true }).includes(improveRule));
+});
+
+test('planner prompts include the pre-write checklist before the response format', () => {
+  for (const prompt of [planPrompt(plan), slimPlanPrompt(plan), fixerPlanPrompt(fixer)]) {
+    const heading = 'ANTES DE ESCRIBIR, comprueba cada punto en tu cabeza (el revisor rechaza el borrador por cualquiera de ellos):';
+    assert.ok(prompt.includes(heading));
+    assert.ok(prompt.includes('entre 40 y 60 palabras'));
+    assert.ok(prompt.indexOf(heading) < prompt.indexOf('CÓMO RESPONDER'));
+    for (let n = 1; n <= 6; n++) assert.match(prompt.slice(prompt.indexOf(heading), prompt.indexOf('CÓMO RESPONDER')), new RegExp(`\\n${n}\\. `));
+  }
 });
 
 test('research changes the planner tools and is limited to 6000 characters', () => {
