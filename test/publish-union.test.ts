@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { pushAndVerify, resolveRebaseByUnion } from '../src/agents/agents.ts';
+import { placeInsertion, pushAndVerify, resolveRebaseByUnion } from '../src/agents/agents.ts';
 
 const g = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const post = (slug: string) => ({ slug, improve: false, merge: null });
@@ -37,6 +37,32 @@ function conflict(first: string, second: string, cfg: (wt: string) => any, slug 
   assert.throws(() => g(second, 'rebase', 'origin/main'));
 }
 const remoteFile = (root: string, file: string) => g(root, `--git-dir=${join(root, 'remote.git')}`, 'show', `main:${file}`);
+
+test('places repeated-ending entries after the latest main entry, including a slid hunk', () => {
+  const item = (name: string) => `  {\n    slug: "${name}",\n    content: {\n      body: \`Content of ${name}\n\n\`,\n    },\n  },\n`;
+  const base = `const posts = [\n${item('A')}${item('B')}${item('C')}`;
+  const addition = item('N');
+  const draftLines = `${base}${addition}];\n`.split('\n');
+  const main = `${base}${item('X')}];\n`;
+  const start = base.split('\n').length - 1;
+  const count = addition.split('\n').length - 1;
+  const expected = `${base}${item('X')}${addition}];\n`;
+  for (const hunkStart of [start, start - 3]) {
+    const mainLines = main.split('\n');
+    const placement = placeInsertion(draftLines, hunkStart, count, mainLines);
+    assert.ok(placement);
+    mainLines.splice(placement.index, 0, ...placement.block);
+    const result = mainLines.join('\n');
+    assert.equal(result, expected);
+    assert.equal((result.match(/^  \{$/gm) ?? []).length, (result.match(/^  \},$/gm) ?? []).length);
+    assert.ok(result.includes(item('X')));
+    assert.ok(result.endsWith(`${addition}];\n`));
+  }
+});
+
+test('returns null when insertion context does not match', () => {
+  assert.equal(placeInsertion(['before', 'new', 'after'], 1, 1, ['different', 'unrelated']), null);
+});
 
 test('replays both drafts onto main as balanced insertions', () => {
   const { root, first, second, cfg } = fixture();

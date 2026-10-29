@@ -633,6 +633,40 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
 }
 
+/** Find an equivalent insertion using the surrounding draft context. */
+export function placeInsertion(draftLines: string[], start: number, count: number, mainLines: string[]): { index: number; block: string[] } | null {
+  const block = draftLines.slice(start, start + count);
+  if (!block.length) return null;
+  // every equivalent position of the block (identical lines let git slide it): slide up to the first, then collect downwards
+  while (start > 0 && draftLines[start - 1] === block.at(-1)) { block.unshift(block.pop()!); start--; }
+  const candidates: { start: number; block: string[] }[] = [];
+  for (;;) {
+    candidates.push({ start, block: [...block] });
+    if (start + count >= draftLines.length || draftLines[start + count] !== block[0]) break;
+    block.push(block.shift()!); start++;
+  }
+  const end = mainLines.length - (mainLines.at(-1) === '' ? 1 : 0);
+  for (const c of candidates.reverse()) { // the position closest to the end of the file first
+    const before = draftLines.slice(Math.max(0, c.start - 4), c.start);
+    const after = draftLines.slice(c.start + count, c.start + count + 4);
+    const last = after.length ? mainLines.length - before.length - after.length : end - before.length;
+    for (let j = last; j >= 0; j--) {
+      if (!after.length && j + before.length !== end) break;
+      if (before.every((line, i) => mainLines[j + i] === line) && after.every((line, i) => mainLines[j + before.length + i] === line)) {
+        return { index: j + before.length, block: c.block };
+      }
+    }
+  }
+  // tiny files (few lines before the insertion): the lines after the highest position are enough, last occurrence
+  const top = candidates[0], tail = draftLines.slice(top.start + count, top.start + count + 4);
+  if (tail.length) {
+    for (let j = mainLines.length - tail.length; j >= 0; j--) {
+      if (tail.every((line, i) => mainLines[j + i] === line)) return { index: j, block: top.block };
+    }
+  }
+  return null;
+}
+
 /** Resolve append-only conflicts while replaying a draft on the latest main. */
 export function resolveRebaseByUnion(cfg: AgentSite, post: PostOpts): boolean {
   const wt = cfg.worktree, main = `${cfg.remote}/main`;
@@ -654,22 +688,11 @@ export function resolveRebaseByUnion(cfg: AgentSite, post: PostOpts): boolean {
       const draftLines = git(wt, 'show', `HEAD:${file}`).split('\n');
       const mainLines = git(wt, 'show', `${main}:${file}`).split('\n');
       for (const h of hunks.reverse()) {
-        let start = Number(h[3]) - 1;
+        const start = Number(h[3]) - 1;
         const count = Number(h[4] ?? 1);
-        let block = draftLines.slice(start, start + count);
-        let anchor = draftLines.slice(start + count, start + count + 3);
-        while (block.length && anchor.length && block[0] === anchor[0]) {
-          block.push(block.shift()!); start++;
-          anchor = draftLines.slice(start + count, start + count + 3);
-        }
-        let index = anchor.length ? -1 : mainLines.length - (mainLines.at(-1) === '' ? 1 : 0);
-        if (anchor.length) {
-          for (let i = mainLines.length - anchor.length; i >= 0; i--) {
-            if (anchor.every((line, j) => mainLines[i + j] === line)) { index = i; break; }
-          }
-        }
-        if (index < 0) return false;
-        mainLines.splice(index, 0, ...block);
+        const placement = placeInsertion(draftLines, start, count, mainLines);
+        if (!placement) { console.log(`[agents] refused insertion replay: no matching context in ${file}`); return false; }
+        mainLines.splice(placement.index, 0, ...placement.block);
       }
       replayed.set(file, mainLines.join('\n'));
     }
