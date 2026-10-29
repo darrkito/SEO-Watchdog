@@ -125,7 +125,7 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
   ]);
 }
 
-export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string; derivedNote?: string }): string {
+export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string; derivedNote?: string; previousProblems?: string[] }): string {
   return sections([
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
@@ -137,14 +137,16 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
       return claims.size ? ['AFIRMACIONES VERIFICADAS POR EL PLANIFICADOR (cada una con la fuente que abrió; no las des por falsas sin una razón concreta):', ...[...claims.values()].map((item) => `- ${item.claim.slice(0, 300)} [fuente: ${item.source.slice(0, 300)}]`)].join('\n') : '';
     })(),
     i.derivedNote ? `ARCHIVOS GENERADOS (los produce el hook del repo, no son parte del trabajo; ignóralos aunque no estén en la orden): ${i.derivedNote}` : '',
+    i.previousProblems?.length ? ['PROBLEMAS YA SEÑALADOS EN RONDAS ANTERIORES (verifica que quedaron resueltos en el DIFF; solo puedes señalar un problema NUEVO si lo introdujo una corrección o es una violación clara de una regla del sitio que se te pasó antes):', ...i.previousProblems.map((problem) => '- ' + problem)].join('\n') : '',
     [`DIFF (con contexto)`, i.diff.slice(0, 60000) + (i.diff.length > 60000 ? '\n[diff cut]' : '')].join('\n'),
     `QUÉ REVISAR, en este orden
 1. ¿Cumple CADA regla del sitio? (rayas largas nuevas, datos o cifras inventados, precios, ubicaciones, promesas que el dueño no aprobó, enlaces rotos o con formato incorrecto).
 2. ¿Quedó exactamente lo que decía la orden, sin cambios de más ni de menos? ¿La sintaxis del archivo es válida (comillas, comas, llaves, escapes)?
 3. ¿El contenido es correcto, útil y claro para el lector, y cumple la estructura pedida (respuestas directas de 40 a 75 palabras bajo cada encabezado, FAQ real, enlaces internos)?
-Sé específico: cada problema dice QUÉ archivo y QUÉ texto, POR QUÉ está mal y CÓMO debe quedar. No apruebes con dudas.`,
+Sé específico: cada problema dice QUÉ archivo y QUÉ texto, POR QUÉ está mal y CÓMO debe quedar. No apruebes con dudas.
+Lista TODOS los problemas de una vez, en esta ronda. No guardes problemas para la siguiente: cada ronda extra cuesta mucho. Ordénalos del más grave al menos grave.`,
     `CÓMO RESPONDER: solo un objeto JSON:
-Como máximo 8 problemas; cada uno de máximo 60 palabras.
+Cada problema de máximo 60 palabras.
 {
   "ok": true | false,
   "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],

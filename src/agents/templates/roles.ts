@@ -7,7 +7,7 @@ const appendices: Record<Role, string> = {
   research: 'Busca solo lo que el tema necesita, abre solo las páginas necesarias y para en cuanto tengas los hechos. Máximo 900 palabras y máximo 12 hallazgos.',
   plan: 'Escribes UNA orden de trabajo en JSON; el texto del post va completo y final; sin comentarios.',
   revise: 'Corriges UNA orden: solo lo que dicen los problemas; JSON.',
-  review: 'Decides ok o no; como máximo 8 problemas, cada uno de máximo 60 palabras; JSON.',
+  review: 'Decides ok o no; todos los problemas de una vez (como máximo 12), cada uno de máximo 60 palabras; JSON.',
   fixplan: 'Escribes UNA orden de trabajo en JSON; el texto del post va completo y final; sin comentarios.',
   analyst: '',
   other: '',

@@ -65,7 +65,7 @@ test('review lists steps, caps diff, and preserves the JSON answer contract', ()
   assert.ok(prompt.includes('ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)\nORDEN 1 (original): Orden: todos los pasos aplicados\n1. create en a.ts\n2. append en b.ts'));
   assert.equal(prompt.split('DIFF (con contexto)\n')[1].split('\n\nQUÉ REVISAR')[0], 'x'.repeat(60000) + '\n[diff cut]');
   assert.ok(prompt.includes(`CÓMO RESPONDER: solo un objeto JSON:
-Como máximo 8 problemas; cada uno de máximo 60 palabras.
+Cada problema de máximo 60 palabras.
 {
   "ok": true | false,
   "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],
@@ -73,6 +73,17 @@ Como máximo 8 problemas; cada uno de máximo 60 palabras.
 }`));
   assert.ok(!reviewPrompt({ ...review, diff: 'x'.repeat(60000) }).includes('[diff cut]'));
   assert.ok(reviewPrompt({ ...review, orders: [{ ...review.orders[0], doneWhen: 'Terminado' }] }).includes('Orden: Terminado'));
+});
+
+test('review asks for all problems and includes previous problems only when present', () => {
+  const instruction = 'Lista TODOS los problemas de una vez, en esta ronda. No guardes problemas para la siguiente: cada ronda extra cuesta mucho. Ordénalos del más grave al menos grave.';
+  const heading = 'PROBLEMAS YA SEÑALADOS EN RONDAS ANTERIORES (verifica que quedaron resueltos en el DIFF; solo puedes señalar un problema NUEVO si lo introdujo una corrección o es una violación clara de una regla del sitio que se te pasó antes):';
+  for (const previousProblems of [undefined, [], ['Primero', 'Segundo']]) {
+    const prompt = reviewPrompt({ ...review, previousProblems });
+    assert.ok(prompt.includes(instruction));
+    assert.equal(prompt.includes(heading), !!previousProblems?.length);
+    if (previousProblems?.length) assert.ok(prompt.includes(heading + '\n- Primero\n- Segundo'));
+  }
 });
 
 test('scout lists each finding and includes rules only when supplied', () => {

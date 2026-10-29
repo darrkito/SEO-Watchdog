@@ -441,9 +441,9 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       git(wt, 'reset', '-q', '--', 'node_modules');
       return git(wt, 'diff', '--cached', '-U25');
     },
-    review: async (orders, diff): Promise<Review> => {
+    review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)}`);
@@ -544,9 +544,9 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       git(o.wt, 'reset', '-q', '--', 'node_modules');
       return git(o.wt, 'diff', '--cached', '-U25');
     },
-    review: async (orders, diff): Promise<Review> => {
+    review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, o.cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), o.cfg.derivedPaths) } : {}) };

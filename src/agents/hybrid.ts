@@ -14,7 +14,7 @@ export type HybridDeps = {
   lint?: () => string[];
   addedText: () => string;
   diff: () => string;
-  review: (orders: WorkOrder[], diff: string) => Promise<Review>;
+  review: (orders: WorkOrder[], diff: string, previousProblems: string[]) => Promise<Review>;
   root: string;
   log: (m: string) => void;
 };
@@ -36,6 +36,7 @@ export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt
 export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<HybridResult> {
   const stages = { plans: 0, revisions: 0, executions: 0, reviews: 0, rounds: 0 };
   const orders: WorkOrder[] = [];
+  const seenProblems: string[] = [];
   let knownClaims: NonNullable<WorkOrder['claims']> = [];
   async function getOrder(ask: (prompt: string) => Promise<string>, firstPrompt: string): Promise<WorkOrder> {
     let problems: string[] = [];
@@ -108,9 +109,14 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     let changeRaw: string | undefined;
     if (!problems.length) {
       d.stage?.('reviewing');
-      const review = await d.review([...orders], d.diff());
+      const review = await d.review([...orders], d.diff(), [...seenProblems]);
       stages.reviews++;
       if (review.ok) return { orders, review, stages };
+      for (const problem of review.problems) {
+        const shortened = problem.slice(0, 300);
+        if (!seenProblems.includes(shortened)) seenProblems.push(shortened);
+      }
+      if (seenProblems.length > 20) seenProblems.splice(0, seenProblems.length - 20);
       problems = review.problems.map((p) => 'reviewer: ' + p);
       changeRaw = review.changeOrder;
     }

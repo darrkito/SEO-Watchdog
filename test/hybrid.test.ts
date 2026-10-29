@@ -145,6 +145,24 @@ test('reviewer supplied change order skips revise', async (t) => {
   assert.equal(result.stages.reviews, 2);
 });
 
+test('review receives bounded, deduplicated previous problems', async (t) => {
+  const { d, input } = fixture(t, [apply(initial), apply(change)]);
+  const long = 'x'.repeat(301);
+  const problems = [...Array.from({ length: 21 }, (_, i) => `problem ${i}`), long, long];
+  let reviews = 0;
+  d.review = async (_orders, _diff, previousProblems) => {
+    if (++reviews === 1) {
+      assert.deepEqual(previousProblems, []);
+      previousProblems.push('mutation');
+      return { ok: false, problems, changeOrder: raw(change) };
+    }
+    assert.deepEqual(previousProblems, [...problems.slice(2, 21), 'x'.repeat(300)]);
+    return approved;
+  };
+  await runHybrid(d, input);
+  assert.equal(reviews, 2);
+});
+
 test('review without change order requests revision with diff and problem', async (t) => {
   const { d, input } = fixture(t, [apply(initial), apply(change)]);
   let reviews = 0;
