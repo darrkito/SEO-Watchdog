@@ -1,3 +1,4 @@
+import { systemPrompt, EFFORT, type Role } from './templates/roles.ts';
 import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
@@ -68,9 +69,13 @@ export const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
 /** git against the site's remote. With `remoteUrl` the remote is defined for this one command only (the owner's checkout stays untouched). */
 const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
-export async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number }): Promise<string> {
+export function claudeOptions<T extends { role?: Role }>(o: T): T & { system?: string; effort?: string } {
+  return o.role ? { ...o, system: systemPrompt(o.role), effort: EFFORT[o.role] } : o;
+}
+
+export async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number; role?: Role }): Promise<string> {
   const t0 = Date.now();
-  const r = await runClaude(o);
+  const r = await runClaude(claudeOptions(o));
   c.log(`claude [${o.tools.join('+') || 'no tools'}, <=${o.maxTurns} turns, prompt ${Math.round(o.prompt.length / 1000)}k chars]: ${Math.round((Date.now() - t0) / 1000)}s, ${r.tokensIn} in / ${r.tokensOut} out${r.ok ? '' : `, FAILED${r.limited ? ' (limit)' : ''}: ${(r.error ?? '').slice(0, 200)}`}`);
   c.usage.push(r);
   if (r.limited) throw new LimitError(r.error ?? 'usage limit');
@@ -218,7 +223,7 @@ export const analystAgent: AgentFn = async (c) => {
   const alert = dropAlert(s);
   if (alert) await sendAlert(`${new URL(c.site.url).hostname}: ${alert}`);
   const text = await ask(c, {
-    cwd: c.cfg?.worktree && existsSync(c.cfg.worktree) ? c.cfg.worktree : '/tmp', tools: [], maxTurns: 2, timeoutMs: 300_000,
+    role: 'analyst', cwd: c.cfg?.worktree && existsSync(c.cfg.worktree) ? c.cfg.worktree : '/tmp', tools: [], maxTurns: 2, timeoutMs: 300_000,
     prompt: `Eres el analista SEO de ${c.site.url}. Abajo hay datos reales y ya calculados (Search Console y Bing, semana contra semana). Escribe en español un informe breve (máx 220 palabras) para el dueño:
 1) Qué funciona, 2) Qué no funciona o cae, 3) Hasta 4 acciones concretas, cada una con el agente que debe hacerla (fixer = corrige en el sitio, researcher = busca temas, writer = escribe posts, owner = solo el dueño).
 Usa solo estos números; si algo no se puede concluir con tan pocos datos, dilo. No inventes volúmenes ni causas.
@@ -244,7 +249,7 @@ export const researcherAgent: AgentFn = async (c) => {
   const backlog = c.db.prepare("SELECT slug FROM topics WHERE site_id = ?").all(c.site.id).map((r: any) => r.slug);
   const wt = prepareWorktree(c.cfg, 'agent/research');
   const text = await ask(c, {
-    cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000,
+    role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000,
     prompt: `Eres el investigador de temas SEO y GEO de ${c.site.url}. Escribe los temas, el campo query y el slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}. Propón hasta 8 temas de blog NUEVOS que aún no cubrimos y que pueden traer búsquedas reales o ser citados por buscadores con IA.
 Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo que verifiques en la web):
 - Consultas de Search Console (60 días): ${JSON.stringify(top)}
@@ -373,7 +378,7 @@ export async function researchFor(c: Ctx, topic: Draftable, brief: string, askFn
     const key = `${c.site.id}|${topic.slug}|${new Date().toISOString().slice(0, 10)}`;
     const cached = c.db.prepare('SELECT text FROM research_cache WHERE key = ?').get(key) as { text: string } | undefined;
     if (cached) return cached.text;
-    const text = await askFn(c, { prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname) }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 10, timeoutMs: 900_000 });
+    const text = await askFn(c, { role: 'research', prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname) }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 10, timeoutMs: 900_000 });
     c.db.prepare('INSERT OR REPLACE INTO research_cache (key, site_id, slug, text) VALUES (?, ?, ?, ?)').run(key, c.site.id, topic.slug, text);
     return text;
   } catch (e) {
@@ -407,12 +412,12 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const defaults: HybridDeps = {
     stage: (s, n) => c.progress?.(s as Stage, n),
     plan: async (p) => {
-      const t = await ask(c, { prompt: p, cwd: tmpdir(), ...researchPlanOptions(research), timeoutMs: 1_200_000 });
+      const t = await ask(c, { role: 'plan', prompt: p, cwd: tmpdir(), ...researchPlanOptions(research), timeoutMs: 1_200_000 });
       c.log(`plan reply starts: ${t.slice(0, 160).replace(/\s+/g, ' ')}`);
       planReplies.push(t);
       return t;
     },
-    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 }),
+    revise: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 }),
     execute: async (p) => {
       const t0 = Date.now();
       const r = await runCodex({ prompt: p, cwd: wt, write: true, timeoutMs: 900_000 });
@@ -438,7 +443,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
     },
     review: async (orders, diff): Promise<Review> => {
       const filtered = stripDerived(diff, cfg.derivedPaths);
-      const text = await ask(c, { prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)}`);
@@ -516,8 +521,8 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
   });
   const defaults: HybridDeps = {
     stage: (s, n) => c.progress?.(s as Stage, n),
-    plan: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 12, timeoutMs: 1_200_000 }),
-    revise: (p) => ask(c, { prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
+    plan: (p) => ask(c, { role: 'fixplan', prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 12, timeoutMs: 1_200_000 }),
+    revise: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: (p) => runCodex({ prompt: p, cwd: o.wt, write: true, timeoutMs: 900_000 }),
     verify: () => {
       const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f) && !pathAllowed(o.cfg.derivedPaths ?? [], f));
@@ -541,7 +546,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     },
     review: async (orders, diff): Promise<Review> => {
       const filtered = stripDerived(diff, o.cfg.derivedPaths);
-      const text = await ask(c, { prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', ') }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
       const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
       return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), o.cfg.derivedPaths) } : {}) };

@@ -172,6 +172,7 @@ test('research is cached by site, slug and date; failures restore planner web to
   let calls = 0;
   const stub: typeof import('../src/agents/agents.ts').ask = async (_c, o) => {
     calls++;
+    assert.equal(o.role, 'research');
     assert.deepEqual(o.tools, ['WebSearch', 'WebFetch']);
     assert.equal(o.maxTurns, 10);
     return 'research result';

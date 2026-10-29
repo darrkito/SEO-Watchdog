@@ -65,6 +65,7 @@ test('review lists steps, caps diff, and preserves the JSON answer contract', ()
   assert.ok(prompt.includes('ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)\nORDEN 1 (original): Orden: todos los pasos aplicados\n1. create en a.ts\n2. append en b.ts'));
   assert.equal(prompt.split('DIFF (con contexto)\n')[1].split('\n\nQUÉ REVISAR')[0], 'x'.repeat(60000) + '\n[diff cut]');
   assert.ok(prompt.includes(`CÓMO RESPONDER: solo un objeto JSON:
+Como máximo 8 problemas; cada uno de máximo 60 palabras.
 {
   "ok": true | false,
   "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],

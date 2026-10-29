@@ -133,6 +133,7 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
 3. ¿El contenido es correcto, útil y claro para el lector, y cumple la estructura pedida (respuestas directas de 40 a 75 palabras bajo cada encabezado, FAQ real, enlaces internos)?
 Sé específico: cada problema dice QUÉ archivo y QUÉ texto, POR QUÉ está mal y CÓMO debe quedar. No apruebes con dudas.`,
     `CÓMO RESPONDER: solo un objeto JSON:
+Como máximo 8 problemas; cada uno de máximo 60 palabras.
 {
   "ok": true | false,
   "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],

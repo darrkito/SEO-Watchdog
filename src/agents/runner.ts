@@ -56,11 +56,20 @@ export function assertSubscription(): void {
 
 const LIMIT = /usage limit|rate.?limit|limit reached|quota|overloaded|too many requests|529|429/i;
 
-export function runClaude(o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number; model?: string }): Promise<ClaudeResult> {
-  assertSubscription();
+type ClaudeOptions = { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number; model?: string; system?: string; effort?: string };
+
+export function claudeArgs(o: ClaudeOptions): string[] {
   const args = ['-n', '19', 'claude', '-p', '--output-format', 'json', '--max-turns', String(o.maxTurns), '--no-session-persistence',
     '--setting-sources', 'project', '--model', o.model ?? process.env.AGENT_MODEL ?? 'sonnet',
     '--tools', o.tools.join(','), '--allowedTools', o.tools.join(',')];
+  if (o.system !== undefined) args.push('--system-prompt', o.system);
+  if (o.effort !== undefined) args.push('--effort', o.effort);
+  return args;
+}
+
+export function runClaude(o: ClaudeOptions): Promise<ClaudeResult> {
+  assertSubscription();
+  const args = claudeArgs(o);
   return new Promise((resolve) => {
     const child = spawn('nice', args, { cwd: o.cwd, env: cleanEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
