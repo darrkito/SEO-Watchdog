@@ -2,9 +2,9 @@ import { systemPrompt, EFFORT, type Role } from './templates/roles.ts';
 import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Site } from '../db.ts';
@@ -635,57 +635,63 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
 
 /** Resolve append-only conflicts while replaying a draft on the latest main. */
 export function resolveRebaseByUnion(cfg: AgentSite, post: PostOpts): boolean {
-  const wt = cfg.worktree, merged = new Set<string>(), regenerated = new Set<string>();
-  const inProgress = () => ['rebase-merge', 'rebase-apply'].some((name) => {
-    const p = git(wt, 'rev-parse', '--git-path', name).trim();
-    return existsSync(isAbsolute(p) ? p : resolve(wt, p));
-  });
+  const wt = cfg.worktree, main = `${cfg.remote}/main`;
+  let draft: string | undefined;
   try {
-    for (let i = 0; i < 5; i++) {
-      const files = git(wt, 'diff', '--name-only', '--diff-filter=U', '-z').split('\0').filter(Boolean);
-      if (!files.length && !inProgress()) break;
-      if (!files.length) return false;
-      if (files.some((f) => !pathAllowed(cfg.derivedPaths ?? [], f) && !pathAllowed(cfg.unionPaths ?? [], f))) return false;
-      for (const f of files) {
-        if (pathAllowed(cfg.derivedPaths ?? [], f)) {
-          git(wt, 'checkout', '--ours', '--', f); regenerated.add(f);
-        } else {
-          const dir = mkdtempSync(join(tmpdir(), 'wd-union-'));
-          try {
-            const paths = ['ours', 'base', 'theirs'].map((n) => join(dir, n));
-            for (const [index, stage] of [2, 1, 3].entries()) {
-              let data: string;
-              try { data = git(wt, 'show', `:${stage}:${f}`); }
-              catch (e) { if (stage !== 1) throw e; data = ''; }
-              writeFileSync(paths[index], data);
-            }
-            const result = spawnSync('git', ['merge-file', '-p', '--union', ...paths], { cwd: wt, encoding: 'utf8', maxBuffer: 64 << 20 });
-            if (result.error || !result.stdout) throw result.error ?? new Error(`empty union merge: ${f}`);
-            writeFileSync(join(wt, f), result.stdout); merged.add(f);
-          } finally { rmSync(dir, { recursive: true, force: true }); }
+    try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
+    draft = git(wt, 'rev-parse', 'HEAD').trim();
+    const base = git(wt, 'merge-base', 'HEAD', main).trim();
+    const subject = git(wt, 'log', '-1', '--format=%s').trim();
+    if (git(wt, 'rev-list', `${base}..HEAD`, '--count').trim() !== '1') return false;
+    const files = git(wt, 'diff', '--name-only', '-z', base, 'HEAD').split('\0').filter(Boolean);
+    const replayed = new Map<string, string>(), regenerated: string[] = [];
+    for (const file of files) {
+      if (pathAllowed(cfg.derivedPaths ?? [], file)) { regenerated.push(file); continue; }
+      if (!pathAllowed(cfg.unionPaths ?? [], file)) return false;
+      const diff = git(wt, 'diff', '-U0', base, 'HEAD', '--', file);
+      const hunks = [...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)];
+      if (!hunks.length || hunks.some((h) => Number(h[2] ?? 1) !== 0)) return false;
+      const draftLines = git(wt, 'show', `HEAD:${file}`).split('\n');
+      const mainLines = git(wt, 'show', `${main}:${file}`).split('\n');
+      for (const h of hunks.reverse()) {
+        let start = Number(h[3]) - 1;
+        const count = Number(h[4] ?? 1);
+        let block = draftLines.slice(start, start + count);
+        let anchor = draftLines.slice(start + count, start + count + 3);
+        while (block.length && anchor.length && block[0] === anchor[0]) {
+          block.push(block.shift()!); start++;
+          anchor = draftLines.slice(start + count, start + count + 3);
         }
-        git(wt, 'add', '--', f);
+        let index = anchor.length ? -1 : mainLines.length - (mainLines.at(-1) === '' ? 1 : 0);
+        if (anchor.length) {
+          for (let i = mainLines.length - anchor.length; i >= 0; i--) {
+            if (anchor.every((line, j) => mainLines[i + j] === line)) { index = i; break; }
+          }
+        }
+        if (index < 0) return false;
+        mainLines.splice(index, 0, ...block);
       }
-      const continued = spawnSync('git', ['-c', 'core.editor=true', 'rebase', '--continue'], { cwd: wt, env: { ...process.env, GIT_EDITOR: 'true' }, encoding: 'utf8' });
-      if (continued.error) throw continued.error;
-      if (continued.status !== 0 && !git(wt, 'diff', '--name-only', '--diff-filter=U').trim()) throw new Error(continued.stderr);
+      replayed.set(file, mainLines.join('\n'));
     }
-    if (inProgress()) return false;
+    const branch = git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+    try { git(wt, 'branch', '-f', `backup/${branch}-${Date.now()}`, draft); } catch { /* best effort */ }
+    git(wt, 'reset', '--hard', main);
+    for (const [file, content] of replayed) writeFileSync(join(wt, file), content);
     if (cfg.postEdit) cfg.postEdit(wt, post);
     git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules');
-    if (git(wt, 'diff', '--cached', '--name-only').trim()) git(wt, 'commit', '--amend', '--no-edit');
+    commit(wt, subject);
     if (post.slug) {
       const file = (cfg.unionPaths ?? []).find((f) => existsSync(join(wt, f)));
       const slug = post.slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (file && (readFileSync(join(wt, file), 'utf8').match(new RegExp(`\\bslug\\s*:\\s*(["'])${slug}\\1`, 'g')) ?? []).length > 1) {
-        if (inProgress()) git(wt, 'rebase', '--abort'); else git(wt, 'reset', '--hard', 'ORIG_HEAD');
+        git(wt, 'reset', '--hard', draft);
         return false;
       }
     }
-    console.log(`[agents] union-merged: ${[...merged].join(', ') || 'none'}; regenerated: ${[...regenerated].join(', ') || 'none'}`);
+    console.log(`[agents] replayed insertions: ${[...replayed.keys()].join(', ') || 'none'}; regenerated: ${regenerated.join(', ') || 'none'}`);
     return true;
   } catch {
-    try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
+    if (draft) { try { git(wt, 'reset', '--hard', draft); } catch { /* best effort */ } }
     return false;
   }
 }

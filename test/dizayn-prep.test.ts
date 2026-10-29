@@ -17,12 +17,13 @@ test('a new post written into posts_agent.py reaches every generated file; prep 
   assert.match(py(join(DIR, 'selftest.py'), '--newpost', REPO), /NEWPOST OK/);
 });
 
-test('two drafts made from the same base both publish: the second is re-applied and regenerated on the latest main', { skip, timeout: 900_000 }, async () => {
-  const { mkdtempSync, writeFileSync, readFileSync } = await import('node:fs');
+test('two drafts made from the same base both publish: the second is re-applied and regenerated on the latest main', { skip, timeout: 900_000 }, async (t) => {
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { prepareWorktree, pushAndVerify } = await import('../src/agents/agents.ts');
   const { dizaynPostEdit } = await import('../src/agents/hooks.ts');
   const root = mkdtempSync(join(tmpdir(), 'wd-regen-')), g = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8' });
+  t.after(() => rmSync(root, { recursive: true, force: true })); // each run clones the whole site (~100 MB): never leave it in /tmp
   g(root, 'clone', '-q', '--bare', REPO, 'remote.git'); g(root, 'clone', '-q', 'remote.git', 'owner');
   const owner = join(root, 'owner'); g(owner, 'config', 'user.email', 't@t'); g(owner, 'config', 'user.name', 't');
   const cfg: any = { repo: owner, worktree: join(root, 'wt'), remote: 'origin', typecheck: ['true'], regenerateFrom: ['_src'], postEdit: dizaynPostEdit };
