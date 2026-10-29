@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from '../src/db.ts';
 import { AGENTS, LimitError } from '../src/agents/agents.ts';
-import { runAgent, resumeQueued, retryQueued, dismissQueued, retryAllFailed, setLimitRetry, setAutoRetry, failureSignature, serial } from '../src/agents/scheduler.ts';
+import { runAgent, resumeQueued, retryQueued, dismissQueued, retryAllFailed, setLimitRetry, setLimitedUntil, limitedUntilMs, limitStatus, setAutoRetry, failureSignature, serial } from '../src/agents/scheduler.ts';
 import { jobLabel, listJobs, setStage } from '../src/agents/jobs.ts';
 
 test('clicked job states, retries, dismissal, limit and resume', async () => {
@@ -39,7 +39,7 @@ test('clicked job states, retries, dismissal, limit and resume', async () => {
     setLimitRetry(3600000); (AGENTS as any).collect = async () => { throw new LimitError('limit'); };
     await runAgent(db, 'collect', site, null, { slug: 'limited' });
     q = db.prepare('SELECT * FROM agent_queue').get() as any; assert.equal(q.state, 'queued'); assert.equal(q.last_error, 'waiting for the usage limit to reset');
-  } finally { (AGENTS as any).collect = old; setLimitRetry(1800000); if (token !== undefined) process.env.TELEGRAM_BOT_TOKEN = token; db.close(); rmSync(dir, { recursive: true, force: true }); }
+  } finally { (AGENTS as any).collect = old; setLimitRetry(1800000); setLimitedUntil(0); if (token !== undefined) process.env.TELEGRAM_BOT_TOKEN = token; db.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('progress, job labels and lists', () => {
@@ -125,4 +125,27 @@ test('identical failure signatures stop retry while different failures retry', a
     if (chat === undefined) delete process.env.TELEGRAM_CHAT_ID; else process.env.TELEGRAM_CHAT_ID = chat;
     db.close(); rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('usage limit parks queued and scheduled jobs until reset', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'limit-queue-')); const db = openDb(join(dir, 'db'));
+  const old = AGENTS.collect;
+  try {
+    db.prepare("INSERT INTO sites (id,url) VALUES (104,'https://example.com')").run();
+    const site = db.prepare('SELECT * FROM sites WHERE id=104').get() as any;
+    setLimitRetry(1000); let calls = 0;
+    (AGENTS as any).collect = async () => { calls++; if (calls === 1) throw new LimitError('limit'); return 'ok'; };
+    await runAgent(db, 'collect', site, null, { slug: 'first' });
+    assert.ok(limitedUntilMs() > Date.now()); assert.equal(limitStatus().until, limitedUntilMs());
+    await runAgent(db, 'collect', site, null, { slug: 'second' });
+    await runAgent(db, 'collect', site, 'scheduled');
+    assert.equal(calls, 1);
+    assert.equal((db.prepare('SELECT count(*) n FROM agent_runs').get() as any).n, 1);
+    assert.equal((db.prepare("SELECT state FROM agent_queue WHERE slug='second'").get() as any).state, 'queued');
+    setLimitedUntil(Date.now() - 1); assert.equal(limitStatus().until, null);
+    await new Promise((resolve) => setTimeout(resolve, 1150)); await serial(async () => {});
+    assert.equal(calls, 3);
+    assert.equal(db.prepare("SELECT state FROM agent_queue WHERE slug='second'").get(), undefined);
+  } finally { (AGENTS as any).collect = old; setLimitRetry(1800000); setLimitedUntil(0); db.close(); rmSync(dir, { recursive: true, force: true }); }
 });

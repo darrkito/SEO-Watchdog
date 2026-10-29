@@ -264,7 +264,7 @@ test('staging never includes node_modules, whether the repo ignores it or not', 
 });
 
 test('a clicked job that hits the usage limit stays queued and runs again later; a scheduled one is left to the schedule', async () => {
-  const { runAgent, inFlight, setLimitRetry } = await import('../src/agents/scheduler.ts');
+  const { runAgent, inFlight, setLimitRetry, setLimitedUntil } = await import('../src/agents/scheduler.ts');
   const { AGENTS, LimitError } = await import('../src/agents/agents.ts');
   const db = openDb(join(process.env.WATCHDOG_DATA!, 'lim.db'));
   db.prepare("INSERT INTO sites (id, url, kind) VALUES (41, 'https://studioyume.mx/', 'own')").run();
@@ -276,7 +276,7 @@ test('a clicked job that hits the usage limit stays queued and runs again later;
   const queuedRows = () => (db.prepare("SELECT COUNT(*) n FROM agent_queue WHERE agent = 'collect' AND site_id = 41").get() as { n: number }).n;
   assert.equal(queuedRows(), 1, 'the row stays so a restart also resumes it');
   assert.ok(inFlight().includes('collect:41:x'), 'and it cannot be queued twice');
-  await new Promise((r) => setTimeout(r, 600));
+  await new Promise((r) => setTimeout(r, 1400)); // the retry timer never fires sooner than 1 s after the limit
   assert.equal(calls, 2, 'it ran again');
   assert.equal(queuedRows(), 0, 'and is cleared once it succeeds');
   // scheduled run (slot given): no retry timer, the 30-minute schedule handles it
@@ -285,6 +285,7 @@ test('a clicked job that hits the usage limit stays queued and runs again later;
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(calls, 1);
   setLimitRetry(30 * 60_000);
+  setLimitedUntil(0);
 });
 
 test('pause: clicked jobs are parked in the queue, nothing is cancelled, and Resume runs them', async () => {

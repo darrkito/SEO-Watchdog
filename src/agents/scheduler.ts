@@ -4,6 +4,7 @@ import { findSite, type Site } from '../db.ts';
 import { sendAlert } from '../alert.ts';
 import { AGENTS, LimitError, mxNow, publish, type Ctx } from './agents.ts';
 import { setStage } from './jobs.ts';
+import { parseLimitReset } from './runner.ts';
 import { AGENT_SITES, type AgentSite } from './sites.ts';
 
 export const cfgOf = (site: Site): AgentSite | undefined => AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')];
@@ -59,6 +60,10 @@ export function seedSettings(db: DatabaseSync): void {
 
 const queued = new Set<string>();
 let limitRetryMs = 30 * 60_000;
+let limitedUntil = 0;
+export const limitedUntilMs = (): number => limitedUntil;
+export const setLimitedUntil = (ms: number): void => { limitedUntil = ms; };
+export const limitStatus = (): { until: number | null } => ({ until: Date.now() < limitedUntil ? limitedUntil : null });
 export const MAX_AUTO_ATTEMPTS = 3;
 export const failureSignature = (s: string): string => s.toLowerCase().replace(/[0-9]+/g, '#').replace(/\s+/g, ' ').slice(0, 120);
 export let autoRetryMs = 120_000;
@@ -81,6 +86,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
   let limited = false, retry = false, parked = false, status = 'failed';
   return serial(async () => {
     if (isPaused(db)) { parked = true; return; } // paused while this waited in line: step aside, keep the queue row
+    if (Date.now() < limitedUntil) { parked = true; limited = slot === null; return; }
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
     if (slot === null) db.prepare("UPDATE agent_queue SET state = 'running', attempts = attempts + 1, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(agent, site.id, detail);
     const q = slot === null ? db.prepare('SELECT attempts, last_error FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').get(agent, site.id, detail) as { attempts: number; last_error: string | null } | undefined : undefined;
@@ -95,11 +101,11 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
     retry = slot === null && status === 'failed' && (q?.attempts ?? 0) < MAX_AUTO_ATTEMPTS && !(q && q.attempts > 1 && q.last_error !== null && error !== null && failureSignature(q.last_error) === failureSignature(error));
     if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' || retry ? 'queued' : 'failed', status === 'limited' ? q?.last_error ?? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
     if (status === 'failed' && !retry) await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
-    if (status === 'limited') { limited = slot === null; console.log(`[${agent}] usage limit reached; ${slot === null ? 'the click stays queued and retries' : 'the schedule retries'} in ${Math.round(limitRetryMs / 60_000)} min`); }
+    if (status === 'limited') { limitedUntil = Math.max(limitedUntil, parseLimitReset(error ?? '', new Date()) ?? Date.now() + limitRetryMs); limited = slot === null; console.log(`[${agent}] usage limit reached; retry after ${new Date(limitedUntil).toISOString()}`); }
   }).catch((e) => console.error(`[${agent}]`, e)).finally(() => {
     if (limited || retry) {
       // A clicked job must not vanish when the Claude session limit is hit: keep its queue row (survives a restart) and its dedupe key, try again later.
-      setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limited ? limitRetryMs : autoRetryMs).unref();
+      setTimeout(() => { queued.delete(key); void runAgent(db, agent, site, null, args); }, limited ? Math.max(limitedUntil - Date.now(), 1000) : autoRetryMs).unref();
       return;
     }
     queued.delete(key);

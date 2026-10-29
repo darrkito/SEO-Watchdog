@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { codexEnv, resetCodexAuthCache, assertCodexSubscription, runCodex } from '../src/agents/runner.ts';
+import { codexEnv, resetCodexAuthCache, assertCodexSubscription, runCodex, parseLimitReset } from '../src/agents/runner.ts';
 
 const originalPath = process.env.PATH, dirs: string[] = [];
 function fakeCodex(script: string): string {
@@ -105,4 +105,18 @@ test('timeout kills the child and reports timeout', async () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail('timeout child is still running');
+});
+
+
+test('parseLimitReset parses Claude reset times and clamps them', () => {
+  const now = new Date('2026-10-29T18:00:00Z');
+  assert.equal(parseLimitReset("You've hit your 5-hour limit · resets 8:40pm (Europe/London)", now), Date.parse('2026-10-29T20:42:00Z'));
+  assert.equal(parseLimitReset('resets 8pm (Europe/London)', now), Date.parse('2026-10-29T20:02:00Z'));
+  const localNow = new Date('2026-10-29T12:00:00');
+  assert.equal(parseLimitReset('resets 2pm', localNow), new Date('2026-10-29T14:02:00').getTime());
+  assert.equal(parseLimitReset('Codex usage limit resets 8pm', now), null);
+  assert.equal(parseLimitReset('garbage', now), null);
+  assert.equal(parseLimitReset('resets 6pm (Europe/London)', now), now.getTime() + 300000);
+  assert.equal(parseLimitReset('resets 8pm (Europe/London)', new Date('2026-10-29T21:00:00Z')), Date.parse('2026-10-30T03:00:00Z'));
+  assert.equal(parseLimitReset('resets 1am (Europe/London)', new Date('2026-10-29T23:00:00Z')), Date.parse('2026-10-30T01:02:00Z'));
 });

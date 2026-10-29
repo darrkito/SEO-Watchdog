@@ -7,6 +7,36 @@ import { join } from 'node:path';
 
 export type ClaudeResult = { ok: boolean; limited: boolean; text: string; tokensIn: number; tokensOut: number; costUsd: number; error?: string };
 
+/** Parse Claude's reset time in its stated time zone (or the local zone if omitted). */
+export function parseLimitReset(message: string, now: Date): number | null {
+  if (/\bcodex\b|usage limit/i.test(message)) return null;
+  const match = message.match(/\bresets\s+(1[0-2]|[1-9])(?::([0-5]\d))?\s*(am|pm)\b(?:\s*\(([^)]+)\))?/i);
+  if (!match) return null;
+  const zone = match[4] ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    const parts = (ms: number): number[] => {
+      const values = Object.fromEntries(formatter.formatToParts(ms).map((p) => [p.type, p.value]));
+      return ['year', 'month', 'day', 'hour', 'minute', 'second'].map((k) => Number(values[k]));
+    };
+    const [year, month, day] = parts(now.getTime());
+    const hour = Number(match[1]) % 12 + (match[3].toLowerCase() === 'pm' ? 12 : 0);
+    const minute = Number(match[2] ?? 0);
+    const convert = (dayOffset: number): number => {
+      const target = Date.UTC(year, month - 1, day + dayOffset, hour, minute);
+      let result = target;
+      for (let i = 0; i < 3; i++) {
+        const [y, m, d, h, min, sec] = parts(result);
+        result += target - Date.UTC(y, m - 1, d, h, min, sec);
+      }
+      return result;
+    };
+    let reset = convert(0);
+    if (reset < now.getTime()) reset = convert(1);
+    return Math.max(now.getTime() + 5 * 60_000, Math.min(reset + 2 * 60_000, now.getTime() + 6 * 3600_000));
+  } catch { return null; }
+}
+
 /** Only what the CLI needs. Anything ANTHROPIC_* / API-ish is dropped by construction (allowlist, not blocklist). */
 export function cleanEnv(src: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const keep = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'USER', 'SHELL', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'NVM_DIR'];
