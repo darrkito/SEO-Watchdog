@@ -9,6 +9,7 @@ import { alertText, sendAlert } from './alert.ts';
 import { ruleInfo, describeChange, RULES } from './catalog.ts';
 import { discover, activate, deactivate, addOwnCompetitor, candidates, type Candidate, type Profile } from './competitors.ts';
 import { findProperty } from './gsc.ts';
+import { resubmit } from './submit.ts';
 import { battle } from './gaps.ts';
 import { hasLlm, canWebSearch, MODEL } from './llm.ts';
 import { agentsPage, agentsPost, queueFix, siteAgentsPage } from './agents/page.ts';
@@ -109,7 +110,8 @@ function sitePage(db: DatabaseSync, site: Site, tab: string, showAll: boolean, e
     ${parent ? h`<p class="small"><a href="/site/${parent.id}?tab=competitors">← ${host(parent.url)} competitors</a></p>` : h`<p class="small"><a href="/">← All sites</a></p>`}
     <div class="row"><div><h1>${host(site.url)}</h1>
       <p class="muted small"><a href="${safeHref(site.url)}" target="_blank" rel="noopener">${site.url}</a>${parent ? ` · competitor of ${host(parent.url)}` : ''}${site.market ? ` · sells to ${site.market}` : ''}</p></div>
-      <form method="post" action="/site/${site.id}/run"><button class="btn primary" ${isRunning ? raw('disabled') : ''}>${isRunning ? 'Checking…' : 'Check now'}</button></form></div>
+      <div class="row">${site.kind === 'own' ? h`<form method="post" action="/site/${site.id}/resubmit"><button class="btn" title="Resubmit the sitemap to Google and Bing and ping IndexNow">Resubmit sitemaps + IndexNow</button></form>` : ''}
+      <form method="post" action="/site/${site.id}/run"><button class="btn primary" ${isRunning ? raw('disabled') : ''}>${isRunning ? 'Checking…' : 'Check now'}</button></form></div></div>
     <p class="headline">${chip(v.sev, v.sev === 'critical' ? 'Fix now' : v.sev === 'warn' ? 'Needs a look' : v.sev === 'good' ? 'Healthy' : 'Info')} ${v.text}</p>
     ${run ? h`<div class="stats">
       <div class="card stat"><div class="v">${run.stats.pages ?? 0}</div><div class="k">pages checked ${ago(run.finished_at)}</div></div>
@@ -513,6 +515,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
           try { return redirect(res, `/agents/${cfgOf(site)?.short ?? ''}?ok=${encodeURIComponent(queueFix(db, site.id, form.get('mode') === 'all' ? 'all' : form.getAll('ids').map(Number).filter(Number.isInteger)))}`); }
           catch (e) { return redirect(res, `/agents?err=${encodeURIComponent((e as Error).message)}`); }
         }
+        if (siteMatch![2] === '/resubmit' && site.kind === 'own') return redirect(res, `/site/${site.id}?msg=${encodeURIComponent((await resubmit(db, site)).join(' · '))}`);
         if (siteMatch![2] === '/run') { startRun(db, site); return redirect(res, `/site/${site.id}`); }
         if (['/discover', '/competitor', '/competitor-add', '/profile', '/gsc'].includes(siteMatch![2])) {
           try { await competitorPost(db, site, siteMatch![2], form); }
@@ -529,7 +532,7 @@ export function startServer(port = Number(process.env.PORT) || 4321) {
       if (url.pathname === '/agents') return send(res, 200, agentsPage(db, flash));
       const agentSite = url.pathname.match(/^\/agents\/([a-z]+)$/);
       if (agentSite) { const p = siteAgentsPage(db, agentSite[1], flash, url.searchParams.has('all'), url.searchParams.get('topics') === 'all'); return p ? send(res, 200, p) : notFound(res); }
-      if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all')));
+      if (site && !siteMatch![2]) return send(res, 200, sitePage(db, site, url.searchParams.get('tab') ?? '', url.searchParams.has('all'), url.searchParams.get('msg') ?? undefined));
       if (site && siteMatch![2] === '/page') { const p = pageView(db, site, url.searchParams.get('url') ?? ''); return p ? send(res, 200, p) : notFound(res); }
       return notFound(res);
     } catch (e) {

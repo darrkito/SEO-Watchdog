@@ -5,11 +5,13 @@ import { readFileSync } from 'node:fs';
 const SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly';
 const b64 = (v: string | Buffer) => Buffer.from(v).toString('base64url');
 
-async function token(keyFile: string): Promise<string> {
+const WRITE_SCOPE = 'https://www.googleapis.com/auth/webmasters';
+
+async function token(keyFile: string, scope = SCOPE): Promise<string> {
   const key = JSON.parse(readFileSync(keyFile, 'utf8'));
   if (!key.client_email || !key.private_key) throw new Error(`${keyFile} is not a service-account key`);
   const now = Math.floor(Date.now() / 1000);
-  const unsigned = `${b64(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64(JSON.stringify({ iss: key.client_email, scope: SCOPE, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }))}`;
+  const unsigned = `${b64(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64(JSON.stringify({ iss: key.client_email, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 }))}`;
   const jwt = `${unsigned}.${createSign('RSA-SHA256').update(unsigned).sign(key.private_key).toString('base64url')}`;
   const r = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: jwt }) });
   const j: any = await r.json();
@@ -70,4 +72,11 @@ export async function dailyRows(keyFile: string, property: string, siteUrl: stri
     if ((j.rows ?? []).length < 25_000) break;
   }
   return out.map((x) => ({ date: x.keys[0], query: x.keys[1], page: x.keys[2], clicks: x.clicks, impressions: x.impressions, position: x.position }));
+}
+
+/** Resubmit a sitemap to Search Console. Needs the write scope, so the service account must be a full user/owner of the property. */
+export async function submitSitemap(keyFile: string, property: string, sitemapUrl: string): Promise<void> {
+  const t = await token(keyFile, WRITE_SCOPE);
+  const r = await fetch(`https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(property)}/sitemaps/${encodeURIComponent(sitemapUrl)}`, { method: 'PUT', headers: { authorization: `Bearer ${t}` } });
+  if (!r.ok) throw new Error(`${r.status} ${((await r.json().catch(() => ({}))) as any).error?.message ?? ''}`.trim());
 }
