@@ -122,3 +122,22 @@ test('rejects changes outside union and derived paths', () => {
     assert.equal(resolveRebaseByUnion(cfg(second), post('second')), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('publish: a rebase stopping only on a generated file keeps main\'s copy, regenerates it and continues', () => {
+  const { root, first, second, cfg } = fixture();
+  try {
+    const regen = (wt: string) => writeFileSync(join(wt, 'derived.json'), `${readFileSync(join(wt, paths[0]), 'utf8').length}\n`);
+    const withEdit = (wt: string): any => ({ ...cfg(wt), postEdit: regen });
+    const edit = (wt: string, f: () => void) => { f(); regen(wt); g(wt, 'add', '.'); g(wt, 'commit', '-qm', 'edit'); };
+    // first: an improve-style change to line 1 (not an insertion) plus the regenerated file, pushed to main
+    edit(first, () => { const p = join(first, paths[0]); writeFileSync(p, readFileSync(p, 'utf8').replace('const posts = [', 'const posts = [ // improved')); });
+    g(first, 'push', '-q', 'origin', 'main');
+    // second: improves another line of the post (an edit, not an insertion, so the union replay refuses it) and also rewrote the generated file from the old base
+    edit(second, () => { const p = join(second, paths[0]); writeFileSync(p, readFileSync(p, 'utf8').replace('title: "existing"', 'title: "existing v2"')); });
+    pushAndVerify(withEdit(second), [], post('second'));
+    const posts = remoteFile(root, paths[0]);
+    assert.match(posts, /improved/); assert.match(posts, /existing v2/);
+    assert.equal(remoteFile(root, 'derived.json').trim(), String(posts.length));
+    assert.equal(g(second, 'status', '--short').trim(), '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

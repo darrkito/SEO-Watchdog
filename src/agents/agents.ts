@@ -621,7 +621,7 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   gitRemote(cfg, 'fetch', cfg.remote, 'main');
   try { git(wt, 'rebase', `${cfg.remote}/main`); }
   catch (e) {
-    if (!(cfg.unionPaths && post && resolveRebaseByUnion(cfg, post))) {
+    if (!resolveDerivedConflict(cfg, post) && !(cfg.unionPaths && post && resolveRebaseByUnion(cfg, post))) {
     try { git(wt, 'rebase', '--abort'); } catch { /* none in progress */ }
     // Sites with generated pages (Dizayn SEO): two drafts made from the same base both rewrite the same one-line pages, so git cannot merge them.
     // Re-apply only the draft's SOURCE change on the latest main and regenerate everything else.
@@ -631,6 +631,24 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   }
   const err = typecheck(cfg); if (err) throw new Error(`typecheck after rebase: ${err.slice(0, 300)}`);
   gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
+}
+
+/** A rebase stopped only on generated files (e.g. Luvory's one-line blog-index.json, rewritten by every post): keep main's copy, regenerate from the merged sources, continue. */
+export function resolveDerivedConflict(cfg: AgentSite, post?: PostOpts): boolean {
+  const wt = cfg.worktree;
+  try {
+    if (!post || !cfg.postEdit || !cfg.derivedPaths?.length) return false;
+    for (let i = 0; i < 5; i++) {
+      const bad = git(wt, 'diff', '--name-only', '--diff-filter=U', '-z').split('\0').filter(Boolean);
+      if (!bad.length || !bad.every((f) => pathAllowed(cfg.derivedPaths!, f))) return false;
+      for (const f of bad) git(wt, 'checkout', '--ours', '--', f);
+      cfg.postEdit(wt, post);
+      git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules');
+      try { execFileSync('git', ['rebase', '--continue'], { cwd: wt, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_EDITOR: 'true' } }); return true; }
+      catch { /* the next commit stopped on another conflict: go round again */ }
+    }
+    return false;
+  } catch { return false; }
 }
 
 /** Find an equivalent insertion using the surrounding draft context. */
