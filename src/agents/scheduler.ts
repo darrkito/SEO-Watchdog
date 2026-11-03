@@ -10,14 +10,14 @@ import { AGENT_SITES, type AgentSite } from './sites.ts';
 export const cfgOf = (site: Site): AgentSite | undefined => AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')];
 export const capable = (site: Site, agent: string): boolean => !!cfgOf(site)?.capabilities.includes(agent);
 
-// Mexico City time. dow: 0 = Sunday. The daily chain (crawl -> collect -> analyst -> fixer) always starts at 01:30; keep the gaps if you move it.
+// Mexico City time. dow: 0 = Sunday. The daily chain (crawl -> collect -> analyst -> fixer) always starts at 01:30; researcher and writer sit 4h30 earlier than their original 18:00/20:00 slots. Keep the gaps if you move it.
 export const SCHEDULE: { agent: string; days: number[]; at: string }[] = [
   { agent: 'crawl', days: [0, 1, 2, 3, 4, 5, 6], at: '01:30' },
   { agent: 'collect', days: [0, 1, 2, 3, 4, 5, 6], at: '01:45' },
   { agent: 'analyst', days: [0, 1, 2, 3, 4, 5, 6], at: '02:00' },
   { agent: 'fixer', days: [0, 1, 2, 3, 4, 5, 6], at: '03:00' },
-  { agent: 'researcher', days: [0], at: '18:00' },
-  { agent: 'writer', days: [0, 2], at: '20:00' }, // drafts for Monday and Wednesday
+  { agent: 'researcher', days: [0], at: '13:30' },
+  { agent: 'writer', days: [0, 2], at: '15:30' }, // drafts for Monday and Wednesday
 ];
 export const ALL_AGENTS = SCHEDULE.map((s) => s.agent);
 
