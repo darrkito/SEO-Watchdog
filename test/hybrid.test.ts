@@ -337,3 +337,13 @@ test('large text files are removed when execute throws', async (t) => {
   await assert.rejects(runHybrid(d, input), /execute failed/);
   assert.equal(existsSync(join(root, '.agent-order')), false);
 });
+
+test('plan text lint retries before execution', async (t) => {
+  const { d, input, codex } = fixture(t, [apply(initial)]);
+  let plans = 0, checks = 0;
+  d.plan = async (prompt) => { plans++; if (plans === 2) assert.ok(prompt.includes('plan text: issue')); return raw(initial); };
+  d.lintText = () => ++checks === 1 ? ['issue'] : [];
+  await runHybrid(d, input);
+  assert.equal(plans, 2);
+  assert.equal(codex.prompts.length, 1);
+});

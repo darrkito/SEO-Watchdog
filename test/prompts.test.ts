@@ -26,7 +26,7 @@ const fixer = {
   guides: [], audience: 'Lectores', allowedPathsNote: 'src/**', picked: true,
 };
 const review = {
-  rules: 'Reglas', writerRules: 'Estilo', audience: 'Lectores', diff: '',
+  rules: 'Reglas', writerRules: 'Estilo', audience: 'Lectores', facts: [], diff: '',
   orders: [{
     title: 'Orden', doneWhen: '', mustContain: [], forbiddenPaths: [],
     steps: [{ n: 1, do: 'create' as const, file: 'a.ts', text: 'a' }, { n: 2, do: 'append' as const, file: 'b.ts', text: 'b' }],
@@ -64,13 +64,9 @@ test('review lists steps, caps diff, and preserves the JSON answer contract', ()
   const prompt = reviewPrompt({ ...review, diff: 'x'.repeat(70000) });
   assert.ok(prompt.includes('ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)\nORDEN 1 (original): Orden: todos los pasos aplicados\n1. create en a.ts\n2. append en b.ts'));
   assert.equal(prompt.split('DIFF (con contexto)\n')[1].split('\n\nQUÉ REVISAR')[0], 'x'.repeat(60000) + '\n[diff cut]');
-  assert.ok(prompt.includes(`CÓMO RESPONDER: solo un objeto JSON:
-Cada problema de máximo 60 palabras.
-{
-  "ok": true | false,
-  "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],
-  "changeOrder": null | { "title": "...", "steps": [ ...mismo formato de pasos que la orden original... ], "mustContain": [ ], "forbiddenPaths": [ ], "doneWhen": "..." }
-}`));
+  assert.ok(prompt.includes('"blocking": ["problema"]'));
+  assert.ok(prompt.includes('"minor": ["mejora opcional"]'));
+  assert.ok(prompt.includes('"changeOrder": null |'));
   assert.ok(!reviewPrompt({ ...review, diff: 'x'.repeat(60000) }).includes('[diff cut]'));
   assert.ok(reviewPrompt({ ...review, orders: [{ ...review.orders[0], doneWhen: 'Terminado' }] }).includes('Orden: Terminado'));
 });
@@ -241,5 +237,24 @@ test('planner prompts include never-write entries immediately before the checkli
     assert.ok(makePrompt(['Primera regla', 'Segunda regla']).includes(section));
     assert.ok(!makePrompt([]).includes(heading));
     assert.ok(!makePrompt().includes(heading));
+  }
+});
+
+ test('review receives authorized facts and separates findings', () => {
+  const prompt = reviewPrompt({ ...review, facts: [{ file: 'facts', text: 'Dato' }] });
+  assert.ok(prompt.includes('DATOS AUTORIZADOS DEL REPO'));
+  assert.ok(prompt.includes('blocking') && prompt.includes('minor'));
+  const writer = planPrompt(plan);
+  assert.ok(writer.includes('ANTES DE ESCRIBIR'));
+  assert.ok(writer.includes('Cada frase de hecho (equipo, cifra, plazo, rol, evento)'));
+  assert.ok(writer.includes('No repitas la misma frase o idea'));
+});
+
+test('plan includes type declarations in normal and slim prompts', () => {
+  for (const build of [planPrompt, slimPlanPrompt]) {
+    const withTypes = build({ ...plan, typeDefs: 'export interface Post { body: string }' });
+    assert.ok(withTypes.includes('TIPOS TS DEL POST'));
+    assert.ok(withTypes.includes('export interface Post { body: string }'));
+    assert.ok(!build(plan).includes('TIPOS TS DEL POST'));
   }
 });

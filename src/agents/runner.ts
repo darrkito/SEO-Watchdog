@@ -43,12 +43,22 @@ export function cleanEnv(src: NodeJS.ProcessEnv = process.env): Record<string, s
   return Object.fromEntries(keep.filter((k) => src[k]).map((k) => [k, src[k]!]));
 }
 
+export function retryTransient<T>(fn: () => T, tries = 5, sleepMs = 15_000): T {
+  for (let attempt = 1; ; attempt++) {
+    try { return fn(); }
+    catch (e) {
+      if (!(e instanceof Error) || !/ENOENT|EACCES|EBUSY|ETXTBSY/.test(e.message) || attempt >= tries) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, sleepMs);
+    }
+  }
+}
+
 let authChecked = 0;
 /** Throws unless the CLI is logged in with a claude.ai subscription. Cached for 10 min. */
 export function assertSubscription(): void {
   if (Date.now() - authChecked < 600_000) return;
   let s: { loggedIn?: boolean; authMethod?: string };
-  try { s = JSON.parse(execFileSync('claude', ['auth', 'status'], { env: cleanEnv(), encoding: 'utf8', timeout: 30_000 })); }
+  try { s = JSON.parse(retryTransient(() => execFileSync('claude', ['auth', 'status'], { env: cleanEnv(), encoding: 'utf8', timeout: 30_000 }))); }
   catch (e) { throw new Error(`claude auth status failed: ${(e as Error).message}`); }
   if (!s.loggedIn || s.authMethod !== 'claude.ai') throw new Error(`Claude CLI is not on the subscription (authMethod=${s.authMethod}); refusing to run agents on the API.`);
   authChecked = Date.now();

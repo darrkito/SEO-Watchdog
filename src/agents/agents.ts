@@ -17,10 +17,12 @@ import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from
 import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeResult } from './runner.ts';
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
+import { checkAnswerBlocks, checkDuplicateSentences, checkInternalLinks, nonProblem } from './accept.ts';
 import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
 import { researchPrompt, planPrompt, slimPlanPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
+import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
 
 let executorFallbackWarned = false;
@@ -66,6 +68,23 @@ export function nextFreeDate(db: DatabaseSync, siteId: number, from = mxNow().da
 
 const sh = (cwd: string, cmd: string, args: string[], timeout = 600_000) => execFileSync(cmd, args, { cwd, encoding: 'utf8', timeout, maxBuffer: 64 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
 export const git = (cwd: string, ...a: string[]) => sh(cwd, 'git', a);
+/** Posts are pushed when approved, not on `publishAt`: rewrite the scheduled (future) date to today in the date fields the draft added, so nothing goes live dated in the future. Returns how many lines changed. */
+export function clampFutureDates(wt: string, base: string, publishAt: string | undefined, today = mxNow().date): number {
+  if (!publishAt || !/^\d{4}-\d{2}-\d{2}$/.test(publishAt) || publishAt <= today) return 0;
+  const files = git(wt, 'diff', '--name-only', `${base}...HEAD`).split('\n').filter(Boolean);
+  const key = /(modifiedAt|publishedAt|dateModified|datePublished|lastmod|updated|date)\b/i;
+  let n = 0;
+  for (const f of files) {
+    const p = join(wt, f);
+    if (!existsSync(p)) continue;
+    let text: string; try { text = readFileSync(p, 'utf8'); } catch { continue; }
+    if (!text.includes(publishAt)) continue;
+    const out = text.split('\n').map((l) => { if (key.test(l) && l.includes(publishAt)) { n++; return l.split(publishAt).join(today); } return l; }).join('\n');
+    if (out !== text) writeFileSync(p, out);
+  }
+  if (n) { git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules'); git(wt, 'commit', '-q', '--amend', '--no-edit'); }
+  return n;
+}
 /** git against the site's remote. With `remoteUrl` the remote is defined for this one command only (the owner's checkout stays untouched). */
 const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
@@ -91,13 +110,23 @@ export const TOPIC_ORDER = "(score + CASE segment WHEN 'event' THEN 3 WHEN 'corp
 /** A clean checkout of origin/main on `branch`, in the agents' own worktree (the owner's checkout is never touched). */
 export function prepareWorktree(cfg: AgentSite, branch: string): string {
   if (!existsSync(cfg.worktree)) git(cfg.repo, 'worktree', 'add', '--detach', cfg.worktree, 'HEAD');
-  gitRemote(cfg, 'fetch', cfg.remote, 'main');
-  git(cfg.worktree, 'reset', '--hard');
-  git(cfg.worktree, 'clean', '-fd');
-  git(cfg.worktree, 'checkout', '-B', branch, `${cfg.remote}/main`);
+  syncWorktree(cfg, branch);
   const nm = join(cfg.worktree, 'node_modules');
   if (!existsSync(nm) && existsSync(join(cfg.repo, 'node_modules'))) symlinkSync(join(cfg.repo, 'node_modules'), nm);
   return cfg.worktree;
+}
+export function syncWorktree(cfg: AgentSite, branch: string): { moved: boolean; head: string } {
+  gitRemote(cfg, 'fetch', cfg.remote, 'main');
+  const target = git(cfg.worktree, 'rev-parse', `${cfg.remote}/main`).trim();
+  const head = git(cfg.worktree, 'rev-parse', 'HEAD').trim();
+  const dirty = git(cfg.worktree, 'status', '--porcelain').split('\n').some((line) => line && !line.includes('node_modules'));
+  const current = git(cfg.worktree, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+  if (head === target && !dirty && current === branch) return { moved: false, head: target };
+  git(cfg.worktree, 'reset', '--hard');
+  git(cfg.worktree, 'clean', '-fd');
+  git(cfg.worktree, 'checkout', '-B', branch, `${cfg.remote}/main`);
+  if (git(cfg.worktree, 'rev-parse', 'HEAD').trim() !== target) throw new Error(`worktree is not at ${cfg.remote}/main after sync`);
+  return { moved: true, head: target };
 }
 // node_modules is a symlink to the owner's install: some repos ignore `node_modules/` (directories only), so it must never be staged.
 export const changedFiles = (wt: string) => { git(wt, 'add', '-A'); git(wt, 'reset', '-q', '--', 'node_modules'); return git(wt, 'diff', '--cached', '--name-only').split('\n').filter(Boolean); };
@@ -148,6 +177,28 @@ export function lintDetails(diff: string, only?: string[], derived: string[] = [
     }
   }
   return bad;
+}
+
+function repoHasPath(cfg: AgentSite): (href: string) => boolean {
+  return (href) => {
+    try { git(cfg.worktree, 'grep', '-q', '-F', '-e', href, 'HEAD', '--'); return true; }
+    catch (error) { return (error as { status?: number }).status !== 1; }
+  };
+}
+
+export function lintPlanText(text: string, cfg: AgentSite, exists?: (href: string) => boolean): string[] {
+  const dashDiff = 'diff --git a/plan b/plan\n' + text.split('\n').map((line) => '+' + line).join('\n');
+  return [
+    ...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []),
+    ...checkDuplicateSentences(text),
+    ...(cfg.answerMode ? checkInternalLinks(text, exists ?? repoHasPath(cfg)) : []),
+    ...lintDetails(dashDiff).filter((problem) => problem.includes('em-dash')),
+  ];
+}
+
+function lintAcceptance(diff: string, cfg: AgentSite): string[] {
+  const text = addedLines(diff).join('\n');
+  return [...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []), ...checkDuplicateSentences(text), ...(cfg.answerMode ? checkInternalLinks(text, repoHasPath(cfg)) : [])];
 }
 
 // ---------- non-LLM jobs ----------
@@ -366,9 +417,9 @@ export function factsOf(cfg: AgentSite, wt: string, capPerFile = 14000): { file:
   });
 }
 
-export function guidesOf(cfg: AgentSite, capPerFile = 14000): { file: string; text: string }[] {
-  return (cfg.guideFiles ?? []).filter((file) => existsSync(join(cfg.repo, file))).map((file) => {
-    const text = readFileSync(join(cfg.repo, file), 'utf8').replace(/\r\n/g, '\n');
+export function guidesOf(cfg: AgentSite, capPerFile = 14000, wt?: string): { file: string; text: string }[] {
+  return (cfg.guideFiles ?? []).filter((file) => existsSync(join(wt ?? cfg.repo, file))).map((file) => {
+    const text = readFileSync(join(wt ?? cfg.repo, file), 'utf8').replace(/\r\n/g, '\n');
     return { file, text: text.length > capPerFile ? text.slice(0, capPerFile) + '\n[cut]' : text };
   });
 }
@@ -397,11 +448,16 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const { cfg, branch, wt, merge, opts, brief } = s;
   if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
   const host = new URL(c.site.url).hostname.replace(/^www\./, '');
-  const ranges = merge ? locatePost(cfg, wt, merge) : [];
   const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : await researchFor(c, topic, brief);
+  const synced = syncWorktree(cfg, branch);
+  c.log(`synced to ${cfg.remote}/main ${synced.head.slice(0, 7)}${synced.moved ? ' (moved)' : ''}`);
+  const ranges = merge ? locatePost(cfg, wt, merge) : [];
+  let typeDefs = '';
+  try { if (cfg.typeFile) typeDefs = extractTypeDecls(readFileSync(join(wt, cfg.typeFile), 'utf8'), cfg.typeNames ?? []); } catch { /* no type context available */ }
   const planInput = {
+    typeDefs,
     brief, research, priorFailure: c.priorFailure, neverWrite: cfg.neverWrite, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
-    facts: factsOf(cfg, wt), guides: guidesOf(cfg),
+    facts: factsOf(cfg, wt), guides: guidesOf(cfg, 14000, wt),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
     ranges: ranges.map((r) => ({ file: r.file, anchor: r.anchor, endAnchor: r.endAnchor, whole: r.whole })),
     insertPoints: merge ? [] : insertPointsFor(host, wt, topic.slug), allowedPaths: cfg.orderPaths, derivedPaths: cfg.derivedPaths,
@@ -426,10 +482,12 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return r;
     },
     verify: makeVerify(cfg, wt, opts),
+    lintText: (texts) => lintPlanText(texts.join('\n\n'), cfg),
     lint: () => {
       git(wt, 'add', '-A');
       git(wt, 'reset', '-q', '--', 'node_modules');
-      return lintDetails(git(wt, 'diff', '--cached'), cfg.lintPaths, cfg.derivedPaths);
+      const diff = git(wt, 'diff', '--cached');
+      return [...lintDetails(diff, cfg.lintPaths, cfg.derivedPaths), ...lintAcceptance(diff, cfg)];
     },
     addedText: () => {
       git(wt, 'add', '-A');
@@ -443,11 +501,12 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
     },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
-      const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
-      const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
-      c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)}`);
-      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), cfg.derivedPaths) } : {}) };
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), facts: planInput.facts, orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
+      const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
+      const minor = (j.minor ?? []).map(String);
+      c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK: ' + problems.join(' | ').slice(0, 700)} (blocking: ${problems.length}, minor: ${minor.length})`);
+      return { ok: j.ok === true && problems.length === 0, problems, minor, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), cfg.derivedPaths) } : {}) };
     },
     root: wt, log: c.log,
   };
@@ -474,7 +533,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const out = await finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, metaText, null, { hybrid: {
     analysis: result.orders[0].analysis ?? '', plans: result.stages.plans, revisions: result.stages.revisions,
     executions: result.stages.executions, reviews: result.stages.reviews, rounds: result.stages.rounds,
-    reviewNotes: result.review.problems,
+    reviewNotes: [...result.review.problems, ...(result.review.minor ?? [])],
   } });
   return `${out} | hybrid: ${result.stages.plans} plan, ${result.stages.executions} codex, ${result.stages.reviews} review, ${result.stages.rounds} extra round(s)`;
 }
@@ -484,6 +543,8 @@ async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<
   if (executorMode() === 'hybrid') return draftTopicHybrid(c, topic, publishAt, s);
   c.progress?.('working');
   const { cfg, branch, wt, merge, opts, brief } = s;
+  const synced = syncWorktree(cfg, branch);
+  c.log(`synced to ${cfg.remote}/main ${synced.head.slice(0, 7)}${synced.moved ? ' (moved)' : ''}`);
   const run = (extra = '') => ask(c, {
     cwd: wt, tools: ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'WebSearch', 'WebFetch'], maxTurns: 45, timeoutMs: 1_800_000,
     prompt: `Eres el redactor de ${c.site.url}. ${brief}
@@ -509,13 +570,15 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
   c.progress?.('scouting');
   const scout = await runCodex({ prompt: scoutPrompt(o.list.map((f) => ({ id: f.id, rule: f.rule_id, subject: f.subject, message: f.message })), ''), cwd: o.wt, write: false, timeoutMs: 600_000 });
   if (scout.limited) throw new LimitError(scout.error ?? 'codex usage limit');
+  const synced = syncWorktree(o.cfg, git(o.wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim());
+  c.log(`synced to ${o.cfg.remote}/main ${synced.head.slice(0, 7)}${synced.moved ? ' (moved)' : ''}`);
   const scoutText = scout.ok ? scout.text : '';
   const planReplies: string[] = [];
   const planPrompt = fixerPlanPrompt({
     siteUrl: c.site.url, priorFailure: c.priorFailure, neverWrite: o.cfg.neverWrite,
     findings: o.list.map((f) => ({ id: f.id, rule: f.rule_id, severity: f.severity, subject: f.subject, message: f.message })),
     scout: scoutText || '(the scout found nothing; skip findings you cannot place with certainty)',
-    rules: o.cfg.rules, guides: guidesOf(o.cfg), audience: audience(c),
+    rules: o.cfg.rules, guides: guidesOf(o.cfg, 14000, o.wt), audience: audience(c),
     allowedPathsNote: 'cualquier archivo del repo EXCEPTO pagos, checkout, emails, rutas de API, vercel.json, .env y package.json (están prohibidos)',
     picked: o.picked, derivedPaths: o.cfg.derivedPaths,
   });
@@ -529,10 +592,12 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       if (bad.length) return `forbidden files were changed, revert them: ${bad.join(', ')}`;
       return typecheck(o.cfg);
     },
+    lintText: (texts) => lintPlanText(texts.join('\n\n'), o.cfg),
     lint: () => {
       git(o.wt, 'add', '-A');
       git(o.wt, 'reset', '-q', '--', 'node_modules');
-      return lintDetails(git(o.wt, 'diff', '--cached'), o.cfg.lintPaths, o.cfg.derivedPaths);
+      const diff = git(o.wt, 'diff', '--cached');
+      return [...lintDetails(diff, o.cfg.lintPaths, o.cfg.derivedPaths), ...lintAcceptance(diff, o.cfg)];
     },
     addedText: () => {
       git(o.wt, 'add', '-A');
@@ -546,10 +611,12 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, o.cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
-      const j = extractJson<{ ok?: boolean; problems?: string[]; changeOrder?: unknown }>(text);
-      const problems = Array.isArray(j.problems) ? j.problems.map(String) : [];
-      return { ok: j.ok === true && problems.length === 0, problems, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), o.cfg.derivedPaths) } : {}) };
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), facts: [], orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
+      const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
+      const minor = (j.minor ?? []).map(String);
+      c.log(`review: ${j.ok === true && problems.length === 0 ? 'OK' : 'NOT OK'} (blocking: ${problems.length}, minor: ${minor.length})`);
+      return { ok: j.ok === true && problems.length === 0, problems, minor, ...(j.changeOrder ? { changeOrder: stripOrderDerived(JSON.stringify(j.changeOrder), o.cfg.derivedPaths) } : {}) };
     },
     root: o.wt, log: c.log,
   };
@@ -615,6 +682,14 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
 };
 
 // ---------- publish ----------
+/** Fast-forward the owner's own checkout to the remote main after a push, so local and GitHub stay identical. Never throws, never forces: if the checkout is on another branch, has diverged or has overlapping edits, it is left alone and a warning is logged. */
+export function syncOwnerCheckout(cfg: Pick<AgentSite, 'repo' | 'remote'>): void {
+  try {
+    if (git(cfg.repo, 'rev-parse', '--abbrev-ref', 'HEAD').trim() !== 'main') return console.warn(`[sync] ${cfg.repo}: not on main, left alone`);
+    git(cfg.repo, 'merge', '--ff-only', `${cfg.remote}/main`);
+  } catch (e) { console.warn(`[sync] ${cfg.repo} not updated: ${String((e as any).stderr ?? (e as Error).message ?? e).slice(0, 200)}`); }
+}
+
 /** Rebase onto the latest main, typecheck, push. Throws on any conflict or failure; never force-pushes. */
 export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts): void {
   const wt = cfg.worktree;
@@ -631,6 +706,9 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   }
   const err = typecheck(cfg); if (err) throw new Error(`typecheck after rebase: ${err.slice(0, 300)}`);
   gitRemote(cfg, 'push', cfg.remote, 'HEAD:main');
+  try { git(cfg.worktree, 'update-ref', `refs/remotes/${cfg.remote}/main`, 'HEAD'); }
+  catch (e) { console.warn(`[sync] ${cfg.worktree} remote ref not updated: ${String((e as any).stderr ?? (e as Error).message ?? e).slice(0, 200)}`); }
+  syncOwnerCheckout(cfg);
 }
 
 /** A rebase stopped only on generated files (e.g. Luvory's one-line blog-index.json, rewritten by every post): keep main's copy, regenerate from the merged sources, continue. */
@@ -784,6 +862,7 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
   try {
     if (!cfg) throw new Error('no agent config for this site');
     git(cfg.worktree, 'checkout', p.branch);
+    const clamped = clampFutureDates(cfg.worktree, `${cfg.remote}/main`, p.publishAt); if (clamped) console.log(`[publish #${a.id}] ${clamped} future date line(s) set to today`);
     pushAndVerify(cfg, p.urls, a.kind === 'post' ? { slug: p.slug, improve: a.title.startsWith('Improve:'), merge: a.title.startsWith('Improve:') || a.title.startsWith('Update:') ? p.slug : null } : undefined);
     console.log(`[publish #${a.id}] pushed; confirming the deploy in the background`);
     if (cfg.deployHint) await sendAlert(`📤 ${a.title}: ${cfg.deployHint}`);

@@ -76,7 +76,7 @@ test('weeklySummary works on an empty database and reads metrics when present', 
   assert.equal(s.queries.up[0].impressions, '20 -> 50');
 });
 
-test('worktree + publish plumbing on a throwaway repo: draft stays off main until push; conflicts abort cleanly; owner checkout untouched', async () => {
+test('worktree + publish plumbing on a throwaway repo: draft stays off main until push; conflicts abort cleanly; owner checkout fast-forwarded after push', async () => {
   const { execFileSync: x } = await import('node:child_process');
   const { writeFileSync, readFileSync } = await import('node:fs');
   const { prepareWorktree, pushAndVerify } = await import('../src/agents/agents.ts');
@@ -92,7 +92,7 @@ test('worktree + publish plumbing on a throwaway repo: draft stays off main unti
   assert.equal(g(owner, 'ls-remote', 'origin', 'main').split('\t')[0], g(owner, 'rev-parse', 'HEAD').trim(), 'draft is not on main yet');
   pushAndVerify(cfg, []);
   assert.equal(g(root, '--git-dir=remote.git', 'show', 'main:blog.ts'), 'one\ntwo\n');
-  assert.equal(readFileSync(join(owner, 'blog.ts'), 'utf8'), 'one\n', "owner's checkout is never edited");
+  assert.equal(readFileSync(join(owner, 'blog.ts'), 'utf8'), 'one\ntwo\n', "owner's checkout is fast-forwarded to what was pushed (local == GitHub)");
   // conflict: owner changes the same line on main, agent branch edits it too
   const wt2 = prepareWorktree(cfg, 'agent/post-y'); g(wt2, 'config', 'user.email', 't@t'); g(wt2, 'config', 'user.name', 't');
   writeFileSync(join(wt2, 'blog.ts'), 'one\nAGENT\n'); g(wt2, 'add', '-A'); g(wt2, 'commit', '-qm', 'agent');

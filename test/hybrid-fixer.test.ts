@@ -20,7 +20,7 @@ function fixture(t: TestContext, scoutFailure = '') {
     rmSync(root, { recursive: true, force: true });
   });
   const bin = join(root, 'bin'), wt = join(root, 'wt');
-  mkdirSync(bin); mkdirSync(wt);
+  mkdirSync(bin);
   writeFileSync(join(bin, 'codex'), `#!/bin/sh
 if [ "$1" = login ] && [ "$2" = status ]; then
   echo 'Logged in using ChatGPT'
@@ -37,11 +37,12 @@ exit 1`}
   process.env.PATH = `${bin}:${path}`;
   delete process.env.AGENT_EXECUTOR;
   resetCodexAuthCache();
-  git(wt, 'init', '-q');
+  git(root, 'init', '-q', '--bare', '-b', 'main', 'remote.git');
+  git(root, 'clone', '-q', 'remote.git', 'wt');
   git(wt, 'config', 'user.email', 't@t'); git(wt, 'config', 'user.name', 't');
   writeFileSync(join(wt, 'a.txt'), 'x\n');
-  git(wt, 'add', '.'); git(wt, 'commit', '-qm', 'init');
-  const cfg: any = { repo: wt, worktree: wt, rules: '', typecheck: ['true'] };
+  git(wt, 'add', '.'); git(wt, 'commit', '-qm', 'init'); git(wt, 'push', '-q', '-u', 'origin', 'main');
+  const cfg: any = { repo: wt, worktree: wt, remote: 'origin', rules: '', typecheck: ['true'] };
   const db = openDb(':memory:');
   t.after(() => db.close());
   const c: Ctx = { db, site: { url: 'https://x.test' } as Ctx['site'], cfg, usage: [], log: () => {} };

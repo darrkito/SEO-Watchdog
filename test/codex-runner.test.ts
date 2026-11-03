@@ -120,3 +120,16 @@ test('parseLimitReset parses Claude reset times and clamps them', () => {
   assert.equal(parseLimitReset('resets 8pm (Europe/London)', new Date('2026-10-29T21:00:00Z')), Date.parse('2026-10-30T03:00:00Z'));
   assert.equal(parseLimitReset('resets 1am (Europe/London)', new Date('2026-10-29T23:00:00Z')), Date.parse('2026-10-30T01:02:00Z'));
 });
+
+test('retryTransient retries only transient failures', async () => {
+  const { retryTransient } = await import('../src/agents/runner.ts');
+  let calls = 0;
+  assert.equal(retryTransient(() => { if (++calls < 3) throw new Error('spawnSync claude ENOENT'); return 'x'; }, 5, 0), 'x');
+  assert.equal(calls, 3);
+  calls = 0;
+  assert.throws(() => retryTransient(() => { calls++; throw new Error('boom'); }, 5, 0), /boom/);
+  assert.equal(calls, 1);
+  calls = 0;
+  assert.throws(() => retryTransient(() => { calls++; throw new Error('ENOENT'); }, 3, 0), /ENOENT/);
+  assert.equal(calls, 3);
+});

@@ -7,7 +7,7 @@ Only stdlib.
 import re
 
 SITE = "https://www.dizaynseo.com"
-HEAD_OPEN, HEAD_CLOSE = "\n  <!-- AEO:agent-discovery -->\n", "  <!-- /AEO:agent-discovery -->\n"
+HEAD_OPEN, HEAD_CLOSE = "  <!-- AEO:agent-discovery -->\n", "  <!-- /AEO:agent-discovery -->\n"
 BODY_OPEN = "<!-- AEO:conversion-events -->\n"
 
 # the click-to-lead-event script that the generator appends before </body>, taken verbatim from a committed page

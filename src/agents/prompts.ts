@@ -2,6 +2,7 @@ import type { WorkOrder } from './orders.ts';
 
 export type PlanInput = {
   brief: string;
+  typeDefs?: string;
   priorFailure?: string;
   neverWrite?: string[];
   research?: string;
@@ -31,13 +32,20 @@ const neverWriteSection = (items?: string[]) => items?.length ? [
   ...items.map((item) => `- ${item}`),
 ].join('\n') : '';
 
+export const ACCEPTANCE: string[] = [
+  "Ninguna raya larga (—) en texto nuevo.",
+  "El primer párrafo bajo cada encabezado (la respuesta directa) tiene entre 40 y 60 palabras: cuéntalas.",
+  "Toda afirmación sobre materiales, medidas, plazos, normas o comparaciones está en meta.claims con fuente (URL abierta o archivo del repo). Si no tiene fuente, quítala o reescríbela sin esa afirmación.",
+  "Nada de precios, cifras, ubicaciones o promesas que no estén en los DATOS AUTORIZADOS o en la investigación.",
+  "Si el sitio tiene versión en inglés, el bloque EN dice lo mismo que el ES, con las mismas afirmaciones y las mismas fuentes.",
+  "Todos los enlaces internos existen en el repo (úsalos solo de la lista dada).",
+  "Cada frase de hecho (equipo, cifra, plazo, rol, evento) sale de DATOS AUTORIZADOS o de meta.claims. Si dudas, quita la frase: nunca la reformules.",
+  "No repitas la misma frase o idea en dos secciones del mismo post; si ya la dijiste en la respuesta directa, no va en el FAQ ni en el cierre.",
+];
+
 const PRE_WRITE_CHECK = `ANTES DE ESCRIBIR, comprueba cada punto en tu cabeza (el revisor rechaza el borrador por cualquiera de ellos):
-1. Ninguna raya larga (—) en texto nuevo.
-2. El primer párrafo bajo cada encabezado (la respuesta directa) tiene entre 40 y 60 palabras: cuéntalas.
-3. Toda afirmación sobre materiales, medidas, plazos, normas o comparaciones está en meta.claims con fuente (URL abierta o archivo del repo). Si no tiene fuente, quítala o reescríbela sin esa afirmación.
-4. Nada de precios, cifras, ubicaciones o promesas que no estén en los DATOS AUTORIZADOS o en la investigación.
-5. Si el sitio tiene versión en inglés, el bloque EN dice lo mismo que el ES, con las mismas afirmaciones y las mismas fuentes.
-6. Todos los enlaces internos existen en el repo (úsalos solo de la lista dada).`;
+El código verifica 2, 6 y las rayas largas ANTES de que Codex escriba; si fallan, la orden vuelve a ti sin ejecutarse.
+${ACCEPTANCE.map((point, index) => `${index + 1}. ${point}`).join('\n')}`;
 
 const response = (meta: string): string => `CÓMO RESPONDER: solo un objeto JSON, sin texto antes ni después, con esta forma:
 {
@@ -73,6 +81,11 @@ const sections = (parts: string[]): string => parts.filter((part) => part !== ''
 const siteRules = (rules: string, writerRules = ''): string => rules || writerRules
   ? [`REGLAS DEL SITIO (límites duros)`, ...[rules, writerRules].filter((part) => part !== '')].join('\n')
   : '';
+
+const factsSection = (facts: { file: string; text: string }[]): string => facts.length ? [
+      'DATOS AUTORIZADOS DEL REPO (única fuente permitida para medidas, especificaciones, cifras, precios, teléfonos y direcciones; si un dato no está aquí ni en una fuente primaria que abriste en la web, NO lo escribas):',
+      ...facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
+    ].join('\n') : '';
 
 const guideSection = (guides: { file: string; text: string }[]): string => guides.length ? [
   'GUÍAS DEL REPO (las escribió el dueño para este proyecto; síguelas. Codex no las lee: tú sí):',
@@ -111,10 +124,8 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
     i.research ? ['INVESTIGACIÓN YA HECHA (la hiciste en el paso anterior con fuentes abiertas; en este paso NO tienes herramientas web: toda afirmación factual de meta.claims debe salir de esta lista o de los DATOS AUTORIZADOS DEL REPO)', i.research.slice(0, 6000)].join('\n') : '',
     slim ? '' : i.miniAudit,
     siteRules(i.rules, i.writerRules),
-    i.facts.length ? [
-      'DATOS AUTORIZADOS DEL REPO (única fuente permitida para medidas, especificaciones, cifras, precios, teléfonos y direcciones; si un dato no está aquí ni en una fuente primaria que abriste en la web, NO lo escribas):',
-      ...i.facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
-    ].join('\n') : '',
+    factsSection(i.facts),
+    i.typeDefs ? `TIPOS TS DEL POST (nombres y campos EXACTOS; no inventes campos ni cambies nombres, por ejemplo el texto de una sección va en \`body\`, no en \`paragraphs\`; cada objeto que escribas debe compilar con estos tipos):\n${i.typeDefs}` : '',
     slim ? '' : guideSection(i.guides),
     slim ? '' : i.audience,
     !slim && i.example ? [`EJEMPLO REAL DE UN POST DE ESTE SITIO (copia su forma exacta, campo por campo, con el mismo orden y las mismas comillas):`, `<<<EJEMPLO`, i.example, `EJEMPLO>>>`].join('\n') : '',
@@ -131,10 +142,11 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
   ]);
 }
 
-export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; orders: WorkOrder[]; diff: string; derivedNote?: string; previousProblems?: string[] }): string {
+export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; facts: { file: string; text: string }[]; orders: WorkOrder[]; diff: string; derivedNote?: string; previousProblems?: string[] }): string {
   return sections([
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
+    factsSection(i.facts),
     i.audience,
     ['ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)', ...i.orders.flatMap((order, index) => [`ORDEN ${index + 1} (${index === 0 ? 'original' : 'corrección'}): ${order.title}: ${order.doneWhen || 'todos los pasos aplicados'}`, ...order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`), ...order.steps.flatMap((s) => [`Paso ${s.n}:`, ...Object.entries(s).filter(([key]) => key !== 'n').map(([key, value]) => `${key}: ${key === 'text' && typeof value === 'string' && value.length > 400 ? `[${value.length} characters, see the DIFF]` : value}`)]), `mustContain: ${JSON.stringify(order.mustContain)}`])].join('\n'),
     (() => {
@@ -145,20 +157,16 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
     i.derivedNote ? `ARCHIVOS GENERADOS (los produce el hook del repo, no son parte del trabajo; ignóralos aunque no estén en la orden): ${i.derivedNote}` : '',
     i.previousProblems?.length ? ['PROBLEMAS YA SEÑALADOS EN RONDAS ANTERIORES (verifica que quedaron resueltos en el DIFF; solo puedes señalar un problema NUEVO si lo introdujo una corrección o es una violación clara de una regla del sitio que se te pasó antes):', ...i.previousProblems.map((problem) => '- ' + problem)].join('\n') : '',
     [`DIFF (con contexto)`, i.diff.slice(0, 60000) + (i.diff.length > 60000 ? '\n[diff cut]' : '')].join('\n'),
-    `QUÉ REVISAR, en este orden
-1. ¿Cumple CADA regla del sitio? (rayas largas nuevas, datos o cifras inventados, precios, ubicaciones, promesas que el dueño no aprobó, enlaces rotos o con formato incorrecto).
-2. ¿Quedó exactamente lo que decía la orden, sin cambios de más ni de menos? ¿La sintaxis del archivo es válida (comillas, comas, llaves, escapes)?
-3. ¿El contenido es correcto, útil y claro para el lector, y cumple la estructura pedida (respuestas directas de 40 a 75 palabras bajo cada encabezado, FAQ real, enlaces internos)?
-Sé específico: cada problema dice QUÉ archivo y QUÉ texto, POR QUÉ está mal y CÓMO debe quedar. No apruebes con dudas.
+    `QUÉ REVISAR
+1. Ya verificó el código, NO lo revises: rayas largas, número de palabras de las respuestas directas, enlaces internos que no existen, frases repetidas, fechas futuras, tipos de TypeScript, archivos generados.
+2. Solo ves el diff. Nunca pidas ver ni cambiar archivos que no aparecen en el diff (i18n, sitemap, índices): el cableado lo comprueba el código.
+3. Una afirmación es problema SOLO si no está en DATOS AUTORIZADOS, ni en AFIRMACIONES VERIFICADAS, ni en las reglas del sitio. Si está en alguna, no la señales.
+4. Separa los hallazgos: blocking = rompe una regla dura del sitio, inventa un dato, o deja sintaxis inválida. minor = estilo o mejora opcional. Un hallazgo minor NUNCA rechaza el borrador.
+5. No escribas hallazgos que digan que algo es aceptable o válido: si no es un problema, no lo listes.
 Lista TODOS los problemas de una vez, en esta ronda. No guardes problemas para la siguiente: cada ronda extra cuesta mucho. Ordénalos del más grave al menos grave.`,
     `CÓMO RESPONDER: solo un objeto JSON:
-Cada problema de máximo 60 palabras.
-{
-  "ok": true | false,
-  "problems": [ "archivo + texto exacto + por qué está mal + cómo debe quedar" ],
-  "changeOrder": null | { "title": "...", "steps": [ ...mismo formato de pasos que la orden original... ], "mustContain": [ ], "forbiddenPaths": [ ], "doneWhen": "..." }
-}
-Si ok es true, problems va vacío y changeOrder es null. Si ok es false, escribe en changeOrder los pasos exactos que corrigen TODOS los problemas sobre el estado ACTUAL de los archivos (cada anchor debe aparecer exactamente una vez; cópialo del diff). Si no puedes escribir los pasos con certeza, deja changeOrder en null y describe cada corrección con todo detalle en problems.`,
+{ "ok": true | false, "blocking": ["problema"], "minor": ["mejora opcional"], "changeOrder": null | { "title": "...", "steps": [], "mustContain": [], "forbiddenPaths": [], "doneWhen": "..." } }
+Si ok es true, blocking va vacío y changeOrder es null. Si ok es false, escribe en changeOrder los pasos exactos que corrigen TODOS los problemas blocking sobre el estado ACTUAL de los archivos. Si no puedes escribirlos con certeza, deja changeOrder en null.`,
   ]);
 }
 

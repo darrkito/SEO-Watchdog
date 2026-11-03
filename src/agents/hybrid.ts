@@ -4,7 +4,7 @@ import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, comp
 import type { CodexResult } from './runner.ts';
 
 export class HybridLimit extends Error {}
-export type Review = { ok: boolean; problems: string[]; changeOrder?: string };
+export type Review = { ok: boolean; problems: string[]; minor?: string[]; changeOrder?: string };
 export type HybridDeps = {
   stage?: (stage: string, note?: string) => void;
   plan: (prompt: string) => Promise<string>;
@@ -12,6 +12,7 @@ export type HybridDeps = {
   execute: (prompt: string) => Promise<CodexResult>;
   verify: () => string | null;
   lint?: () => string[];
+  lintText?: (texts: string[]) => string[];
   addedText: () => string;
   diff: () => string;
   review: (orders: WorkOrder[], diff: string, previousProblems: string[]) => Promise<Review>;
@@ -50,6 +51,8 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       d.stage?.('checking-order');
       problems = preflightOrder(order, d.root);
       if (!problems.length) {
+        problems = (d.lintText?.(order.steps.map((s) => s.text ?? '').filter(Boolean)) ?? []).map((p) => 'plan text: ' + p);
+        if (problems.length) continue;
         const claims = new Map(knownClaims.map((item) => [item.claim, item]));
         for (const item of order.claims ?? []) claims.set(item.claim, item);
         knownClaims = [...claims.values()];

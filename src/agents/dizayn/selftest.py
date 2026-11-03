@@ -2,6 +2,8 @@
 """Replay test for prep.py: remove a published post from a scratch copy of the site (source, page, twin and every registry),
 add it back through prep.py and compare with what the real generator committed. Usage: selftest.py <repo> [slug]"""
 import json
+import ast
+import glob
 import os
 import re
 import shutil
@@ -27,14 +29,44 @@ def clone(repo):
 
 
 def drop_post_source(src, slug):
-    lines = src.split("\n")
-    i = next(k for k, l in enumerate(lines) if l.strip() == '"slug": "%s",' % slug)
-    start = i - 1
-    assert lines[start] == "{", lines[start]
-    if lines[start - 1].startswith("# ="):
-        start -= 1
-    end = next(k for k in range(i, len(lines)) if lines[k] == "},")
-    return "\n".join(lines[:start] + lines[end + 1:])
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict) or not any(isinstance(k, ast.Constant) and k.value == "slug" and isinstance(v, ast.Constant) and v.value == slug for k, v in zip(node.keys, node.values)):
+            continue
+        # A list element ends in a comma; an agent post is a POSTS.append call.
+        lines = src.splitlines(keepends=True)
+        start, end = node.lineno - 1, node.end_lineno
+        return "".join(lines[:start] + lines[end:])
+    raise ValueError("post source not found: " + slug)
+
+
+def source_file(repo, slug):
+    for path in sorted(glob.glob(os.path.join(repo, "_src/posts*.py"))):
+        try:
+            drop_post_source(P.read(path), slug)
+            return path
+        except ValueError:
+            continue
+    raise ValueError("post source not found: " + slug)
+
+
+def newest_slug(repo):
+    agent_slugs = json.loads(P.run(os.path.join(repo, "_src"), sys.executable, "-c",
+                                   "import json, posts_agent; print(json.dumps([p['slug'] for p in posts_agent.POSTS]))"))
+    # only posts the watchdog itself wrote ("content(blog): ..." commits) can be replayed byte for byte; hand-written ones cannot
+    for slug in reversed(agent_slugs):
+        subj = P.run(repo, "git", "log", "--diff-filter=A", "--format=%s", "--", "blog/%s.html" % slug).strip()
+        if subj.startswith("content(blog):"):
+            return slug
+    sitemap = P.read(os.path.join(repo, "sitemap.xml"))
+    slugs = re.findall(r"<loc>%s/blog/([^<]+)</loc>" % re.escape(A.SITE), sitemap)
+    for slug in reversed(slugs):
+        try:
+            source_file(repo, slug)
+            return slug
+        except ValueError:
+            continue
+    raise ValueError("no published post with source in _src")
 
 
 def main(repo, slug):
@@ -42,7 +74,7 @@ def main(repo, slug):
     orig, scratch = clone(repo), clone(repo)
     orig_head = P.run(orig, "git", "rev-parse", "HEAD").strip()
     # ---- pre-state: the site as it was before the post existed
-    sf = os.path.join(scratch, "_src/posts_funnel.py")
+    sf = source_file(scratch, slug)
     full_src = P.read(sf)
     P.write(sf, drop_post_source(full_src, slug))
     A.load_conversion(P.read(os.path.join(scratch, "blog/geo-vs-seo.html")))
@@ -123,9 +155,24 @@ def newpost(repo):
     out = P.run(scratch, sys.executable, os.path.join(here, "prep.py"), scratch)
     assert '"added": ["/blog/zz-agent-test-post"]' in out, out
     chk = subprocess.run([sys.executable, os.path.join(here, "check_post.py"), scratch, post["slug"], "new"], capture_output=True, text=True)
-    assert chk.returncode == 0, "validator rejected a good post: " + chk.stdout
-    snap = P.run(scratch, "git", "status", "--short") + P.run(scratch, "git", "diff", "--stat")
+    assert chk.returncode != 0 and "no Spanish twin" in chk.stdout, chk.stdout
+    es_post = {"en": post["slug"], "slug": "zz-prueba-de-agente", "stage": post["stage"], "cat": "Búsqueda con IA",
+               "title": "Prueba del agente: cómo funciona la revisión",
+               "h1": "Cómo funciona la revisión del agente",
+               "desc": "Un artículo de prueba para comprobar que cada página y registro se genera correctamente durante la revisión.",
+               "lede": "Un artículo de prueba que nunca se publica.", "mins": post["mins"],
+               "body": "".join('<h2 id="s%d">Sección %d de la revisión</h2>\n<p>Esta sección explica la revisión de las páginas generadas.</p>\n' % (i, i) for i in range(4)) +
+                       '<p>Consulta <a href="/services/seo">servicios de SEO</a>, <a href="/ai-visibility-checker">la prueba de visibilidad</a> y <a href="/blog/geo-vs-seo">GEO y SEO</a>.</p>\n'}
+    with open(os.path.join(scratch, "_src/posts_es.py"), "a", encoding="utf-8") as f:
+        f.write("\nPOSTS_ES.append(%r)\n" % es_post)
     P.run(scratch, sys.executable, os.path.join(here, "prep.py"), scratch)
+    chk = subprocess.run([sys.executable, os.path.join(here, "check_post.py"), scratch, post["slug"], "new"], capture_output=True, text=True)
+    assert chk.returncode == 0 and chk.stdout == "", "validator rejected a good post: " + chk.stdout
+    P.run(scratch, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
+    P.run(scratch, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "draft")
+    snap = P.run(scratch, "git", "status", "--short") + P.run(scratch, "git", "diff", "--stat")
+    out = P.run(scratch, sys.executable, os.path.join(here, "prep.py"), scratch)
+    assert out.strip() == '{"added": [], "changed": []}', out
     assert snap == P.run(scratch, "git", "status", "--short") + P.run(scratch, "git", "diff", "--stat"), "prep is not idempotent"
     twin = P.read(os.path.join(scratch, "md/blog/zz-agent-test-post.md"))
     assert twin.startswith('---\nurl: "https://www.dizaynseo.com/blog/zz-agent-test-post"') and "\n## Section number 0 about replay checks?" in twin
@@ -146,4 +193,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "--newpost":
         newpost(sys.argv[2])
     else:
-        main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "local-seo-ai-search-glossary")
+        main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else newest_slug(sys.argv[1]))

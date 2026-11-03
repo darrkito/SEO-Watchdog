@@ -48,12 +48,16 @@ def write(p, s):
 
 def html_files(root):
     out = []
-    for f in glob.glob(os.path.join(root, "*.html")) + glob.glob(os.path.join(root, "*", "*.html")):
+    for f in glob.glob(os.path.join(root, "*.html")) + glob.glob(os.path.join(root, "*", "*.html")) + glob.glob(os.path.join(root, "es", "*", "*.html")):
         rel = os.path.relpath(f, root)
-        if rel.startswith(("_src", "node_modules")) or rel in SKIP_PAGES or "google" in rel.lower() and not rel.startswith(("blog", "work", "services")):
+        if rel.startswith(("_src", "node_modules")) or rel in SKIP_PAGES or "google" in rel.lower() and not rel.startswith(("blog", "work", "services", "es/blog/")):
             continue
         out.append(rel)
     return sorted(out)
+
+
+def is_blog(route):
+    return route.startswith(("/blog", "/es/blog"))
 
 
 def mx_today():
@@ -68,9 +72,9 @@ def build_copy(src_dir):
     return tmp
 
 
-def head_copy(wt):
+def head_copy(wt, ref="HEAD"):
     tmp = tempfile.mkdtemp(prefix="dz-head-")
-    archive = subprocess.run(["git", "archive", "HEAD"], cwd=wt, capture_output=True, check=True).stdout
+    archive = subprocess.run(["git", "archive", ref], cwd=wt, capture_output=True, check=True).stdout
     subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
     run(tmp, sys.executable, "_src/build.py")
     return tmp
@@ -110,6 +114,8 @@ def md_twin(root, route, page_html):
     title, desc = meta_of(page_html)
     sib = read(os.path.join(root, "md/blog/geo-vs-seo.md")).split("\n---\n", 1)[0].split("\n")
     static = [l for l in sib if l.split(":", 1)[0] in ("language", "site", "publisher", "contact_email", "license")]
+    if route.startswith("/es"):
+        static = ['language: "es-US"' if l.startswith("language:") else l for l in static]
     url = SITE + route
     fm = "\n".join(["---", "url: " + q(url), "title: " + q(title), "description: " + q(desc)] + static + ["html_version: " + q(url), "---"]) + "\n"
     return fm + M.page_md(page_html), title, desc
@@ -124,14 +130,31 @@ def updated_of(page_html):
     return max(m) if m else None
 
 
-def sitemap_add(root, route, lastmod):
+def sitemap_add(root, route, lastmod, order):
     p = os.path.join(root, "sitemap.xml"); s = read(p)
     if "<loc>%s%s</loc>" % (SITE, route) in s:
         return
     entry = "<url><loc>%s%s</loc><lastmod>%s</lastmod>\n    <image:image><image:loc>%s/media/og.jpg</image:loc></image:image>\n  </url>" % (SITE, route, lastmod, SITE)
+    if route.startswith("/es/blog"):
+        entries = [(m, m.group(1)) for m in re.finditer(r"<url><loc>%s([^<]+)</loc>.*?</url>" % re.escape(SITE), s, re.S)]
+        following = set(order[order.index(route) + 1:]) if route in order else set()
+        before = next((m for m, path in entries if path.startswith("/es/blog/") and (route == "/es/blog" or path in following)), None)
+        if before:
+            write(p, s[:before.start()] + entry + "\n  " + s[before.start():])
+        else:
+            blogs = [m for m, path in entries if path.startswith("/es/blog")]
+            spanish = [m for m, path in entries if path.startswith("/es")]
+            at = (blogs or spanish)[-1].end()
+            write(p, s[:at] + "\n  " + entry + s[at:])
+        return
     blogs = [m for m in re.finditer(r"<url><loc>%s/blog/[^<]+</loc>.*?</url>" % re.escape(SITE), s, re.S)]
-    at = blogs[-1].end()
-    write(p, s[:at] + "\n  " + entry + s[at:])
+    following = set(order[order.index(route) + 1:])
+    before = next((m for m in blogs if re.search(r"<loc>%s([^<]+)</loc>" % re.escape(SITE), m.group()).group(1) in following), None)
+    if before:
+        write(p, s[:before.start()] + entry + "\n  " + s[before.start():])
+    else:
+        at = blogs[-1].end()
+        write(p, s[:at] + "\n  " + entry + s[at:])
 
 
 def llms_txt_add(root, route, title, desc):
@@ -141,6 +164,12 @@ def llms_txt_add(root, route, title, desc):
         return
     line = "- [%s](%s): %s — markdown: `%s/%s`" % (title, url, desc, SITE, A.md_file_of(route))
     lines = s.split("\n")
+    if route.startswith("/es"):
+        spanish = [i for i, l in enumerate(lines) if "](%s/es" % SITE in l]
+        if spanish:
+            lines.insert(spanish[-1] + 1, line)
+            write(p, "\n".join(lines))
+            return
     blog = [(i, re.search(r"\]\((%s/blog/[^)]+)\)" % re.escape(SITE), l).group(1)) for i, l in enumerate(lines) if "](%s/blog/" % SITE in l]
     after = next((i for i, u in blog if u > url), None)  # the list is alphabetical by URL
     lines.insert(after if after is not None else blog[-1][0] + 1, line)
@@ -177,7 +206,7 @@ def index_put(root, route, title, desc, body):
     d = json.loads(arr.rstrip().rstrip(";"))
     f = flat(body)
     e = {"route": route, "url": SITE + route, "markdown": "%s/%s" % (SITE, A.md_file_of(route)), "title": title, "description": desc,
-         "language": "en-US", "tokens": round(len(f) / 3.85), "body": f[:4000]}
+         "language": "es-US" if route.startswith("/es") else "en-US", "tokens": round(len(f) / 3.85), "body": f[:4000]}
     d = [x for x in d if x["route"] != route] + [e]
     d.sort(key=lambda x: x["route"])
     write(p, pre + "module.exports = " + json.dumps(d, ensure_ascii=False) + ";\n")
@@ -189,23 +218,37 @@ def agent_tools_add(root, route):
     if not m:
         raise SystemExit("agent-tools.js: route list not found")
     items = re.findall(r'"([^"]+)"', m.group(1))
+    if route.startswith("/es") and not any(i == "/es" or i.startswith("/es/") for i in items):
+        return
     if route in items:
         return
     items = sorted(items + [route])
     write(p, s[:m.start()] + "[" + ", ".join('"%s"' % i for i in items) + "]" + s[m.end():])
 
 
-def vercel_add(root, route):
+def vercel_add(root, route, order):
     p = os.path.join(root, "vercel.json"); v = json.loads(read(p))
     md = "/" + A.md_file_of(route)
-    sib = "/blog/geo-vs-seo"
+    spanish = route.startswith("/es")
+    sib = "/es/industrias/carpinteros" if spanish else "/blog/geo-vs-seo"
+
+    if spanish and any(not any(x.get("source") == sib and pred(x) for x in v[sec]) for sec, pred in
+                       (("rewrites", lambda x: "has" in x), ("rewrites", lambda x: "has" not in x), ("headers", lambda x: True))):
+        raise SystemExit("BLOCKED: Spanish Vercel template sibling is missing")
 
     def clone(sec, pred, make):
         if any(x.get("source") == route and pred(x) for x in v[sec]):
             return
-        idx = max(i for i, x in enumerate(v[sec]) if x.get("source", "").startswith("/blog/") and pred(x))
+        following = set(order[order.index(route) + 1:]) if route in order else {r for r in order if r.startswith("/es/blog/")} if spanish else set()
+        idx = next((i for i, x in enumerate(v[sec]) if x.get("source") in following and pred(x)), None)
+        if idx is None:
+            prefix = "/es/blog" if spanish else "/blog/"
+            matches = [i for i, x in enumerate(v[sec]) if x.get("source", "").startswith(prefix) and pred(x)]
+            if spanish and not matches:
+                matches = [i for i, x in enumerate(v[sec]) if x.get("source", "").startswith("/es") and pred(x)]
+            idx = matches[-1] + 1
         ref = next(x for x in v[sec] if x.get("source") == sib and pred(x))
-        v[sec].insert(idx + 1, make(json.loads(json.dumps(ref))))
+        v[sec].insert(idx, make(json.loads(json.dumps(ref))))
 
     def md_rw(x):
         x["source"] = route; x["destination"] = md; return x
@@ -216,7 +259,7 @@ def vercel_add(root, route):
     def hdr(x):
         x["source"] = route
         for h in x["headers"]:
-            h["value"] = h["value"].replace("/md/blog/geo-vs-seo.md", md)
+            h["value"] = h["value"].replace("/" + A.md_file_of(sib), md)
         return x
     clone("rewrites", lambda x: "has" in x, md_rw)
     clone("rewrites", lambda x: "has" not in x, html_rw)
@@ -226,9 +269,14 @@ def vercel_add(root, route):
 
 # ---------------------------------------------------------------- main
 def restore_generated(wt):
-    tracked = [f for f in run(wt, "git", "ls-files").split("\n") if f and not f.startswith("_src/")]
+    head = set(run(wt, "git", "ls-tree", "-r", "--name-only", "HEAD").split("\n"))
+    eligible = lambda f: f and not f.startswith(("_src/", "node_modules/"))
+    tracked = [f for f in head if eligible(f)]
     for i in range(0, len(tracked), 200):
         run(wt, "git", "checkout", "HEAD", "--", *tracked[i:i + 200])
+    extra = [f for f in run(wt, "git", "ls-files").split("\n") if eligible(f) and f not in head]
+    for i in range(0, len(extra), 200):
+        run(wt, "git", "rm", "-q", "-f", "--cached", "--", *extra[i:i + 200])
     run(wt, "git", "clean", "-fdq", "--", ".", ":(exclude)_src", ":(exclude)node_modules")
 
 
@@ -236,6 +284,11 @@ def prep(wt):
     restore_generated(wt)
     old, new = head_copy(wt), build_copy(wt)
     try:
+        # A source-only commit can be ahead of its generated pages. Compare it
+        # with its parent when HEAD's own build contains missing blog pages.
+        if any(is_blog(A.route_of(rel)) and not os.path.exists(os.path.join(wt, rel)) for rel in html_files(old)):
+            shutil.rmtree(old, ignore_errors=True)
+            old = head_copy(wt, "HEAD^")
         A.load_conversion(read(os.path.join(wt, "blog/geo-vs-seo.html")))
         changed, added = [], []
         for rel in html_files(new):
@@ -247,8 +300,11 @@ def prep(wt):
             if ob != nb:
                 write(os.path.join(wt, rel), merge_page(read(os.path.join(wt, rel)), ob, nb, rel)); changed.append(route)
         today = mx_today()
+        order = ["/blog/" + s for s in json.loads(run(os.path.join(wt, "_src"), sys.executable, "-c", "import json, posts; print(json.dumps([p['slug'] for p in posts.POSTS]))"))]
+        if os.path.exists(os.path.join(wt, "_src/posts_es.py")):
+            order += ["/es/blog/" + s for s in json.loads(run(os.path.join(wt, "_src"), sys.executable, "-c", "import json, posts_es; print(json.dumps([p['slug'] for p in posts_es.POSTS_ES]))"))]
         for route in added + changed:
-            if not route.startswith("/blog"):
+            if not is_blog(route):
                 continue
             rel = route.strip("/") + ".html"
             page = read(os.path.join(wt, rel))
@@ -257,7 +313,7 @@ def prep(wt):
             llms_full_put(wt, route, md_body(twin))
             index_put(wt, route, title, desc, md_body(twin))
             if route in added:
-                sitemap_add(wt, route, updated_of(page) or today); llms_txt_add(wt, route, title, desc); agent_tools_add(wt, route); vercel_add(wt, route)
+                sitemap_add(wt, route, updated_of(page) or today, order); llms_txt_add(wt, route, title, desc); agent_tools_add(wt, route); vercel_add(wt, route, order)
         for f in ("vercel.json", "api/_index.js", "agent/kb.json"):
             if os.path.exists(os.path.join(wt, f)) and f.endswith(".json"):
                 json.loads(read(os.path.join(wt, f)))

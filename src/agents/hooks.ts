@@ -82,6 +82,11 @@ const DIZAYN = join(import.meta.dirname, 'dizayn');
 export function dizaynPostEdit(wt: string): void {
   run(wt, 'python3', [join(DIZAYN, 'prep.py'), wt], 600_000);
 }
+export function dizaynEsSlug(wt: string, enSlug: string): string | null {
+  try {
+    return run(wt, 'python3', ['-c', "import sys; sys.path.insert(0,'_src'); import posts_es; t=posts_es.twin_of(sys.argv[1]); print(t['slug'] if t else '')", enSlug]).trim() || null;
+  } catch { return null; }
+}
 export function dizaynValidate(wt: string, o: PostOpts): string[] {
   try { run(wt, 'python3', [join(DIZAYN, 'check_post.py'), wt, o.merge ?? o.slug, o.improve || o.merge ? 'existing' : 'new']); return []; }
   catch (e) { return String((e as any).stdout ?? (e as Error).message).split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 12); }
