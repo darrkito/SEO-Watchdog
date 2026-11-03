@@ -33,10 +33,10 @@ Cada agente es un job que lanza `claude -p` con un prompt fijo, herramientas per
 
 | Agente | Cuándo | Lee | Escribe | Autonomía |
 |---|---|---|---|---|
-| **Analista** | Diario 06:30 | GSC (`scripts/gsc_query.py`/`src/gsc.ts`), Clarity, crawl del Watchdog, luego Bing | tabla `metrics`, `findings`, resumen del día | Solo lectura |
+| **Analista** | Diario 02:00 | GSC (`scripts/gsc_query.py`/`src/gsc.ts`), Clarity, crawl del Watchdog, luego Bing | tabla `metrics`, `findings`, resumen del día | Solo lectura |
 | **Investigador** | Domingo 18:00 | Queries de GSC con impresiones y posición 8-30, Trends (`trends_query.py`), Serper, `src/gaps.ts`, `blog.ts` (anti-canibalización) | tabla `topics` (backlog priorizado, con razón y evidencia) | Solo lectura |
 | **Redactor** | Domingo 20:00 y martes 20:00 (borrador para lunes y miércoles) | `topics`, `blog.ts`, `blog.en.ts`, `BLOG_SLUG_EN`, playbooks | rama `post/<slug>` en un worktree, fila en `approvals` | Borrador + aprobación |
-| **Fixer** | Diario 07:30, sobre `findings` nuevos | `findings`, repo Yume | commits en worktree; low-risk se empujan; el resto va a `approvals` | Bajo riesgo auto, resto aprobación |
+| **Fixer** | Diario 03:00, sobre `findings` nuevos | `findings`, repo Yume | commits en worktree; low-risk se empujan; el resto va a `approvals` | Bajo riesgo auto, resto aprobación |
 
 Publicación de un post (tras aprobar): merge a `main`, push, **esperar deploy real de Vercel y confirmar 200 con curl**, y solo entonces IndexNow y Bing. Un post nuevo que compite con uno existente se **fusiona** al existente, no se duplica (ya es regla).
 
@@ -48,7 +48,7 @@ Dom 20:00  Redactor     -> borrador post Lun  -> aprobación
 Lun 09:00  publicar si aprobado (si no, espera; nunca auto en las primeras 4 semanas)
 Mar 20:00  Redactor     -> borrador post Mie  -> aprobación
 Mie 09:00  publicar si aprobado
-Diario     Analista 06:30 -> Fixer 07:30
+Diario     Crawl 01:30 -> Collect 01:45 -> Analista 02:00 -> Fixer 03:00
 ```
 
 ## 4. Suscripción y no API (crítico)
