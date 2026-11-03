@@ -227,7 +227,8 @@ AGENT_SITES['dizaynseo.com'] = {
   contentPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py', 'blog.html', 'blog/*', 'md/*', 'sitemap.xml', 'llms.txt', 'llms-full.txt', 'api/_index.js', 'agent-tools.js', 'vercel.json'],
   lowRiskPaths: [],
   regenerateFrom: ['_src'],
-  lintPaths: ['_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
+  unionPaths: ['_src/posts_agent.py', '_src/posts_es.py'], // two drafts both append at the end of these
+  lintPaths: ['_src/posts_es.py', '_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
   postEdit: dizaynPostEdit, validate: dizaynValidate,
   postBrief: (o) => o.kind === 'improve' ? `Mejora el post EXISTENTE "${o.merge}" (no cambies su slug ni su URL; la fecha de actualización del sitio es global). Su puntaje de calidad es bajo por estas razones medidas: ${o.why}. Corrige exactamente eso, en inglés: amplía con contenido útil y verificable, agrega respuestas directas de 40 a 75 palabras al inicio de cada H2, enlaces internos reales y mejora title/desc si están fuera de rango. El post vive en _src/posts.py o _src/posts_funnel.py (busca su slug): edita solo su title, desc, lede y body. Conserva lo que ya funciona.`
     : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (busca su slug en _src/posts.py o _src/posts_funnel.py): secciones nuevas con su respuesta directa, sin crear un post nuevo. Escribe en inglés.`
