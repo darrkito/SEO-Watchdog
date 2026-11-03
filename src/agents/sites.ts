@@ -101,7 +101,7 @@ export const AGENT_SITES: Record<string, AgentSite> = {
       context: 'Puedes leer el repo (src/content/products.ts, blog.ts) y buscar en la web para validar demanda y qué responde la competencia. El tema debe conectar con productos o servicios reales de Yume. Solo temas que Yume pueda cumplir con lo que de verdad produce.',
       priority: 'Prioridad: al menos 6 de los 8 temas deben hablarle al cliente ideal del brief (bodas primero; luego contenido para wedding/event planners, que son los mejores aliados; luego baby shower, cumpleaños, bautizo, primera comunión, XV años, graduación, regalos o sorpresas de cualquier persona para un ser querido, y eventos de empresa como posadas). Incluye al menos 1 tema pensado para planners. Máximo 1 tema de etiquetas/stickers y solo con ángulo de evento o regalo.',
     },
-    repo: '/home/darrkito/Yume', worktree: '/home/darrkito/yume-agent-wt', remote: 'origin', liveBase: 'https://studioyume.mx',
+    repo: '/home/darrkito/Yume', worktree: '/home/darrkito/yume-agent-wt', remote: 'origin', liveBase: 'https://studioyume.mx', indexnowKey: 'public/2c2558cd3ec027ce1923836be4d9fc02.txt',
     blogUrl: (s, en) => [`https://studioyume.mx/blog/${s}`, ...(en ? [`https://studioyume.mx/en/blog/${en}`] : [])],
     indexnow: ['node', 'scripts/indexnow.mjs'],
     typecheck: ['node_modules/.bin/tsc', '--noEmit', '-p', '.'],
@@ -187,7 +187,7 @@ AGENT_SITES['vexonmexico.com.mx'] = {
     context: 'Vexon by Capelton renta oficinas móviles (línea VX, de 3 a 10 m) para obra en Guadalajara, Zapopan y la ZMG. Puedes leer el repo (src/data/modelos.ts, src/data/faqs.ts, src/data/soluciones.ts, src/content/blog) y buscar en la web para validar demanda y qué publica la competencia (cvsolucionesmoviles.com, atcoespaciomovil.com, remobras.mx). Solo temas que Vexon pueda cumplir con sus modelos reales.',
     priority: 'Prioridad: temas que responden una duda concreta de un residente de obra, de compras de una constructora, de un negocio en remodelación o de una planta (qué oficina necesito, requisitos, costos y qué incluye una renta, instalación, comparativas con caseta o contenedor, checklist de obra). Al menos 5 de los 8 temas con modificador local (Guadalajara, Zapopan, ZMG, El Salto, Tlajomulco). No propongas temas de precios, plazos o cobertura que el dueño aún no ha confirmado.',
   },
-  repo: '/home/darrkito/VexonWeb', worktree: '/home/darrkito/vexon-agent-wt', remote: 'agent', remoteUrl: 'git@github.com:darrkito/VexonWeb.git', liveBase: 'https://vexonmexico.com.mx',
+  repo: '/home/darrkito/VexonWeb', worktree: '/home/darrkito/vexon-agent-wt', remote: 'agent', remoteUrl: 'git@github.com:darrkito/VexonWeb.git', liveBase: 'https://vexonmexico.com.mx', indexnowKey: 'public/d0092dfb7ad87c77451de3908240eb10.txt',
   blogUrl: (s) => [`https://vexonmexico.com.mx/blog/${s}`],
   indexnow: ['node', 'scripts/indexnow.mjs'],
   // `astro check` has 2 old errors in astro.config.mjs (siteLastmod); only errors anywhere else count.
