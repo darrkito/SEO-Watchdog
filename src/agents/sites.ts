@@ -77,6 +77,14 @@ export const mdxPosts = (repo: string) => {
   return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.mdx')).map((f) => ({ slug: f.replace(/\.mdx$/, ''), title: (readFileSync(join(dir, f), 'utf8').match(/^title:\s*'(.+)'\s*$/m)?.[1] ?? '').replace(/''/g, "'") })) : [];
 };
 
+/** Dizayn MX: content/blog.ts, each post is `    slug: "..."` with its Spanish title at `      title: "..."` inside the `es` block. */
+export const dizaynMxPosts = (repo: string) => {
+  const p = join(repo, 'content/blog.ts');
+  if (!existsSync(p)) return [];
+  const src = readFileSync(p, 'utf8');
+  return [...src.matchAll(/^ {4}slug:\s*"([^"]+)",[\s\S]*?^ {6}title:\s*"((?:\\.|[^"\\])*)"/gm)].map((m) => ({ slug: m[1], title: m[2].replace(/\\"/g, '"') }));
+};
+
 const header = (o: BriefOpts) => `Tema: "${o.title}" (búsqueda principal: "${o.query}"). Por qué: ${o.why}`;
 /** The brief the owner's improver click uses: fix exactly the measured reasons for the low score. */
 const improveBrief = (o: BriefOpts, modified: string, langs: string) =>
@@ -263,4 +271,51 @@ ${ES_TWIN}`,
     context: 'Es una agencia de sitios web y SEO con sede en San Antonio, Texas, que vende SOLO a negocios de Estados Unidos (nada de México ni de "nearshore"). Oferta pública: Starter Site $540, Complete Site $1,200, planes mensuales $99 (Basic) y $450 (Complete, incluye SEO y búsqueda con IA), mes a mes. Puedes leer el repo (blog/*.html, llms.txt) y buscar en la web para validar demanda y qué publica la competencia (thriveagency.com, percepture.com, mapranking.com). Redacta los temas en inglés. Solo temas que Dizayn pueda cumplir y respaldar con su oferta real.',
     priority: 'Prioridad: al menos 5 de los 8 temas deben construir el grupo de contenido de Google Maps y SEO local (la competencia mapranking.com tiene 11 páginas y nosotros 2), y al menos 2 deben cubrir visibilidad en IA (ChatGPT, Perplexity, AI Overviews). Cada tema debe poder responder una pregunta concreta de un dueño de negocio en EE.UU. No propongas temas de contratar una agencia en México ni de ahorrar por la ubicación del equipo.',
   },
+};
+
+// Dizayn MX (dizayn-web, Next.js on Vercel): a push to main deploys by itself. Posts live in content/blog.ts (ES + EN in one object); the EN URL slug is in EN_SLUG_MAP (lib/routes.ts).
+// Sitemap, llms.txt and llms-full.txt are built from the content at request time, so nothing derived needs regenerating.
+AGENT_SITES['dizayn.com.mx'] = {
+  answerMode: 'heading-body',
+  neverWrite: [
+    "Resultados, cifras o clientes que no estén en content/cases.ts o en una fuente primaria que abriste: se quitan, no se reescriben.",
+    "Precios escritos a mano: solo los de content/mx-pricing.ts.",
+    "Nombrar a competidores por nombre.",
+    "Posts para el mercado de EE. UU. (/usa) o en content/us-blog.ts: ese mercado vive en dizaynseo.com.",
+  ],
+  guideFiles: ['CLAUDE.md', 'PLAN-redesign-web-seo-geo.md'],
+  factFiles: ['content/mx-pricing.ts', 'content/cases.ts'],
+  short: 'dizayn', label: 'Dizayn MX (dizayn.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'es', segments: false, listPosts: dizaynMxPosts, postFiles: () => ['content/blog.ts'],
+  pendingNote: 'Fixer is off for this site until the first posts have been reviewed. Search Console data comes from the connected service account.',
+  research: {
+    context: 'Dizayn es una agencia de diseño web, SEO y GEO en Guadalajara, Jalisco, que vende a negocios de México (la sección /usa es otro mercado y no se toca). Puedes leer el repo (content/blog.ts, content/services.ts, content/cases.ts, content/mx-pricing.ts) y buscar en la web para validar demanda y qué responde la competencia. Solo temas que Dizayn pueda cumplir con sus servicios reales y que se apoyen en sus casos (Lemus Weddings, Luvory, Studio Yume, Vexon).',
+    priority: 'Prioridad: al menos 5 de los 8 temas deben ser preguntas de decisión de dueños de negocio en Guadalajara/México (costo, plazos, a medida vs plantilla, SEO local, aparecer en ChatGPT y AI Overviews) que se puedan responder con un caso propio. El dominio es joven: prefiere cola larga.',
+  },
+  repo: '/home/darrkito/dizayn-web', worktree: '/home/darrkito/dizayn-agent-wt', remote: 'origin', liveBase: 'https://dizayn.com.mx', indexnowKey: 'public/86d75beb2370cde7857a6c24e46ed141.txt',
+  blogUrl: (s) => [`https://dizayn.com.mx/blog/${s}`],
+  typecheck: ['node_modules/.bin/tsc', '--noEmit', '-p', '.'],
+  orderPaths: ['content/blog.ts', 'lib/routes.ts'],
+  unionPaths: ['content/blog.ts', 'lib/routes.ts'],
+  contentPaths: ['content/blog.ts', 'lib/routes.ts'],
+  lowRiskPaths: [],
+  postBrief: (o) => o.kind === 'improve' ? improveBrief(o, 'dateModified', ' y aplica los cambios en ES y en EN')
+    : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" en content/blog.ts (secciones/FAQ nuevas en es y en), pon dateModified a ${o.publishAt}. No crees un post nuevo.`
+    : `${header(o)}\nCrea un post NUEVO con slug "${o.slug}". Haz TODOS estos cambios:
+1) content/blog.ts: agrega al FINAL del arreglo blogPosts un objeto con la forma del último post (slug, date "${o.publishAt}", dateModified "${o.publishAt}", es y en completos: title, excerpt, category de las existentes, content, metaTitle, metaDescription y faq).
+2) lib/routes.ts: agrega "/blog/${o.slug}": "/blog/<slug-en-inglés-en-kebab-case>" a EN_SLUG_MAP.
+El sitemap y llms.txt se arman solos desde el contenido.`,
+  rules: `Reglas de Dizayn MX (límites duros del dueño):
+- Español de México, trato de "tú", claro y concreto. El inglés del bloque \`en\` es una traducción fiel, no otra página.
+- NUNCA uses rayas largas (—) en texto nuevo. Usa comas, puntos o dos puntos.
+- No inventes clientes, resultados, cifras, premios ni certificaciones. Los únicos casos son los de content/cases.ts, con sus cifras exactas y su fuente.
+- No escribas precios a mano: salen de content/mx-pricing.ts.
+- Nunca nombres a competidores. El dominio es joven: no prometas posiciones ni plazos de ranking.
+- Si no puedes verificar un dato en este repo o en una fuente primaria que abriste, déjalo fuera.
+- No toques app/, components/, estilos, content/services.ts, content/cases.ts, content/us-*.ts ni nada de /usa.`,
+  writerRules: `Reglas del redactor:
+- Los posts viven en content/blog.ts. ES es el canónico y el bloque \`en\` lleva la traducción completa; el slug en inglés va en EN_SLUG_MAP de lib/routes.ts. Copia la estructura de un post existente.
+- Cada H2 del content abre con una respuesta directa de 40 a 60 palabras. Agrega una faq con hechos reales y, si citas algo, enlaces a fuentes que abriste.
+- Enlaces internos con rutas canónicas en español (/servicios/seo, /portafolio/lemus-weddings, /blog/...); nunca hrefs que empiecen con /en/.
+- Si el tema se parece a un post existente, amplíalo en lugar de crear uno que compita.
+- Solo edita content/blog.ts y EN_SLUG_MAP en lib/routes.ts.`,
 };
