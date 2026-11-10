@@ -5,7 +5,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-export type ClaudeResult = { ok: boolean; limited: boolean; text: string; tokensIn: number; tokensOut: number; costUsd: number; error?: string };
+export type ClaudeResult = { ok: boolean; limited: boolean; text: string; tokensIn: number; tokensOut: number; costUsd: number; fresh: number; cacheWrite: number; cacheRead: number; model: string; error?: string };
 
 /** Parse Claude's reset time in its stated time zone (or the local zone if omitted). */
 export function parseLimitReset(message: string, now: Date): number | null {
@@ -41,6 +41,11 @@ export function parseLimitReset(message: string, now: Date): number | null {
 export function cleanEnv(src: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const keep = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'USER', 'SHELL', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'NVM_DIR'];
   return Object.fromEntries(keep.filter((k) => src[k]).map((k) => [k, src[k]!]));
+}
+
+// Single-shot calls cannot reuse the costly one-hour prompt cache.
+export function claudeEnv(o: { tools: string[] }, src: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  return { ...cleanEnv(src), ...(o.tools.length === 0 && src.AGENT_CACHE !== '1' ? { DISABLE_PROMPT_CACHING: '1' } : {}) };
 }
 
 export function retryTransient<T>(fn: () => T, tries = 5, sleepMs = 15_000): T {
@@ -79,9 +84,10 @@ export function claudeArgs(o: ClaudeOptions): string[] {
 
 export function runClaude(o: ClaudeOptions): Promise<ClaudeResult> {
   assertSubscription();
-  const args = claudeArgs(o);
+  const model = o.model ?? process.env.AGENT_MODEL ?? 'sonnet';
+  const args = claudeArgs({ ...o, model });
   return new Promise((resolve) => {
-    const child = spawn('nice', args, { cwd: o.cwd, env: cleanEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('nice', args, { cwd: o.cwd, env: claudeEnv(o), stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), o.timeoutMs);
     child.stdout.on('data', (d) => (out += d));
@@ -90,12 +96,13 @@ export function runClaude(o: ClaudeOptions): Promise<ClaudeResult> {
       clearTimeout(timer);
       let j: any;
       try { j = JSON.parse(out); } catch { /* not JSON: crash or timeout */ }
-      if (!j) { const msg = (err || out || `exit ${code}`).slice(0, 500); return resolve({ ok: false, limited: LIMIT.test(msg), text: '', tokensIn: 0, tokensOut: 0, costUsd: 0, error: msg }); }
+      if (!j) { const msg = (err || out || `exit ${code}`).slice(0, 500); return resolve({ ok: false, limited: LIMIT.test(msg), text: '', tokensIn: 0, tokensOut: 0, costUsd: 0, fresh: 0, cacheWrite: 0, cacheRead: 0, model, error: msg }); }
       const u = j.usage ?? {};
       const text = String(j.result ?? '');
       resolve({
         ok: !j.is_error && j.subtype === 'success', limited: !!j.is_error && LIMIT.test(text + (j.api_error_status ?? '')), text,
         tokensIn: (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0), tokensOut: u.output_tokens ?? 0,
+        fresh: u.input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, model,
         costUsd: j.total_cost_usd ?? 0, // list-price equivalent; on the subscription nothing is billed per token
         error: j.is_error || j.subtype !== 'success' ? `${j.subtype}: ${text}`.slice(0, 500) : undefined,
       });

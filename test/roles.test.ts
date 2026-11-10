@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { systemPrompt, EFFORT, type Role } from '../src/agents/templates/roles.ts';
+import { systemPrompt, EFFORT, MODEL, type Role } from '../src/agents/templates/roles.ts';
 import { claudeArgs } from '../src/agents/runner.ts';
 import { claudeOptions } from '../src/agents/agents.ts';
 
@@ -46,4 +46,21 @@ test('Claude arguments and role options preserve the old call shape', () => {
   const roleOptions = claudeOptions({ ...o, role: 'review' });
   assert.equal(roleOptions.system, systemPrompt('review'));
   assert.equal(roleOptions.effort, EFFORT.review);
+});
+
+test('model defaults and per-role overrides', () => {
+  const savedResearch = process.env.AGENT_MODEL_RESEARCH, savedPlan = process.env.AGENT_MODEL_PLAN;
+  try {
+    delete process.env.AGENT_MODEL_RESEARCH; delete process.env.AGENT_MODEL_PLAN;
+    assert.equal(MODEL.research, 'haiku');
+    assert.equal(MODEL.plan, undefined);
+    const o = { prompt: 'hi', cwd: '/tmp', tools: [], maxTurns: 1, timeoutMs: 1000 };
+    assert.equal(claudeOptions({ ...o, role: 'research' }).model, 'haiku');
+    assert.equal(Object.hasOwn(claudeOptions({ ...o, role: 'plan' }), 'model'), false);
+    process.env.AGENT_MODEL_RESEARCH = 'sonnet';
+    assert.equal(MODEL.research, 'sonnet');
+  } finally {
+    savedResearch === undefined ? delete process.env.AGENT_MODEL_RESEARCH : process.env.AGENT_MODEL_RESEARCH = savedResearch;
+    savedPlan === undefined ? delete process.env.AGENT_MODEL_PLAN : process.env.AGENT_MODEL_PLAN = savedPlan;
+  }
 });

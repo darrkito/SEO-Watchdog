@@ -28,3 +28,11 @@ for (const role of Object.keys(defaults) as Role[]) {
     return defaults[role];
   } });
 }
+
+const modelDefaults: Record<Role, string | undefined> = { research: 'haiku', plan: undefined, revise: undefined, review: undefined, fixplan: undefined, analyst: 'haiku', other: undefined };
+export const MODEL = Object.fromEntries((Object.keys(modelDefaults) as Role[]).map((role) => [role, modelDefaults[role]])) as Record<Role, string | undefined>;
+for (const role of Object.keys(modelDefaults) as Role[]) {
+  Object.defineProperty(MODEL, role, { enumerable: true, get() {
+    return process.env[`AGENT_MODEL_${role.toUpperCase()}`] ?? modelDefaults[role];
+  } });
+}

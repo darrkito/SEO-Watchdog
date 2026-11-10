@@ -1,4 +1,4 @@
-import { systemPrompt, EFFORT, type Role } from './templates/roles.ts';
+import { systemPrompt, EFFORT, MODEL, type Role } from './templates/roles.ts';
 import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
@@ -40,7 +40,7 @@ export function executorMode(): 'hybrid' | 'claude' {
 }
 
 export class LimitError extends Error {}
-export type Ctx = { priorFailure?: string; progress?: (stage: Stage, note?: string) => void; db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
+export type Ctx = { runId?: number; priorFailure?: string; progress?: (stage: Stage, note?: string) => void; db: DatabaseSync; site: Site; cfg: AgentSite | undefined; usage: ClaudeResult[]; log: (m: string) => void; args?: { slug?: string; ids?: number[]; topicId?: number } };
 export type AgentFn = (c: Ctx) => Promise<string>;
 
 // Never touched by an agent push, whatever the prompt says.
@@ -88,15 +88,19 @@ export function clampFutureDates(wt: string, base: string, publishAt: string | u
 /** git against the site's remote. With `remoteUrl` the remote is defined for this one command only (the owner's checkout stays untouched). */
 const gitRemote = (cfg: AgentSite, ...a: string[]) => git(cfg.worktree, ...(cfg.remoteUrl ? ['-c', `remote.${cfg.remote}.url=${cfg.remoteUrl}`, '-c', `remote.${cfg.remote}.fetch=+refs/heads/*:refs/remotes/${cfg.remote}/*`] : []), ...a);
 
-export function claudeOptions<T extends { role?: Role }>(o: T): T & { system?: string; effort?: string } {
-  return o.role ? { ...o, system: systemPrompt(o.role), effort: EFFORT[o.role] } : o;
+export function claudeOptions<T extends { role?: Role }>(o: T): T & { system?: string; effort?: string; model?: string } {
+  return o.role ? { ...o, system: systemPrompt(o.role), effort: EFFORT[o.role], ...(MODEL[o.role] !== undefined ? { model: MODEL[o.role] } : {}) } : o;
 }
 
 export async function ask(c: Ctx, o: { prompt: string; cwd: string; tools: string[]; maxTurns: number; timeoutMs: number; role?: Role }): Promise<string> {
   const t0 = Date.now();
   const r = await runClaude(claudeOptions(o));
-  c.log(`claude [${o.tools.join('+') || 'no tools'}, <=${o.maxTurns} turns, prompt ${Math.round(o.prompt.length / 1000)}k chars]: ${Math.round((Date.now() - t0) / 1000)}s, ${r.tokensIn} in / ${r.tokensOut} out${r.ok ? '' : `, FAILED${r.limited ? ' (limit)' : ''}: ${(r.error ?? '').slice(0, 200)}`}`);
+  const secs = Math.round((Date.now() - t0) / 1000);
+  c.log(`claude [${o.tools.join('+') || 'no tools'}, <=${o.maxTurns} turns, prompt ${Math.round(o.prompt.length / 1000)}k chars]: ${secs}s, ${r.tokensIn} in / ${r.tokensOut} out, cost $${r.costUsd.toFixed(4)}, cw ${r.cacheWrite} cr ${r.cacheRead}${r.ok ? '' : `, FAILED${r.limited ? ' (limit)' : ''}: ${(r.error ?? '').slice(0, 200)}`}`);
   c.usage.push(r);
+  if (c.runId !== undefined) {
+    try { c.db.prepare('INSERT INTO agent_calls (run_id, role, model, tools, prompt_chars, fresh, cache_write, cache_read, tokens_out, cost_usd, secs, ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(c.runId, o.role ?? 'other', r.model, o.tools.join('+'), o.prompt.length, r.fresh, r.cacheWrite, r.cacheRead, r.tokensOut, r.costUsd, secs, r.ok ? 1 : 0); } catch { /* ledger failures must not fail the job */ }
+  }
   if (r.limited) throw new LimitError(r.error ?? 'usage limit');
   if (!r.ok) throw new Error(r.error ?? 'claude failed');
   return r.text;

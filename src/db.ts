@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0,
   output TEXT, error TEXT, detail TEXT, stage TEXT, progress TEXT);
 CREATE INDEX IF NOT EXISTS agent_runs_slot ON agent_runs(agent, site_id, slot);
+CREATE TABLE IF NOT EXISTS agent_calls (
+  id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, at TEXT NOT NULL DEFAULT (datetime('now')), role TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', tools TEXT NOT NULL DEFAULT '',
+  prompt_chars INTEGER NOT NULL DEFAULT 0, fresh INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0, cache_read INTEGER NOT NULL DEFAULT 0,
+  tokens_out INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, secs INTEGER NOT NULL DEFAULT 0, ok INTEGER NOT NULL DEFAULT 1);
+CREATE INDEX IF NOT EXISTS agent_calls_run ON agent_calls(run_id);
 CREATE TABLE IF NOT EXISTS research_cache (
   key TEXT PRIMARY KEY, site_id INTEGER, slug TEXT, text TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS approvals (

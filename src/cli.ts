@@ -22,6 +22,7 @@ const HELP = `seo-watchdog <command>
   competitors <site>        list discovered competitors and alternatives
   serve [port]              localhost dashboard (default http://127.0.0.1:4321); also runs the agent scheduler
   agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
+  tokens [days]             token and cost report (default: 7 days)
   approvals                 list pending drafts/fixes; approve|reject <id> decides one
   mute <finding-id> | unmute <finding-id>
   remove <site>
@@ -125,6 +126,33 @@ switch (cmd) {
     const r = db.prepare('SELECT * FROM agent_runs ORDER BY id DESC LIMIT 1').get() as any;
     console.log(`#${r.id} ${r.agent} ${r.status} ${r.tokens_in} in / ${r.tokens_out} out\n${r.error ?? ''}${r.output ?? ''}`);
     process.exit(r.status === 'ok' ? 0 : 1);
+  }
+  case 'tokens': {
+    const days = posInt(arg, 7, 'days');
+    const window = `-${days} days`;
+    const table = (headers: string[], rows: string[][]) => {
+      const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+      for (const row of [headers, ...rows]) console.log(row.map((v, i) => v.padEnd(widths[i])).join('  ').trimEnd());
+    };
+    const runs = db.prepare(`SELECT agent, status, COUNT(*) runs, AVG(tokens_in) avg_in, AVG(tokens_out) avg_out,
+      SUM(cost_usd) total_cost, AVG(cost_usd) avg_cost FROM agent_runs
+      WHERE started_at >= datetime('now', ?) AND agent NOT IN ('crawl', 'collect') GROUP BY agent, status ORDER BY agent, status`).all(window) as any[];
+    console.log('Runs by agent and status');
+    table(['agent', 'status', 'runs', 'avg tokens_in', 'avg tokens_out', 'total cost', 'avg cost'], runs.map((r) => [r.agent, r.status, String(r.runs), r.avg_in.toFixed(0), r.avg_out.toFixed(0), `$${r.total_cost.toFixed(4)}`, `$${r.avg_cost.toFixed(4)}`]));
+    const calls = db.prepare(`SELECT r.agent, c.role, COUNT(*) calls, AVG(c.fresh) fresh, AVG(c.cache_write) cache_write,
+      AVG(c.cache_read) cache_read, AVG(c.tokens_out) tokens_out, SUM(c.cost_usd) total_cost, AVG(c.cost_usd) avg_cost
+      FROM agent_calls c JOIN agent_runs r ON r.id = c.run_id WHERE r.started_at >= datetime('now', ?)
+      GROUP BY r.agent, c.role ORDER BY r.agent, c.role`).all(window) as any[];
+    console.log('\nCalls by agent and role');
+    table(['agent', 'role', 'calls', 'avg fresh', 'avg cache_write', 'avg cache_read', 'avg tokens_out', 'total cost', 'avg cost'], calls.map((r) => [r.agent, r.role, String(r.calls), r.fresh.toFixed(0), r.cache_write.toFixed(0), r.cache_read.toFixed(0), r.tokens_out.toFixed(0), `$${r.total_cost.toFixed(4)}`, `$${r.avg_cost.toFixed(4)}`]));
+    const costs = db.prepare(`SELECT agent, SUM(cost_usd) total_cost, SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) ok_runs
+      FROM agent_runs WHERE started_at >= datetime('now', ?) AND agent IN ('writer', 'improver') GROUP BY agent`).all(window) as any[];
+    console.log('\nCost per ok run');
+    table(['agent', 'cost per ok run'], ['writer', 'improver'].map((agent) => {
+      const row = costs.find((r) => r.agent === agent);
+      return [agent, row?.ok_runs ? `$${(row.total_cost / row.ok_runs).toFixed(4)}` : 'n/a'];
+    }));
+    break;
   }
   case 'approvals': {
     for (const a of db.prepare("SELECT id, kind, title, status, created_at FROM approvals ORDER BY id DESC LIMIT 20").all() as any[]) console.log(`#${a.id} [${a.status}] ${a.kind}: ${a.title} (${a.created_at})`);

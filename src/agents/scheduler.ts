@@ -90,7 +90,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
     const id = Number(db.prepare('INSERT INTO agent_runs (agent, site_id, slot, detail) VALUES (?, ?, ?, ?)').run(agent, site.id, slot, detail || null).lastInsertRowid);
     if (slot === null) db.prepare("UPDATE agent_queue SET state = 'running', attempts = attempts + 1, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(agent, site.id, detail);
     const q = slot === null ? db.prepare('SELECT attempts, last_error FROM agent_queue WHERE agent = ? AND site_id = ? AND slug = ?').get(agent, site.id, detail) as { attempts: number; last_error: string | null } | undefined : undefined;
-    const ctx: Ctx = { db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args, priorFailure: q && q.attempts > 1 ? q.last_error ?? undefined : undefined };
+    const ctx: Ctx = { runId: id, db, site, cfg: cfgOf(site), usage: [], log: (m) => console.log(`[${agent} ${site.url}] ${m}`), args, priorFailure: q && q.attempts > 1 ? q.last_error ?? undefined : undefined };
     ctx.progress = (s, n) => setStage(db, id, s, n);
     status = 'ok';
     let output = '', error: string | null = null;

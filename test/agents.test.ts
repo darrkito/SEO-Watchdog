@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.WATCHDOG_DATA = mkdtempSync(join(tmpdir(), 'wd-agents-'));
-const { cleanEnv, extractJson } = await import('../src/agents/runner.ts');
+const { cleanEnv, claudeEnv, extractJson } = await import('../src/agents/runner.ts');
 const { isDue, SCHEDULE } = await import('../src/agents/scheduler.ts');
 const { nextPublishDate, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
 const { openDb } = await import('../src/db.ts');
@@ -14,6 +14,15 @@ const { openDb } = await import('../src/db.ts');
 test('agent env never carries API credentials, even when the parent has them', () => {
   const env = cleanEnv({ PATH: '/bin', HOME: '/h', ANTHROPIC_API_KEY: 'sk-x', ANTHROPIC_AUTH_TOKEN: 't', SERPER_API_KEY: 's', CLAUDE_CODE_OAUTH_TOKEN: 'o', TELEGRAM_BOT_TOKEN: 'b' });
   assert.deepEqual(Object.keys(env).sort(), ['HOME', 'PATH']);
+});
+
+test('Claude disables prompt caching for single-shot calls unless opted in', () => {
+  const src = { PATH: '/bin', HOME: '/h', ANTHROPIC_API_KEY: 'sk-x' };
+  const env = claudeEnv({ tools: [] }, src);
+  assert.equal(env.DISABLE_PROMPT_CACHING, '1');
+  assert.equal('ANTHROPIC_API_KEY' in env, false);
+  assert.equal('DISABLE_PROMPT_CACHING' in claudeEnv({ tools: ['WebSearch'] }, src), false);
+  assert.equal('DISABLE_PROMPT_CACHING' in claudeEnv({ tools: [] }, { ...src, AGENT_CACHE: '1' }), false);
 });
 
 test('extractJson reads fenced and bare replies', () => {
