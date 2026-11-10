@@ -52,13 +52,14 @@ test('model defaults and per-role overrides', () => {
   const savedResearch = process.env.AGENT_MODEL_RESEARCH, savedPlan = process.env.AGENT_MODEL_PLAN;
   try {
     delete process.env.AGENT_MODEL_RESEARCH; delete process.env.AGENT_MODEL_PLAN;
-    assert.equal(MODEL.research, 'haiku');
+    assert.equal(MODEL.research, undefined);
     assert.equal(MODEL.plan, undefined);
     const o = { prompt: 'hi', cwd: '/tmp', tools: [], maxTurns: 1, timeoutMs: 1000 };
-    assert.equal(claudeOptions({ ...o, role: 'research' }).model, 'haiku');
+    assert.equal(Object.hasOwn(claudeOptions({ ...o, role: 'research' }), 'model'), false);
     assert.equal(Object.hasOwn(claudeOptions({ ...o, role: 'plan' }), 'model'), false);
-    process.env.AGENT_MODEL_RESEARCH = 'sonnet';
-    assert.equal(MODEL.research, 'sonnet');
+    process.env.AGENT_MODEL_RESEARCH = 'haiku';
+    assert.equal(MODEL.research, 'haiku');
+    assert.equal(claudeOptions({ ...o, role: 'research' }).model, 'haiku');
   } finally {
     savedResearch === undefined ? delete process.env.AGENT_MODEL_RESEARCH : process.env.AGENT_MODEL_RESEARCH = savedResearch;
     savedPlan === undefined ? delete process.env.AGENT_MODEL_PLAN : process.env.AGENT_MODEL_PLAN = savedPlan;

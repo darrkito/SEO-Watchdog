@@ -25,7 +25,7 @@ Analyst ($0.04/run), researcher ($0.14) and fixer ($0.08) are 2% of the spend. T
 
 | Ticket | Change | Expected effect |
 |---|---|---|
-| A | Per-call ledger (`agent_calls`), `wd tokens` report, caching off for no-tool calls, Haiku for research + analyst | input cost of plan/review/revise halves; research ~3x cheaper; every later change is measurable per role |
+| A | Per-call ledger (`agent_calls`), `wd tokens` report, caching off for no-tool calls, per-role model switch (off: owner rule 10-29 keeps the same models) | input cost of plan/review/revise halves; every later change is measurable per role |
 | B | Valid-links list in the plan prompt + validator; patch-mode fix for plan-lint failures (small patch, not a full re-plan) | removes ~94% of plan rejections; a lint fix costs ~1k output tokens, not ~19k |
 | C | Apply orders in code (no Codex for writer/improver); no silent fallback to the Claude executor | no BLOCKED rounds, ~35 s faster per round, zero Codex quota for drafts, no 1M-token runs |
 | D | Prompt diet (review without playbook, -U3 review diff, revise without duplicated post text), research cache 14 days and 4 turns, no research for structural improves, diagnostics for "no changes made" | smaller review/revise input; improver skips ~$0.15 research when the fix is structural |
@@ -42,7 +42,7 @@ Estimate after phase 1: happy path $0.55 -> about $0.30; blended $1.23 -> about 
 
 ## Rollback switches (env, no code change)
 
-`AGENT_APPLY=codex` (ticket C), `AGENT_MODEL_RESEARCH=sonnet`, `AGENT_MODEL_ANALYST=sonnet`, `AGENT_CACHE=1` (ticket A), `AGENT_RESEARCH=0` (existing).
+`AGENT_APPLY=codex` (ticket C), opt-in only: `AGENT_MODEL_RESEARCH=haiku`, `AGENT_MODEL_ANALYST=haiku`; `AGENT_CACHE=1` (ticket A), `AGENT_RESEARCH=0` (existing).
 
 ## Verification after each ticket (Claude, outside Codex's sandbox)
 
