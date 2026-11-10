@@ -285,8 +285,7 @@ AGENT_SITES['dizayn.com.mx'] = {
   ],
   guideFiles: ['CLAUDE.md', 'PLAN-redesign-web-seo-geo.md'],
   factFiles: ['content/mx-pricing.ts', 'content/cases.ts'],
-  short: 'dizayn', label: 'Dizayn MX (dizayn.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'es', segments: false, listPosts: dizaynMxPosts, postFiles: () => ['content/blog.ts'],
-  pendingNote: 'Fixer is off for this site until the first posts have been reviewed. Search Console data comes from the connected service account.',
+  short: 'dizayn', label: 'Dizayn MX (dizayn.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: dizaynMxPosts, postFiles: () => ['content/blog.ts'],
   research: {
     context: 'Dizayn es una agencia de diseño web, SEO y GEO en Guadalajara, Jalisco, que vende a negocios de México (la sección /usa es otro mercado y no se toca). Puedes leer el repo (content/blog.ts, content/services.ts, content/cases.ts, content/mx-pricing.ts) y buscar en la web para validar demanda y qué responde la competencia. Solo temas que Dizayn pueda cumplir con sus servicios reales y que se apoyen en sus casos (Lemus Weddings, Luvory, Studio Yume, Vexon).',
     priority: 'Prioridad: al menos 5 de los 8 temas deben ser preguntas de decisión de dueños de negocio en Guadalajara/México (costo, plazos, a medida vs plantilla, SEO local, aparecer en ChatGPT y AI Overviews) que se puedan responder con un caso propio. El dominio es joven: prefiere cola larga.',
