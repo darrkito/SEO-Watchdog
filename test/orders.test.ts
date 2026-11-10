@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOrder, applyPatches, patchPrompt, orderPrompt, fixPrompt, BIG, writeStepFiles, clearStepFiles, applyCheck, verbatimCheck, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
+import { parseOrder, applyPatches, patchPrompt, orderPrompt, fixPrompt, BIG, writeStepFiles, clearStepFiles, applyCheck, verbatimCheck, applyOrder, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
 
 const step: EditStep = { n: 1, file: 'a.txt', do: 'insert-after', anchor: 'old', text: 'new' };
 const order = (steps: EditStep[] = [{ ...step }]): WorkOrder => ({ title: 'Test', steps, mustContain: [], forbiddenPaths: [], doneWhen: '' });
@@ -332,4 +332,34 @@ test('patches require unique text and preserve the original order', () => {
   assert.throws(() => applyPatches({ ...original, steps: [{ ...step, text: 'BAD BAD' }] }, reply('BAD')), /Invalid patch:/);
   assert.throws(() => applyPatches(original, reply('BAD', 2)), /Invalid patch:/);
   assert.ok(patchPrompt(original, ['problem'], 'context').includes('context\n=== PASO 1 (a.txt) ===\nnew BAD'));
+});
+
+
+test('applyOrder writes replacements and nested creates', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'orders-apply-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'a.txt'), 'old');
+  assert.deepEqual(applyOrder(order([
+    { n: 1, file: 'a.txt', do: 'replace', anchor: 'old', text: 'new' },
+    { n: 2, file: 'nested/new.txt', do: 'create', text: 'created' },
+  ]), root), []);
+  assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'new');
+  assert.equal(readFileSync(join(root, 'nested/new.txt'), 'utf8'), 'created');
+});
+
+test('applyOrder writes nothing when an anchor occurs twice', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'orders-apply-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'a.txt'), 'old old');
+  const problems = applyOrder(order([{ n: 1, file: 'a.txt', do: 'replace', anchor: 'old', text: 'new' }]), root);
+  assert.match(problems.join(' '), /anchor occurs 2 times/);
+  assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'old old');
+});
+
+test('applyOrder preserves CRLF line endings', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'orders-apply-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, 'a.txt'), 'old\r\nend\r\n');
+  assert.deepEqual(applyOrder(order([{ n: 1, file: 'a.txt', do: 'replace', anchor: 'old', text: 'new\nline' }]), root), []);
+  assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'new\r\nline\r\nend\r\n');
 });

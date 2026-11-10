@@ -44,7 +44,7 @@ function fixture(t: { after: (fn: () => void) => void }, actions: ((prompt: stri
     addedText: () => existsSync(join(root, 'a.txt')) ? readFileSync(join(root, 'a.txt'), 'utf8') : '',
     diff: () => ' context\n+hello', review: async () => approved, log: () => {},
   };
-  const input: HybridInput = { planPrompt: 'Make the first order', rules: 'Keep it exact', allowedPaths: ['a.txt'] };
+  const input: HybridInput = { apply: 'codex', planPrompt: 'Make the first order', rules: 'Keep it exact', allowedPaths: ['a.txt'] };
   return { root, codex, d, input };
 }
 const apply = (order: WorkOrder) => (_prompt: string, root: string) => applyOrder(order, root);
@@ -371,4 +371,17 @@ test('invalid patches retry the full plan after two attempts', async (t) => {
   d.patch = async () => { patches++; return JSON.stringify({ patches: [{ step: 1, find: 'missing', replace: '' }] }); };
   const result = await runHybrid(d, input);
   assert.equal(plans, 2); assert.equal(patches, 2); assert.equal(result.stages.patches, 2);
+});
+
+
+test('default applies the order in code and reviews the diff', async (t) => {
+  const { d, input, root } = fixture(t, []);
+  delete input.apply;
+  d.execute = async () => assert.fail('execute must not be called');
+  let reviewed = false;
+  d.review = async (_orders, diff) => { assert.ok(diff); reviewed = true; return approved; };
+  const result = await runHybrid(d, input);
+  assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'hello');
+  assert.equal(result.stages.executions, 1);
+  assert.equal(reviewed, true);
 });

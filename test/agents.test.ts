@@ -8,7 +8,7 @@ import { join } from 'node:path';
 process.env.WATCHDOG_DATA = mkdtempSync(join(tmpdir(), 'wd-agents-'));
 const { cleanEnv, claudeEnv, extractJson } = await import('../src/agents/runner.ts');
 const { isDue, SCHEDULE } = await import('../src/agents/scheduler.ts');
-const { nextPublishDate, linksOf, linkExists, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
+const { executorMode, nextPublishDate, linksOf, linkExists, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
 const { openDb } = await import('../src/db.ts');
 
 test('agent env never carries API credentials, even when the parent has them', () => {
@@ -342,4 +342,18 @@ test('verified links come from successful pages in the latest successful run', a
     assert.deepEqual(linksOf(db, 1), ['/', '/productos/x', '/blog/a']);
     assert.equal(linkExists({ worktree: '/does-not-exist' } as any, ['/blog/a'])('/blog/a/'), true);
   } finally { db.close(); }
+});
+
+
+test('executor mode defaults to hybrid and supports explicit Claude', () => {
+  const previous = process.env.AGENT_EXECUTOR;
+  try {
+    delete process.env.AGENT_EXECUTOR;
+    assert.equal(executorMode(), 'hybrid');
+    process.env.AGENT_EXECUTOR = 'claude';
+    assert.equal(executorMode(), 'claude');
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_EXECUTOR;
+    else process.env.AGENT_EXECUTOR = previous;
+  }
 });

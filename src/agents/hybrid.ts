@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseOrder, orderPrompt, fixPrompt, patchPrompt, applyPatches, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
+import { parseOrder, orderPrompt, fixPrompt, patchPrompt, applyPatches, applyOrder, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
 
 export class HybridLimit extends Error {}
@@ -20,7 +20,7 @@ export type HybridDeps = {
   root: string;
   log: (m: string) => void;
 };
-export type HybridInput = { planPrompt: string; revisePrompt?: string; patchContext?: string; rules: string; allowedPaths: string[]; maxRounds?: number };
+export type HybridInput = { planPrompt: string; revisePrompt?: string; patchContext?: string; rules: string; allowedPaths: string[]; maxRounds?: number; apply?: 'code' | 'codex' };
 export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; patches: number; revisions: number; executions: number; reviews: number; rounds: number } };
 
 export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt: string; previousOrder: WorkOrder }): string {
@@ -83,38 +83,47 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
   let order = await getOrder((prompt) => { stages.plans++; d.stage?.('planning', `attempt ${stages.plans}`); return d.plan(prompt); }, input.planPrompt);
   for (;;) {
     orders.push(order);
-    const expected = simulateOrder(order, d.root).files;
-    const deviations = (): string[] => {
-      const contents: string[] = [];
-      for (const file of new Set(order.steps.map((step) => step.file))) {
-        try {
-          const path = join(d.root, file);
-          if (existsSync(path)) contents.push(readFileSync(path, 'utf8'));
-        } catch { /* Skip unreadable files. */ }
-      }
-      const present = d.addedText() + '\n' + contents.join('\n');
-      return [...compareFiles(expected, d.root), ...verbatimCheck(order, present)];
-    };
-    const files = writeStepFiles(order, d.root);
-    let r: CodexResult;
-    d.stage?.('building', `round ${stages.rounds + 1}`);
-    try { r = await d.execute(orderPrompt(order, input.rules, files)); }
-    finally { clearStepFiles(d.root); }
-    stages.executions++;
-    if (r.limited) throw new HybridLimit(r.error ?? 'codex usage limit');
-    d.stage?.('checking');
-    let problems = r.ok ? deviations() : ['executor: ' + (r.error ?? r.text)];
-    if (problems.length && r.ok) {
-      let r2: CodexResult;
-      d.stage?.('building', 'fixing a deviation');
-      try { r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules)); }
+    let problems: string[];
+    if ((input.apply ?? 'code') === 'code') {
+      d.stage?.('building', `round ${stages.rounds + 1}`);
+      const applyProblems = applyOrder(order, d.root);
+      stages.executions++;
+      d.stage?.('checking');
+      problems = applyProblems.map((p) => 'apply: ' + p);
+    } else {
+      const expected = simulateOrder(order, d.root).files;
+      const deviations = (): string[] => {
+        const contents: string[] = [];
+        for (const file of new Set(order.steps.map((step) => step.file))) {
+          try {
+            const path = join(d.root, file);
+            if (existsSync(path)) contents.push(readFileSync(path, 'utf8'));
+          } catch { /* Skip unreadable files. */ }
+        }
+        const present = d.addedText() + '\n' + contents.join('\n');
+        return [...compareFiles(expected, d.root), ...verbatimCheck(order, present)];
+      };
+      const files = writeStepFiles(order, d.root);
+      let r: CodexResult;
+      d.stage?.('building', `round ${stages.rounds + 1}`);
+      try { r = await d.execute(orderPrompt(order, input.rules, files)); }
       finally { clearStepFiles(d.root); }
       stages.executions++;
-      if (r2.limited) throw new HybridLimit(r2.error ?? 'codex usage limit');
+      if (r.limited) throw new HybridLimit(r.error ?? 'codex usage limit');
       d.stage?.('checking');
-      problems = r2.ok ? deviations() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
+      problems = r.ok ? deviations() : ['executor: ' + (r.error ?? r.text)];
+      if (problems.length && r.ok) {
+        let r2: CodexResult;
+        d.stage?.('building', 'fixing a deviation');
+        try { r2 = await d.execute(fixPrompt(problems.join('\n'), [...new Set(order.steps.map((step) => step.file))], input.rules)); }
+        finally { clearStepFiles(d.root); }
+        stages.executions++;
+        if (r2.limited) throw new HybridLimit(r2.error ?? 'codex usage limit');
+        d.stage?.('checking');
+        problems = r2.ok ? deviations() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
+      }
     }
-    if (r.ok && !problems.length) {
+    if (!problems.length) {
       const other = d.lint?.() ?? [];
       if (!other.length) {
         const v = d.verify();

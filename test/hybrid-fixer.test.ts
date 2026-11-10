@@ -68,6 +68,9 @@ test('hybrid fixer returns fixed metadata, changes the file, and gives the scout
 });
 
 test('forbidden API edit reaches verify, exhausts rounds, and resets the worktree', async (t) => {
+  const previousApply = process.env.AGENT_APPLY;
+  process.env.AGENT_APPLY = 'codex';
+  t.after(() => { if (previousApply === undefined) delete process.env.AGENT_APPLY; else process.env.AGENT_APPLY = previousApply; });
   const { c, o, order, apply, override } = fixture(t);
   order.steps = [{ n: 1, file: 'src/app/api/x.ts', do: 'create', text: 'export const x = 1;\n' }];
   let executions = 0, revisions = 0;

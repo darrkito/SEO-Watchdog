@@ -92,6 +92,9 @@ test('hybrid draft commits the post and creates a pending approval', async (t) =
 });
 
 test('hybrid usage limit becomes LimitError and cleans the worktree', async (t) => {
+  const previousApply = process.env.AGENT_APPLY;
+  process.env.AGENT_APPLY = 'codex';
+  t.after(() => { if (previousApply === undefined) delete process.env.AGENT_APPLY; else process.env.AGENT_APPLY = previousApply; });
   const { c, topic, s, order, apply, override } = fixture(t);
   await assert.rejects(draftTopicHybrid(c, topic, publishAt, s, {
     ...override,

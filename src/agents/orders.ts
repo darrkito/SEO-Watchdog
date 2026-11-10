@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { extractJson } from './runner.ts';
 import { pathAllowed } from './sites.ts';
 
@@ -215,6 +215,18 @@ export function simulateOrder(order: WorkOrder, root: string): { files: Map<stri
     if (![...files.values()].some((content) => content.includes(text))) problems.push(`missing required text: ${text.slice(0, 80)}`);
   }
   return { files, problems };
+}
+
+export function applyOrder(order: WorkOrder, root: string): string[] {
+  const { files, problems } = simulateOrder(order, root);
+  if (problems.length) return problems;
+  for (const [file, content] of files) {
+    const path = join(root, file);
+    const crlf = existsSync(path) && readFileSync(path).includes(Buffer.from('\r\n'));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, crlf ? content.replace(/\n/g, '\r\n') : content, 'utf8');
+  }
+  return [];
 }
 
 export function preflightOrder(order: WorkOrder, root: string): string[] {

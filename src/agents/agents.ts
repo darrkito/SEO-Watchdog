@@ -14,7 +14,7 @@ import { battle } from '../gaps.ts';
 import { collect } from './collect.ts';
 import { blogScores } from './blogscore.ts';
 import { audienceBrief, customerQuestions, seoPlaybook, segmentOf, TARGET } from './audience.ts';
-import { runClaude, runCodex, extractJson, assertCodexSubscription, type ClaudeResult } from './runner.ts';
+import { runClaude, runCodex, extractJson, type ClaudeResult, type CodexResult } from './runner.ts';
 import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
 import { checkAnswerBlocks, checkDuplicateSentences, checkInternalLinks, nonProblem } from './accept.ts';
@@ -25,18 +25,8 @@ import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
 
-let executorFallbackWarned = false;
 export function executorMode(): 'hybrid' | 'claude' {
-  if (process.env.AGENT_EXECUTOR === 'claude') return 'claude';
-  try { assertCodexSubscription(); return 'hybrid'; }
-  catch (e) {
-    if (!executorFallbackWarned) {
-      executorFallbackWarned = true;
-      const message = e instanceof Error ? e.message : String(e);
-      console.warn('[agents] Codex is not available, falling back to the Claude-only executor: ' + message);
-    }
-    return 'claude';
-  }
+  return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
 }
 
 export class LimitError extends Error {}
@@ -549,7 +539,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   deps.plan = async (p) => stripOrderDerived(await originalPlan(p), cfg.derivedPaths);
   deps.revise = async (p) => stripOrderDerived(await originalRevise(p), cfg.derivedPaths);
   let result;
-  try { result = await runHybrid(deps, { planPrompt: prompt, revisePrompt: slimPlanPrompt(planInput), patchContext: linksSection(links), rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
+  try { result = await runHybrid(deps, { planPrompt: prompt, revisePrompt: slimPlanPrompt(planInput), patchContext: linksSection(links), rules: cfg.rules, allowedPaths: cfg.orderPaths, apply: process.env.AGENT_APPLY === 'codex' ? 'codex' : 'code' }); }
   catch (e) {
     git(wt, 'reset', '--hard');
     git(wt, 'clean', '-fd', '-e', 'node_modules');
@@ -602,7 +592,9 @@ ${extra}`,
 // ---------- fixer ----------
 export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; list: any[]; picked: boolean }, override: Partial<HybridDeps> = {}): Promise<string> {
   c.progress?.('scouting');
-  const scout = await runCodex({ prompt: scoutPrompt(o.list.map((f) => ({ id: f.id, rule: f.rule_id, subject: f.subject, message: f.message })), ''), cwd: o.wt, write: false, timeoutMs: 600_000 });
+  let scout: CodexResult;
+  try { scout = await runCodex({ prompt: scoutPrompt(o.list.map((f) => ({ id: f.id, rule: f.rule_id, subject: f.subject, message: f.message })), ''), cwd: o.wt, write: false, timeoutMs: 600_000 }); }
+  catch (e) { c.log('scout unavailable: ' + (e as Error).message); scout = { ok: false, limited: false, blocked: false, text: '' }; }
   if (scout.limited) throw new LimitError(scout.error ?? 'codex usage limit');
   const synced = syncWorktree(o.cfg, git(o.wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim());
   c.log(`synced to ${o.cfg.remote}/main ${synced.head.slice(0, 7)}${synced.moved ? ' (moved)' : ''}`);
@@ -661,7 +653,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
   deps.revise = async (p) => stripOrderDerived(await originalRevise(p), o.cfg.derivedPaths);
   const plan = deps.plan;
   deps.plan = async (p) => { const reply = await plan(p); planReplies.push(reply); return reply; };
-  try { await runHybrid(deps, { planPrompt, rules: o.cfg.rules, allowedPaths: ['*'] }); }
+  try { await runHybrid(deps, { planPrompt, rules: o.cfg.rules, allowedPaths: ['*'], apply: process.env.AGENT_APPLY === 'codex' ? 'codex' : 'code' }); }
   catch (e) {
     git(o.wt, 'reset', '--hard');
     git(o.wt, 'clean', '-fd', '-e', 'node_modules');
