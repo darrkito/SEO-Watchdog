@@ -110,8 +110,16 @@ export function extractJson<T = unknown>(text: string): T {
   const body = (fenced ? fenced[1] : text).trim();
   const start = body.search(/[[{]/);
   if (start < 0) throw new Error('no JSON in reply');
-  const open = body[start], close = open === '{' ? '}' : ']';
-  return JSON.parse(body.slice(start, body.lastIndexOf(close) + 1));
+  // end of the FIRST balanced value (strings respected), so trailing prose or a second object never gets pulled in
+  let depth = 0, inStr = false;
+  for (let i = start; i < body.length; i++) {
+    const c = body[i];
+    if (inStr) { if (c === '\\') i++; else if (c === '"') inStr = false; }
+    else if (c === '"') inStr = true;
+    else if (c === '{' || c === '[') depth++;
+    else if ((c === '}' || c === ']') && --depth === 0) return JSON.parse(body.slice(start, i + 1));
+  }
+  return JSON.parse(body.slice(start, body.lastIndexOf(body[start] === '{' ? '}' : ']') + 1)); // unbalanced: old behaviour, surfaces the real error
 }
 
 export function codexEnv(src: NodeJS.ProcessEnv = process.env): Record<string, string> {

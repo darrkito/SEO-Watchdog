@@ -17,6 +17,7 @@ test('agent env never carries API credentials, even when the parent has them', (
 });
 
 test('extractJson reads fenced and bare replies', () => {
+  assert.deepEqual(extractJson('{"a":"x } y","b":[1]}\n{"second":1}\nnote {done}'), { a: 'x } y', b: [1] });
   assert.deepEqual(extractJson('Aquí:\n```json\n[{"a":1}]\n```'), [{ a: 1 }]);
   assert.deepEqual(extractJson('{"slug":"x"} fin'), { slug: 'x' });
   assert.throws(() => extractJson('sin json'));

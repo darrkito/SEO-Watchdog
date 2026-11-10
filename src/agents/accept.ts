@@ -17,7 +17,7 @@ export function checkAnswerBlocks(text: string, mode: AnswerMode): string[] {
         j++;
       }
       const paragraph: string[] = [];
-      while (j < lines.length && lines[j].trim() && !/^\s*#{1,6}\s/.test(lines[j])) paragraph.push(lines[j++]);
+      while (j < lines.length && lines[j].trim() && !/^\s*#{1,6}\s/.test(lines[j]) && !(paragraph.length && /^\s*(?:[-*+]|\d+[.)])\s|^\s*\|/.test(lines[j]))) paragraph.push(lines[j++]); // a list/table right under the intro line is not part of the answer paragraph
       blocks.push({ heading: match[1], body: paragraph.join(' ') });
     }
   } else {
@@ -32,6 +32,8 @@ export function checkAnswerBlocks(text: string, mode: AnswerMode): string[] {
 
 export function checkDuplicateSentences(text: string): string[] {
   const found = new Map<string, { sentence: string; count: number }>();
+  // structured fields (`text: "..."`, JSON-LD lines) deliberately mirror visible copy, e.g. a FAQ answer: only prose counts
+  text = text.split('\n').filter((l) => !/^\s*["']?\w+["']?\s*:\s*["'`]/.test(l) && !l.includes('"@type"')).join('\n');
   for (const sentence of text.split(/(?<=[.!?])\s+/u)) {
     const normalized = sentence.toLocaleLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').trim().replace(/\s+/g, ' ');
     if (wordCount(normalized) < 8) continue;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
@@ -52,7 +52,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       problems = preflightOrder(order, d.root);
       if (!problems.length) {
         problems = (d.lintText?.(order.steps.map((s) => s.text ?? '').filter(Boolean)) ?? []).map((p) => 'plan text: ' + p);
-        if (problems.length) continue;
+        if (problems.length) { try { writeFileSync(join(process.cwd(), 'data', `plan-rejected-${Date.now()}.txt`), problems.join('\n') + '\n\n' + order.steps.map((s) => s.text ?? '').join('\n\n----\n\n')); } catch { /* debug aid only */ } continue; }
         const claims = new Map(knownClaims.map((item) => [item.claim, item]));
         for (const item of order.claims ?? []) claims.set(item.claim, item);
         knownClaims = [...claims.values()];

@@ -147,6 +147,15 @@ export function stripDerived(diff: string, derived: string[] = []): { diff: stri
 }
 
 /** Added lines only: the em-dash rule applies to new copy, not to what already exists. */
+/** Added lines with a blank line wherever the diff skips or keeps text (context, removed, hunk header): an unchanged blank line between two paragraphs is context, and dropping it would glue them into one block. */
+export function addedBlocks(diff: string): string[] {
+  const out: string[] = [];
+  for (const l of diff.split('\n')) {
+    if (l.startsWith('+') && !l.startsWith('+++')) out.push(l.slice(1));
+    else if (out.length && out[out.length - 1] !== '') out.push('');
+  }
+  return out;
+}
 export function addedLines(diff: string): string[] { return diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)); }
 export function lintAdded(diff: string, only?: string[], derived: string[] = []): string[] {
   // generated files (e.g. llms.txt, whose line format contains " — ") are not copy the model wrote: judge only `only`, when given
@@ -196,9 +205,15 @@ export function lintPlanText(text: string, cfg: AgentSite, exists?: (href: strin
   ];
 }
 
-function lintAcceptance(diff: string, cfg: AgentSite): string[] {
-  const text = addedLines(diff).join('\n');
-  return [...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []), ...checkDuplicateSentences(text), ...(cfg.answerMode ? checkInternalLinks(text, repoHasPath(cfg)) : [])];
+export function lintAcceptance(diff: string, cfg: AgentSite): string[] {
+  // per file: boilerplate shared by many regenerated pages (footer, JSON-LD) is not a duplicate inside any one of them
+  return diff.split(/^diff --git /m).flatMap((chunk) => {
+    // generated files (llms-full.txt, md/*, api/_index.js) concatenate many pages, so a sentence repeats there by design: judge only copy the model wrote
+    const file = chunk.match(/^a\/(\S+) /)?.[1];
+    if (file && pathAllowed(cfg.derivedPaths ?? [], file)) return [];
+    const text = addedBlocks(chunk).join('\n');
+    return [...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []), ...checkDuplicateSentences(text), ...(cfg.answerMode ? checkInternalLinks(text, repoHasPath(cfg)) : [])];
+  });
 }
 
 // ---------- non-LLM jobs ----------
