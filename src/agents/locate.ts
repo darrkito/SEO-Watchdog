@@ -18,15 +18,16 @@ function findRange(wt: string, files: string[], slug: string, lang: PostRange['l
       if (match) {
         const anchor = `${line}\n`;
         const indent = match[1];
-        const endAnchor = `\n${indent.slice(0, Math.max(0, indent.length - 2))}},\n`;
-        return { file, whole: false, anchor, endAnchor: source.indexOf(endAnchor, start + line.length) < 0 ? undefined : endAnchor, lang };
+        const endIndent = indent.slice(0, Math.max(0, indent.length - 2));
+        const endAnchor = [`\n${endIndent}},\n`, `\n${endIndent}})\n`].find((candidate) => source.indexOf(candidate, start + line.length) >= 0);
+        return { file, whole: false, anchor, endAnchor, lang };
       }
       start += line.length + 1;
     }
   }
 }
 
-export function locatePost(cfg: Pick<AgentSite, 'postFiles' | 'wholeFile'>, wt: string, slug: string): PostRange[] {
+export function locatePost(cfg: Pick<AgentSite, 'postFiles' | 'wholeFile' | 'twin'>, wt: string, slug: string): PostRange[] {
   const files = cfg.postFiles?.(slug) ?? [];
   if (cfg.wholeFile) {
     const file = files.find((file) => existsSync(join(wt, file)));
@@ -34,6 +35,20 @@ export function locatePost(cfg: Pick<AgentSite, 'postFiles' | 'wholeFile'>, wt: 
   }
   const primary = findRange(wt, files, slug, 'primary');
   const ranges = primary ? [primary] : [];
+  if (primary && cfg.twin && existsSync(join(wt, cfg.twin.file))) {
+    const source = readFileSync(join(wt, cfg.twin.file), 'utf8');
+    const lines = source.split('\n');
+    const keyLine = `"${cfg.twin.key}": "${slug}",`;
+    const index = lines.indexOf(keyLine);
+    if (index > 0) {
+      const anchor = `${lines[index - 1]}\n${keyLine}\n`;
+      const start = source.indexOf(anchor);
+      if (start >= 0 && source.indexOf(anchor, start + 1) < 0) {
+        const endAnchor = '\n})\n';
+        ranges.push({ file: cfg.twin.file, whole: false, anchor, endAnchor: source.indexOf(endAnchor, start + anchor.length) >= 0 ? endAnchor : undefined, lang: 'en' });
+      }
+    }
+  }
   const i18n = join(wt, 'src/lib/i18n.ts');
   if (primary?.file !== 'src/data/blog-posts.ts' && existsSync(i18n)) {
     const enSlug = readFileSync(i18n, 'utf8').match(new RegExp(`"(?:/blog/)?${escapeRegex(slug)}"\\s*:\\s*"(?:/blog/)?([^"]+)"`))?.[1];

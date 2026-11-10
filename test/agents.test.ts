@@ -8,8 +8,17 @@ import { join } from 'node:path';
 process.env.WATCHDOG_DATA = mkdtempSync(join(tmpdir(), 'wd-agents-'));
 const { cleanEnv, claudeEnv, extractJson } = await import('../src/agents/runner.ts');
 const { isDue, SCHEDULE } = await import('../src/agents/scheduler.ts');
-const { executorMode, nextPublishDate, linksOf, linkExists, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
+const { executorMode, nextPublishDate, linksOf, linkExists, lintAdded, dropAlert, FORBIDDEN, weeklySummary, makeVerify } = await import('../src/agents/agents.ts');
 const { openDb } = await import('../src/db.ts');
+
+test('post-edit errors retain the end of long stderr', () => {
+  const stderr = 'x'.repeat(4973) + 'Traceback ... NameError: boom';
+  const verify = makeVerify({ postEdit: () => { throw { stderr }; } } as any, '', { slug: 'a', improve: false, merge: null });
+  const message = verify()!;
+  assert.match(message, /NameError: boom/);
+  assert.match(message, /\[\.\.\. cut \.\.\.\]/);
+  assert.ok(message.length < 2000);
+});
 
 test('agent env never carries API credentials, even when the parent has them', () => {
   const env = cleanEnv({ PATH: '/bin', HOME: '/h', ANTHROPIC_API_KEY: 'sk-x', ANTHROPIC_AUTH_TOKEN: 't', SERPER_API_KEY: 's', CLAUDE_CODE_OAUTH_TOKEN: 'o', TELEGRAM_BOT_TOKEN: 'b' });

@@ -413,7 +413,7 @@ export function startDraft(c: Ctx, topic: Draftable, publishAt: string) {
 /** Deterministic checks after every model edit: regenerate derived files, typecheck, then the site's "is it wired in everywhere" rules. */
 export function makeVerify(cfg: AgentSite, wt: string, opts: PostOpts): () => string | null {
   return () => {
-    try { cfg.postEdit?.(wt, opts); } catch (e) { return `post-edit step failed: ${String((e as any).stderr ?? (e as Error).message).slice(0, 600)}`; }
+    try { cfg.postEdit?.(wt, opts); } catch (e) { const s = String((e as any).stderr ?? (e as Error).message); return `post-edit step failed: ${s.length <= 1800 ? s : s.slice(0, 300) + '\n[... cut ...]\n' + s.slice(-1500)}`; }
     const tc = typecheck(cfg); if (tc) return tc;
     const v = cfg.validate?.(wt, opts) ?? [];
     return v.length ? `The post is not wired in correctly:\n- ${v.join('\n- ')}` : null;

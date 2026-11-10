@@ -401,3 +401,31 @@ test('default applies the order in code and reviews the diff', async (t) => {
   assert.equal(result.stages.executions, 1);
   assert.equal(reviewed, true);
 });
+
+test('empty diff sends a code application back for revision without review', async (t) => {
+  const { d, input, root } = fixture(t, []);
+  delete input.apply;
+  const cwd = process.cwd();
+  mkdirSync(join(root, 'data'));
+  process.chdir(root);
+  try {
+    let changed = false, reviews = 0;
+    d.diff = () => changed ? 'diff' : '';
+    d.revise = async (prompt) => { assert.equal(reviews, 0); assert.match(prompt, /apply: the order changed nothing/); changed = true; return raw(change); };
+    d.review = async () => { reviews++; return approved; };
+    const result = await runHybrid(d, input);
+    assert.equal(result.stages.revisions, 1);
+    assert.equal(reviews, 1);
+  } finally { process.chdir(cwd); }
+});
+
+test('empty diff sends a successful executor back for revision without review', async (t) => {
+  const { d, input } = fixture(t, [apply(initial), apply(change)]);
+  let changed = false, reviews = 0;
+  d.diff = () => changed ? 'diff' : '  ';
+  d.revise = async (prompt) => { assert.equal(reviews, 0); assert.match(prompt, /executor: the order changed nothing/); changed = true; return raw(change); };
+  d.review = async () => { reviews++; return approved; };
+  const result = await runHybrid(d, input);
+  assert.equal(result.stages.revisions, 1);
+  assert.equal(reviews, 1);
+});

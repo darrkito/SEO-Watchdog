@@ -18,6 +18,7 @@ export type AgentSite = {
   segments: boolean;     // classify queries by customer segment (needs an audience brief with segments)
   listPosts: (repo: string) => { slug: string; title: string }[]; // posts that already exist, so nothing is duplicated
   postFiles?: (slug: string) => string[]; // repo-relative files that can hold this post's Spanish/primary text, in search order
+  twin?: { file: string; key: string };
   guideFiles?: string[]; // project guide files, read from the owner's checkout and handed to the planner as text
   answerMode?: AnswerMode;
   typeFile?: string; typeNames?: string[];
@@ -235,6 +236,7 @@ AGENT_SITES['dizaynseo.com'] = {
   guideFiles: [],
   factFiles: ['_src/config.py'],
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts, postFiles: () => ['_src/posts.py', '_src/posts_funnel.py', '_src/posts_agent.py'],
+  twin: { file: '_src/posts_es.py', key: 'en' },
   pendingNote: "Posts are written into _src/posts_agent.py (or the post's own file when improving) and the generated files are rebuilt by dizayn/prep.py, a stand-in for the partner's missing generator that is checked against the committed output. The fixer is off for this site.",
   repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com',
   blogUrl: (s) => { const es = dizaynEsSlug(AGENT_SITES['dizaynseo.com'].worktree, s); return [`https://www.dizaynseo.com/blog/${s}`, ...(es ? [`https://www.dizaynseo.com/es/blog/${es}`] : [])]; }, typecheck: ['true'],

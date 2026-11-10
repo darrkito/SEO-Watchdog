@@ -39,6 +39,22 @@ test('Dizayn uses zero-indent quoted slug and closing marker', (t) => {
   assert.equal(postText(wt, ranges[0]), '"slug": "x",\n"title": "X",');
 });
 
+test('Dizayn locates appended posts and their unique Spanish twin', (t) => {
+  const cfg = { postFiles: () => ['_src/posts_agent.py'], twin: { file: '_src/posts_es.py', key: 'en' } };
+  const twin = 'POSTS_ES.append({\n"en": "a",\n"slug": "x",\n"title": "X",\n})\n';
+  const wt = fixture(t, {
+    '_src/posts_agent.py': 'POSTS.append({\n"slug": "a",\n"title": "A",\n})\nPOSTS.append({\n"slug": "b",\n})\n',
+    '_src/posts_es.py': twin,
+  });
+  const ranges = locatePost(cfg, wt, 'a');
+  assert.equal(ranges.length, 2);
+  assert.equal(ranges[0].endAnchor, '\n})\n');
+  assert.deepEqual(ranges[1], { file: '_src/posts_es.py', whole: false, anchor: 'POSTS_ES.append({\n"en": "a",\n', endAnchor: '\n})\n', lang: 'en' });
+  writeFileSync(join(wt, '_src/posts_es.py'), twin + twin);
+  assert.equal(locatePost(cfg, wt, 'a').length, 1);
+  assert.deepEqual(locatePost(cfg, wt, 'missing'), []);
+});
+
 test('Vexon reads a whole file exactly and skips missing files', (t) => {
   const content = "---\ntitle: 'Post'\n---\n\nBody\r\n";
   const wt = fixture(t, { 'src/content/blog/post.mdx': content });

@@ -92,6 +92,10 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       stages.executions++;
       d.stage?.('checking');
       problems = applyProblems.map((p) => 'apply: ' + p);
+      if (!problems.length && d.diff().trim() === '') {
+        problems = ['apply: the order changed nothing in the files (the new text equals the old text, or the steps replace a range with itself). Write steps that really change the post.'];
+        try { writeFileSync(join(process.cwd(), 'data', `order-nochange-${Date.now()}.json`), JSON.stringify(order, null, 2)); } catch { /* debug aid only */ }
+      }
     } else {
       const expected = simulateOrder(order, d.root).files;
       const deviations = (): string[] => {
@@ -124,6 +128,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
         d.stage?.('checking');
         problems = r2.ok ? deviations() : ['executor could not fix it: ' + (r2.error ?? r2.text)];
       }
+      if (!problems.length && d.diff().trim() === '') problems = ['executor: the order changed nothing in the files (the new text equals the old text, or the steps replace a range with itself). Write steps that really change the post.'];
     }
     if (!problems.length) {
       const other = d.lint?.() ?? [];
