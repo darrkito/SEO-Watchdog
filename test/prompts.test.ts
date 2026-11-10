@@ -258,3 +258,13 @@ test('plan includes type declarations in normal and slim prompts', () => {
     assert.ok(!build(plan).includes('TIPOS TS DEL POST'));
   }
 });
+
+
+test('both plan prompts include only nonempty verified links sections', () => {
+  for (const build of [planPrompt, slimPlanPrompt]) {
+    const prompt = build({ ...plan, facts: [{ file: 'f', text: 'fact' }], links: ['/', '/blog/a'] });
+    assert.match(prompt, /fact\n\nENLACES INTERNOS VÁLIDOS/);
+    assert.ok(prompt.includes('no pongas el enlace):\n/\n/blog/a'));
+    assert.ok(!build({ ...plan, links: [] }).includes('ENLACES INTERNOS VÁLIDOS'));
+  }
+});

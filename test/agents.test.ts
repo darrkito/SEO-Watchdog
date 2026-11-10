@@ -8,7 +8,7 @@ import { join } from 'node:path';
 process.env.WATCHDOG_DATA = mkdtempSync(join(tmpdir(), 'wd-agents-'));
 const { cleanEnv, claudeEnv, extractJson } = await import('../src/agents/runner.ts');
 const { isDue, SCHEDULE } = await import('../src/agents/scheduler.ts');
-const { nextPublishDate, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
+const { nextPublishDate, linksOf, linkExists, lintAdded, dropAlert, FORBIDDEN, weeklySummary } = await import('../src/agents/agents.ts');
 const { openDb } = await import('../src/db.ts');
 
 test('agent env never carries API credentials, even when the parent has them', () => {
@@ -329,4 +329,17 @@ test('derived diff blocks are omitted from lint and review', async () => {
   assert.deepEqual(lintAdded(generated, undefined, ['gen/*']), []);
   assert.deepEqual(lintAdded(diff, undefined, ['gen/*']), ['em-dash in new copy']);
   assert.equal(lintDetails(diff, ['gen/*', 'src/*'], ['gen/*']).length, 1);
+});
+
+
+test('verified links come from successful pages in the latest successful run', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE runs (id INTEGER, site_id INTEGER, status TEXT); CREATE TABLE pages (id INTEGER, site_id INTEGER, url TEXT); CREATE TABLE snapshots (page_id INTEGER, run_id INTEGER, status INTEGER)');
+    assert.deepEqual(linksOf(db, 1), []);
+    db.exec("INSERT INTO runs VALUES (1, 1, 'ok'); INSERT INTO pages VALUES (1, 1, 'https://x.test/'), (2, 1, 'https://x.test/blog/a/'), (3, 1, 'https://x.test/productos/x'), (4, 1, 'https://x.test/sitemap.xml'), (5, 1, 'https://x.test/missing'); INSERT INTO snapshots VALUES (1, 1, 200), (2, 1, 200), (3, 1, 200), (4, 1, 200), (5, 1, 404)");
+    assert.deepEqual(linksOf(db, 1), ['/', '/productos/x', '/blog/a']);
+    assert.equal(linkExists({ worktree: '/does-not-exist' } as any, ['/blog/a'])('/blog/a/'), true);
+  } finally { db.close(); }
 });

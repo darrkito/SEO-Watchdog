@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseOrder, orderPrompt, fixPrompt, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
+import { parseOrder, orderPrompt, fixPrompt, patchPrompt, applyPatches, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
 
 export class HybridLimit extends Error {}
@@ -8,6 +8,7 @@ export type Review = { ok: boolean; problems: string[]; minor?: string[]; change
 export type HybridDeps = {
   stage?: (stage: string, note?: string) => void;
   plan: (prompt: string) => Promise<string>;
+  patch?: (prompt: string) => Promise<string>;
   revise: (prompt: string) => Promise<string>;
   execute: (prompt: string) => Promise<CodexResult>;
   verify: () => string | null;
@@ -19,8 +20,8 @@ export type HybridDeps = {
   root: string;
   log: (m: string) => void;
 };
-export type HybridInput = { planPrompt: string; revisePrompt?: string; rules: string; allowedPaths: string[]; maxRounds?: number };
-export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; revisions: number; executions: number; reviews: number; rounds: number } };
+export type HybridInput = { planPrompt: string; revisePrompt?: string; patchContext?: string; rules: string; allowedPaths: string[]; maxRounds?: number };
+export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; patches: number; revisions: number; executions: number; reviews: number; rounds: number } };
 
 export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt: string; previousOrder: WorkOrder }): string {
   return [
@@ -35,7 +36,7 @@ export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt
 }
 
 export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<HybridResult> {
-  const stages = { plans: 0, revisions: 0, executions: 0, reviews: 0, rounds: 0 };
+  const stages = { plans: 0, patches: 0, revisions: 0, executions: 0, reviews: 0, rounds: 0 };
   const orders: WorkOrder[] = [];
   const seenProblems: string[] = [];
   let knownClaims: NonNullable<WorkOrder['claims']> = [];
@@ -52,7 +53,19 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       problems = preflightOrder(order, d.root);
       if (!problems.length) {
         problems = (d.lintText?.(order.steps.map((s) => s.text ?? '').filter(Boolean)) ?? []).map((p) => 'plan text: ' + p);
-        if (problems.length) { try { writeFileSync(join(process.cwd(), 'data', `plan-rejected-${Date.now()}.txt`), problems.join('\n') + '\n\n' + order.steps.map((s) => s.text ?? '').join('\n\n----\n\n')); } catch { /* debug aid only */ } continue; }
+        if (problems.length) {
+          try { writeFileSync(join(process.cwd(), 'data', `plan-rejected-${Date.now()}.txt`), problems.join('\n') + '\n\n' + order.steps.map((s) => s.text ?? '').join('\n\n----\n\n')); } catch { /* debug aid only */ }
+          if (d.patch) for (let attempt = 0; attempt < 2; attempt++) {
+            stages.patches++;
+            d.stage?.('planning', 'patching text');
+            const reply = await d.patch(patchPrompt(order, problems, input.patchContext ?? ''));
+            try { order = applyPatches(order, reply); } catch (e) { d.log(`patch not applied: ${(e as Error).message}`); continue; } // keep the lint problems: they are what the next try must fix
+            problems = preflightOrder(order, d.root);
+            if (!problems.length) problems = (d.lintText?.(order.steps.map((s) => s.text ?? '').filter(Boolean)) ?? []).map((p) => 'plan text: ' + p);
+            if (!problems.length) break;
+          }
+          if (problems.length) continue;
+        }
         const claims = new Map(knownClaims.map((item) => [item.claim, item]));
         for (const item of order.claims ?? []) claims.set(item.claim, item);
         knownClaims = [...claims.values()];

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseOrder, orderPrompt, fixPrompt, BIG, writeStepFiles, clearStepFiles, applyCheck, verbatimCheck, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
+import { parseOrder, applyPatches, patchPrompt, orderPrompt, fixPrompt, BIG, writeStepFiles, clearStepFiles, applyCheck, verbatimCheck, simulateOrder, preflightOrder, compareFiles, type WorkOrder, type EditStep } from '../src/agents/orders.ts';
 
 const step: EditStep = { n: 1, file: 'a.txt', do: 'insert-after', anchor: 'old', text: 'new' };
 const order = (steps: EditStep[] = [{ ...step }]): WorkOrder => ({ title: 'Test', steps, mustContain: [], forbiddenPaths: [], doneWhen: '' });
@@ -317,4 +317,19 @@ test('parseOrder drops derived steps before validation and retains mustContain',
   assert.deepEqual(result.steps, [step]);
   assert.deepEqual(result.mustContain, ['keep']);
   assert.throws(() => parseOrder(JSON.stringify({ ...input, steps: [input.steps[0]] }), { derivedPaths: ['generated/*'] }), /steps must have 1 to 40 items/);
+});
+
+
+test('patches require unique text and preserve the original order', () => {
+  const original = { ...order([{ ...step, text: 'new BAD' }]), mustContain: ['BAD', 'elsewhere'] };
+  const before = structuredClone(original);
+  const reply = (find: string, n = 1) => JSON.stringify({ patches: [{ step: n, find, replace: 'good' }] });
+  const result = applyPatches(original, reply('BAD'));
+  assert.equal(result.steps[0].text, 'new good');
+  assert.deepEqual(result.mustContain, ['elsewhere']);
+  assert.deepEqual(original, before);
+  assert.throws(() => applyPatches(original, reply('missing')), /Invalid patch:/);
+  assert.throws(() => applyPatches({ ...original, steps: [{ ...step, text: 'BAD BAD' }] }, reply('BAD')), /Invalid patch:/);
+  assert.throws(() => applyPatches(original, reply('BAD', 2)), /Invalid patch:/);
+  assert.ok(patchPrompt(original, ['problem'], 'context').includes('context\n=== PASO 1 (a.txt) ===\nnew BAD'));
 });

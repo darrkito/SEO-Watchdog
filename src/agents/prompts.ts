@@ -10,6 +10,7 @@ export type PlanInput = {
   rules: string;
   writerRules: string;
   facts: { file: string; text: string }[];
+  links?: string[];
   guides: { file: string; text: string }[];
   audience: string;
   example: string;
@@ -87,6 +88,11 @@ const factsSection = (facts: { file: string; text: string }[]): string => facts.
       ...facts.flatMap((fact) => [`=== ${fact.file} ===`, fact.text]),
     ].join('\n') : '';
 
+export const linksSection = (links: string[]): string => links.length ? [
+  'ENLACES INTERNOS VÁLIDOS (lista verificada del último rastreo del sitio; usa SOLO rutas de esta lista, copiadas carácter por carácter; si la página que quieres enlazar no está aquí, no pongas el enlace):',
+  ...links,
+].join('\n') : '';
+
 const guideSection = (guides: { file: string; text: string }[]): string => guides.length ? [
   'GUÍAS DEL REPO (las escribió el dueño para este proyecto; síguelas. Codex no las lee: tú sí):',
   ...guides.flatMap((guide) => [`=== ${guide.file} ===`, guide.text]),
@@ -125,6 +131,7 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
     slim ? '' : i.miniAudit,
     siteRules(i.rules, i.writerRules),
     factsSection(i.facts),
+    linksSection(i.links ?? []),
     i.typeDefs ? `TIPOS TS DEL POST (nombres y campos EXACTOS; no inventes campos ni cambies nombres, por ejemplo el texto de una sección va en \`body\`, no en \`paragraphs\`; cada objeto que escribas debe compilar con estos tipos):\n${i.typeDefs}` : '',
     slim ? '' : guideSection(i.guides),
     slim ? '' : i.audience,

@@ -54,7 +54,7 @@ test('first order succeeds with exact stage counters', async (t) => {
   d.plan = async (prompt) => { assert.equal(prompt, input.planPrompt); return raw(initial); };
   d.review = async (orders, diff) => { assert.deepEqual(orders, [initial]); assert.equal(diff, d.diff()); return approved; };
   const result = await runHybrid(d, input);
-  assert.deepEqual(result.stages, { plans: 1, revisions: 0, executions: 1, reviews: 1, rounds: 0 });
+  assert.deepEqual(result.stages, { plans: 1, patches: 0, revisions: 0, executions: 1, reviews: 1, rounds: 0 });
   assert.deepEqual(result.orders, [initial]);
   assert.deepEqual(result.review, approved);
   assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'hello');
@@ -202,7 +202,7 @@ test('verification failure goes directly to revision', async (t) => {
     return raw(change);
   };
   const result = await runHybrid(d, input);
-  assert.deepEqual(result.stages, { plans: 1, revisions: 1, executions: 2, reviews: 1, rounds: 1 });
+  assert.deepEqual(result.stages, { plans: 1, patches: 0, revisions: 1, executions: 2, reviews: 1, rounds: 1 });
   assert.equal(checks, 2);
 });
 
@@ -346,4 +346,29 @@ test('plan text lint retries before execution', async (t) => {
   await runHybrid(d, input);
   assert.equal(plans, 2);
   assert.equal(codex.prompts.length, 1);
+});
+
+
+test('patches plan text before execution', async (t) => {
+  const bad = { ...initial, steps: [{ ...initial.steps[0], text: 'hello BAD' }] };
+  const patched = { ...initial };
+  const { d, input } = fixture(t, [apply(patched)]);
+  let plans = 0, patches = 0;
+  d.plan = async () => { plans++; return raw(bad); };
+  d.lintText = (texts) => texts.join('').includes('BAD') ? ['BAD'] : [];
+  d.patch = async () => { patches++; return JSON.stringify({ patches: [{ step: 1, find: ' BAD', replace: '' }] }); };
+  const result = await runHybrid(d, input);
+  assert.equal(plans, 1); assert.equal(patches, 1); assert.equal(result.stages.patches, 1);
+  assert.equal(result.orders[0].steps[0].text, 'hello');
+});
+
+test('invalid patches retry the full plan after two attempts', async (t) => {
+  const bad = { ...initial, steps: [{ ...initial.steps[0], text: 'hello BAD' }] };
+  const { d, input } = fixture(t, [apply(initial)]);
+  let plans = 0, patches = 0;
+  d.plan = async () => raw(++plans === 1 ? bad : initial);
+  d.lintText = (texts) => texts.join('').includes('BAD') ? ['BAD'] : [];
+  d.patch = async () => { patches++; return JSON.stringify({ patches: [{ step: 1, find: 'missing', replace: '' }] }); };
+  const result = await runHybrid(d, input);
+  assert.equal(plans, 2); assert.equal(patches, 2); assert.equal(result.stages.patches, 2);
 });

@@ -19,7 +19,7 @@ import { AGENT_SITES, pathAllowed, type AgentSite } from './sites.ts';
 import type { PostOpts } from './hooks.ts';
 import { checkAnswerBlocks, checkDuplicateSentences, checkInternalLinks, nonProblem } from './accept.ts';
 import { runHybrid, HybridLimit, type HybridDeps, type Review } from './hybrid.ts';
-import { researchPrompt, planPrompt, slimPlanPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, type PlanInput } from './prompts.ts';
+import { researchPrompt, planPrompt, slimPlanPrompt, reviewPrompt, scoutPrompt, fixerPlanPrompt, linksSection, type PlanInput } from './prompts.ts';
 import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
@@ -199,6 +199,19 @@ function repoHasPath(cfg: AgentSite): (href: string) => boolean {
   };
 }
 
+export function linksOf(db: DatabaseSync, siteId: number, cap = 300): string[] {
+  const run = db.prepare("SELECT id FROM runs WHERE site_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1").get(siteId) as { id: number } | undefined;
+  if (!run) return [];
+  const pages = db.prepare('SELECT p.url FROM pages p JOIN snapshots s ON s.page_id = p.id AND s.run_id = ? WHERE p.site_id = ? AND s.status = 200').all(run.id, siteId) as { url: string }[];
+  const paths = new Set(pages.map(({ url }) => new URL(url).pathname).map((path) => path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path).filter((path) => !/\.[a-z0-9]{2,5}$/i.test(path)));
+  return [...paths].sort((a, b) => Number(a.includes('/blog/')) - Number(b.includes('/blog/')) || (a < b ? -1 : a > b ? 1 : 0)).slice(0, cap);
+}
+
+export function linkExists(cfg: AgentSite, links: string[]): (href: string) => boolean {
+  const fallback = repoHasPath(cfg);
+  return (href) => links.includes(href !== '/' && href.endsWith('/') ? href.slice(0, -1) : href) || fallback(href);
+}
+
 export function lintPlanText(text: string, cfg: AgentSite, exists?: (href: string) => boolean): string[] {
   const dashDiff = 'diff --git a/plan b/plan\n' + text.split('\n').map((line) => '+' + line).join('\n');
   return [
@@ -209,14 +222,14 @@ export function lintPlanText(text: string, cfg: AgentSite, exists?: (href: strin
   ];
 }
 
-export function lintAcceptance(diff: string, cfg: AgentSite): string[] {
+export function lintAcceptance(diff: string, cfg: AgentSite, exists?: (href: string) => boolean): string[] {
   // per file: boilerplate shared by many regenerated pages (footer, JSON-LD) is not a duplicate inside any one of them
   return diff.split(/^diff --git /m).flatMap((chunk) => {
     // generated files (llms-full.txt, md/*, api/_index.js) concatenate many pages, so a sentence repeats there by design: judge only copy the model wrote
     const file = chunk.match(/^a\/(\S+) /)?.[1];
     if (file && pathAllowed(cfg.derivedPaths ?? [], file)) return [];
     const text = addedBlocks(chunk).join('\n');
-    return [...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []), ...checkDuplicateSentences(text), ...(cfg.answerMode ? checkInternalLinks(text, repoHasPath(cfg)) : [])];
+    return [...(cfg.answerMode ? checkAnswerBlocks(text, cfg.answerMode) : []), ...checkDuplicateSentences(text), ...(cfg.answerMode ? checkInternalLinks(text, exists ?? repoHasPath(cfg)) : [])];
   });
 }
 
@@ -473,8 +486,9 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
   let typeDefs = '';
   try { if (cfg.typeFile) typeDefs = extractTypeDecls(readFileSync(join(wt, cfg.typeFile), 'utf8'), cfg.typeNames ?? []); } catch { /* no type context available */ }
+  const links = linksOf(c.db, c.site.id);
   const planInput = {
-    typeDefs,
+    typeDefs, links,
     brief, research, priorFailure: c.priorFailure, neverWrite: cfg.neverWrite, miniAudit: MINI_AUDIT, rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c),
     facts: factsOf(cfg, wt), guides: guidesOf(cfg, 14000, wt),
     example: exampleOf(cfg, wt), current: merge ? currentOf(cfg, wt, merge) : '',
@@ -493,6 +507,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return t;
     },
     revise: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 }),
+    patch: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: async (p) => {
       const t0 = Date.now();
       const r = await runCodex({ prompt: p, cwd: wt, write: true, timeoutMs: 900_000 });
@@ -501,12 +516,12 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       return r;
     },
     verify: makeVerify(cfg, wt, opts),
-    lintText: (texts) => lintPlanText(texts.join('\n\n'), cfg),
+    lintText: (texts) => lintPlanText(texts.join('\n\n'), cfg, linkExists(cfg, links)),
     lint: () => {
       git(wt, 'add', '-A');
       git(wt, 'reset', '-q', '--', 'node_modules');
       const diff = git(wt, 'diff', '--cached');
-      return [...lintDetails(diff, cfg.lintPaths, cfg.derivedPaths), ...lintAcceptance(diff, cfg)];
+      return [...lintDetails(diff, cfg.lintPaths, cfg.derivedPaths), ...lintAcceptance(diff, cfg, linkExists(cfg, links))];
     },
     addedText: () => {
       git(wt, 'add', '-A');
@@ -534,7 +549,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   deps.plan = async (p) => stripOrderDerived(await originalPlan(p), cfg.derivedPaths);
   deps.revise = async (p) => stripOrderDerived(await originalRevise(p), cfg.derivedPaths);
   let result;
-  try { result = await runHybrid(deps, { planPrompt: prompt, revisePrompt: slimPlanPrompt(planInput), rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
+  try { result = await runHybrid(deps, { planPrompt: prompt, revisePrompt: slimPlanPrompt(planInput), patchContext: linksSection(links), rules: cfg.rules, allowedPaths: cfg.orderPaths }); }
   catch (e) {
     git(wt, 'reset', '--hard');
     git(wt, 'clean', '-fd', '-e', 'node_modules');
@@ -550,11 +565,11 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   }
   c.progress?.('finishing');
   const out = await finishDraft(c, topic, publishAt, { cfg, branch, wt, merge }, metaText, null, { hybrid: {
-    analysis: result.orders[0].analysis ?? '', plans: result.stages.plans, revisions: result.stages.revisions,
+    analysis: result.orders[0].analysis ?? '', plans: result.stages.plans, patches: result.stages.patches, revisions: result.stages.revisions,
     executions: result.stages.executions, reviews: result.stages.reviews, rounds: result.stages.rounds,
     reviewNotes: [...result.review.problems, ...(result.review.minor ?? [])],
   } });
-  return `${out} | hybrid: ${result.stages.plans} plan, ${result.stages.executions} codex, ${result.stages.reviews} review, ${result.stages.rounds} extra round(s)`;
+  return `${out} | hybrid: ${result.stages.plans} plan, ${result.stages.patches} patch, ${result.stages.executions} codex, ${result.stages.reviews} review, ${result.stages.rounds} extra round(s)`;
 }
 
 async function draftTopic(c: Ctx, topic: Draftable, publishAt: string): Promise<string> {
@@ -605,6 +620,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     stage: (s, n) => c.progress?.(s as Stage, n),
     plan: (p) => ask(c, { role: 'fixplan', prompt: p, cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 12, timeoutMs: 1_200_000 }),
     revise: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
+    patch: (p) => ask(c, { role: 'revise', prompt: p, cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 }),
     execute: (p) => runCodex({ prompt: p, cwd: o.wt, write: true, timeoutMs: 900_000 }),
     verify: () => {
       const bad = changedFiles(o.wt).filter((f) => FORBIDDEN.test(f) && !pathAllowed(o.cfg.derivedPaths ?? [], f));
