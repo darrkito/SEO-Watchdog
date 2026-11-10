@@ -107,7 +107,7 @@ const priorFailureSection = (failure?: string): string => failure ? [
 export function researchPrompt(i: { siteUrl: string; brief: string; title: string; query?: string; audience: string; improve?: boolean }): string {
   return `Eres el investigador para ${i.siteUrl}. Usa WebSearch y WebFetch para investigar SOLO lo que necesita el tema: datos actuales, cifras, normas y enfoque de los competidores. Abre páginas reales y nunca cites una página que no hayas abierto. No escribas el post y no edites nada.
 
-Límites: máximo 6 turnos; abre como máximo 3 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.
+Límites: máximo 4 turnos; abre como máximo 2 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.
 Los datos propios del negocio (precios, productos, enlaces internos, textos del sitio) ya los trae el repo: NO los busques ni los repitas en los hallazgos; investiga solo hechos EXTERNOS (cifras, normas, comparaciones, qué responden los competidores).
 ${i.improve ? 'Es una mejora de un post existente: busca como máximo 4 hallazgos externos y solo los que el post actual no cubre.\n' : ''}
 Tema: ${i.title}

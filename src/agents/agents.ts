@@ -367,7 +367,10 @@ function approvalFor(c: Ctx, kind: string, title: string, payload: object, diff:
 /** From the Get Found playbook: compare against the #1 result before writing, and place the keyword where it counts. Operational, so the writer cannot skip it. */
 export const MINI_AUDIT = `Antes de escribir haz la mini auditoría del playbook: busca en la web la consulta principal, abre los 3 primeros resultados y anota sus palabras, sus H2 y cuántas veces usan la palabra clave. Tu texto cubre lo mismo con tus propias palabras (no copies encabezados idénticos) y supera ligeramente al #1 en profundidad útil, no en relleno. La palabra clave principal va en title (<=60 caracteres), meta description (80 a 156), URL, H1 y al menos un H2. Mínimo 3 enlaces internos, al menos uno a la página que vende (producto o servicio) con ancla descriptiva de 1 a 5 palabras. Cada H2 abre con una respuesta directa de 40 a 60 palabras. Si algo no lo puedes verificar, déjalo fuera.`;
 
-type Draftable = { id: number | null; title: string; slug: string; query: string; why: string; action: string; improve?: boolean };
+type Draftable = { id: number | null; title: string; slug: string; query: string; why: string; action: string; improve?: boolean; reasons?: string[] };
+
+export const structuralOnly = (reasons: string[]): boolean => reasons.length > 0 && reasons.every((r) => /^(sin FAQ visible|sin schema BlogPosting|title de |meta description de |\d+ H1 |solo \d+ enlaces internos|casi sin impresiones|posición media|sin clics)/.test(r));
+export const NO_RESEARCH = 'No se hizo investigación externa: esta mejora es estructural. No agregues afirmaciones factuales nuevas (cifras, normas, comparaciones); usa solo el TEXTO ACTUAL DEL POST y los DATOS AUTORIZADOS DEL REPO.';
 
 export const writerAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
@@ -391,7 +394,7 @@ export const improverAgent: AgentFn = async (c) => {
   if (c.db.prepare("SELECT 1 FROM approvals WHERE site_id = ? AND kind = 'post' AND status IN ('pending', 'approved') AND json_extract(payload_json, '$.slug') = ?").get(c.site.id, slug)) return `skipped: ${slug} already has a draft waiting or being published`;
   const row = blogScores(c.db, c.site).find((r) => r.slug === slug);
   if (!row) throw new Error(`no crawled blog post with slug ${slug}`);
-  return draftTopic(c, { id: null, title: row.title || slug, slug, query: row.topQuery ?? '', action: `merge:${slug}`, improve: true,
+  return draftTopic(c, { id: null, title: row.title || slug, slug, query: row.topQuery ?? '', action: `merge:${slug}`, improve: true, reasons: row.reasons,
     why: `${row.reasons.join('; ')}${row.impressions ? `. Search Console 90d: ${row.impressions} impresiones, ${row.clicks} clics, posición media ${row.position}` : '. Sin datos de búsqueda aún'}` }, mxNow().date);
 };
 
@@ -420,6 +423,12 @@ export function makeVerify(cfg: AgentSite, wt: string, opts: PostOpts): () => st
 export async function finishDraft(c: Ctx, topic: Draftable, publishAt: string, s: { cfg: AgentSite; branch: string; wt: string; merge: string | null }, text: string, err: string | null, extra?: Record<string, unknown>): Promise<string> {
   const { cfg, branch, wt, merge } = s;
   const files = changedFiles(wt), diff = git(wt, 'diff', '--cached');
+  if (files.length === 0) {
+    try { c.log(`branch: ${git(wt, 'rev-parse', '--abbrev-ref', 'HEAD').trim()}`); } catch { /* diagnostics only */ }
+    try { c.log(`head: ${git(wt, 'rev-parse', '--short', 'HEAD').trim()}`); } catch { /* diagnostics only */ }
+    try { c.log(`status: ${git(wt, 'status', '--porcelain').slice(0, 600)}`); } catch { /* diagnostics only */ }
+    try { c.log(`diff stat: ${git(wt, 'diff', 'HEAD', '--stat').slice(0, 600)}`); } catch { /* diagnostics only */ }
+  }
   const bad = [...(err ? [`checks: ${err.slice(0, 300)}`] : []), ...files.filter((f) => !pathAllowed(cfg.contentPaths, f) && !pathAllowed(cfg.derivedPaths ?? [], f)).map((f) => `touched forbidden file ${f}`), ...(files.length ? [] : ['no changes made']), ...lintAdded(diff, cfg.lintPaths, cfg.derivedPaths)];
   if (bad.length) { git(wt, 'reset', '--hard'); throw new Error(`draft rejected by checks: ${bad.join('; ')}`); }
   const meta = extractJson<{ slug: string; enSlug?: string; claims?: unknown[] }>(text);
@@ -448,11 +457,11 @@ export function guidesOf(cfg: AgentSite, capPerFile = 14000, wt?: string): { fil
 
 export async function researchFor(c: Ctx, topic: Draftable, brief: string, askFn: typeof ask = ask): Promise<string> {
   try {
-    const key = `${c.site.id}|${topic.slug}|${new Date().toISOString().slice(0, 10)}`;
-    const cached = c.db.prepare('SELECT text FROM research_cache WHERE key = ?').get(key) as { text: string } | undefined;
+    const key = `${c.site.id}|${topic.slug}|${topic.improve ? 'improve' : 'new'}`;
+    const cached = c.db.prepare("SELECT text FROM research_cache WHERE key = ? AND created_at >= datetime('now', '-14 days')").get(key) as { text: string } | undefined;
     if (cached) return cached.text;
-    const text = await askFn(c, { role: 'research', prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname), improve: !!topic.improve }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 6, timeoutMs: 900_000 });
-    c.db.prepare('INSERT OR REPLACE INTO research_cache (key, site_id, slug, text) VALUES (?, ?, ?, ?)').run(key, c.site.id, topic.slug, text);
+    const text = await askFn(c, { role: 'research', prompt: researchPrompt({ siteUrl: c.site.url, brief, title: topic.title, query: topic.query, audience: audienceBrief(new URL(c.site.url).hostname), improve: !!topic.improve }), cwd: tmpdir(), tools: ['WebSearch', 'WebFetch'], maxTurns: 4, timeoutMs: 900_000 });
+    c.db.prepare("INSERT OR REPLACE INTO research_cache (key, site_id, slug, text, created_at) VALUES (?, ?, ?, ?, datetime('now'))").run(key, c.site.id, topic.slug, text);
     return text;
   } catch (e) {
     if (e instanceof LimitError) throw e;
@@ -470,7 +479,8 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
   const { cfg, branch, wt, merge, opts, brief } = s;
   if (!cfg.orderPaths) throw new Error('this site has no orderPaths configured for hybrid mode');
   const host = new URL(c.site.url).hostname.replace(/^www\./, '');
-  const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : await researchFor(c, topic, brief);
+  const research = override.plan || process.env.AGENT_RESEARCH === '0' ? '' : topic.improve && structuralOnly(topic.reasons ?? []) ? NO_RESEARCH : await researchFor(c, topic, brief);
+  if (research === NO_RESEARCH) c.log('research skipped: structural improve');
   const synced = syncWorktree(cfg, branch);
   c.log(`synced to ${cfg.remote}/main ${synced.head.slice(0, 7)}${synced.moved ? ' (moved)' : ''}`);
   const ranges = merge ? locatePost(cfg, wt, merge) : [];
@@ -523,9 +533,14 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
       git(wt, 'reset', '-q', '--', 'node_modules');
       return git(wt, 'diff', '--cached', '-U25');
     },
+    reviewDiff: () => {
+      git(wt, 'add', '-A');
+      git(wt, 'reset', '-q', '--', 'node_modules');
+      return git(wt, 'diff', '--cached', '-U3');
+    },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audience(c), facts: planInput.facts, orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audienceBrief(new URL(c.site.url).hostname), facts: planInput.facts, orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
       const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
       const minor = (j.minor ?? []).map(String);
@@ -636,9 +651,14 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
       git(o.wt, 'reset', '-q', '--', 'node_modules');
       return git(o.wt, 'diff', '--cached', '-U25');
     },
+    reviewDiff: () => {
+      git(o.wt, 'add', '-A');
+      git(o.wt, 'reset', '-q', '--', 'node_modules');
+      return git(o.wt, 'diff', '--cached', '-U3');
+    },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, o.cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audience(c), facts: [], orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audienceBrief(new URL(c.site.url).hostname), facts: [], orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
       const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
       const minor = (j.minor ?? []).map(String);

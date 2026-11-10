@@ -60,6 +60,13 @@ test('first order succeeds with exact stage counters', async (t) => {
   assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), 'hello');
 });
 
+test('review uses the smaller diff when provided', async (t) => {
+  const { d, input } = fixture(t, [apply(initial)]);
+  d.reviewDiff = () => 'SMALL';
+  d.review = async (_orders, diff) => { assert.equal(diff, 'SMALL'); return approved; };
+  await runHybrid(d, input);
+});
+
 test('preflight retries before executing and includes anchor failure', async (t) => {
   const { d, input, root, codex } = fixture(t, [apply(change)]);
   writeFileSync(join(root, 'a.txt'), 'hello');
@@ -295,6 +302,15 @@ test('revisePrompt includes original brief, previous order, and problems when no
   assert.ok(prompt.includes(JSON.stringify(initial, null, 2)));
   assert.ok(prompt.includes('=== PROBLEMS ===\n- executor refused\n- text is not allowed'));
   assert.ok(prompt.includes('empty means nothing was written'));
+});
+
+test('revisePrompt omits long applied step text only when the diff is non-empty', () => {
+  const text = 'x'.repeat(1000);
+  const ctx = { planPrompt: 'brief', previousOrder: { ...initial, steps: [{ ...initial.steps[0], text }] } };
+  const withDiff = revisePrompt([], 'diff', ctx);
+  assert.ok(!withDiff.includes(text));
+  assert.ok(withDiff.includes('[1000 characters, already applied: see the DIFF]'));
+  assert.ok(revisePrompt([], '', ctx).includes(text));
 });
 
 test('change orders retain verified claims and replace duplicates by claim text', async (t) => {

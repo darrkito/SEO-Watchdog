@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lintDetails, draftTopicHybrid, researchFor, researchPlanOptions, factsOf, guidesOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
+import { lintDetails, draftTopicHybrid, researchFor, researchPlanOptions, structuralOnly, factsOf, guidesOf, startDraft, git, LimitError, type Ctx } from '../src/agents/agents.ts';
 import { simulateOrder, type WorkOrder } from '../src/agents/orders.ts';
 import { openDb } from '../src/db.ts';
 
@@ -166,7 +166,14 @@ test('lintDetails reports added copy with locations, context, and a limit', () =
 });
 
 
-test('research is cached by site, slug and date; failures restore planner web tools', async (t) => {
+test('structuralOnly identifies structural improvement reasons', () => {
+  const reasons = ['sin FAQ visible', 'title de 80 caracteres (ideal 30 a 65)'];
+  assert.equal(structuralOnly(reasons), true);
+  assert.equal(structuralOnly([...reasons, 'solo 420 palabras (meta: 1000 o más)']), false);
+  assert.equal(structuralOnly([]), false);
+});
+
+test('research is cached by site, slug and kind; failures restore planner web tools', async (t) => {
   const db = openDb(':memory:');
   t.after(() => db.close());
   const logs: string[] = [];
@@ -177,12 +184,16 @@ test('research is cached by site, slug and date; failures restore planner web to
     calls++;
     assert.equal(o.role, 'research');
     assert.deepEqual(o.tools, ['WebSearch', 'WebFetch']);
-    assert.equal(o.maxTurns, 6);
+    assert.equal(o.maxTurns, 4);
     return 'research result';
   };
   assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');
   assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');
   assert.equal(calls, 1);
+  db.prepare("UPDATE research_cache SET text = 'old', created_at = datetime('now','-15 days') WHERE key = ?").run('7|topic|new');
+  assert.equal(await researchFor(c, topic, 'brief', stub), 'research result');
+  assert.equal(calls, 2);
+  assert.deepEqual({ ...db.prepare("SELECT text, created_at >= datetime('now', '-14 days') AS fresh FROM research_cache WHERE key = ?").get('7|topic|new') }, { text: 'research result', fresh: 1 });
   assert.deepEqual(researchPlanOptions('research result'), { tools: [], maxTurns: 3 });
   const failed = await researchFor(c, { ...topic, slug: 'other' }, 'brief', async () => { throw new Error('offline'); });
   assert.equal(failed, '');

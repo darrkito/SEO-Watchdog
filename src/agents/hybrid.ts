@@ -16,6 +16,7 @@ export type HybridDeps = {
   lintText?: (texts: string[]) => string[];
   addedText: () => string;
   diff: () => string;
+  reviewDiff?: () => string;
   review: (orders: WorkOrder[], diff: string, previousProblems: string[]) => Promise<Review>;
   root: string;
   log: (m: string) => void;
@@ -24,10 +25,11 @@ export type HybridInput = { planPrompt: string; revisePrompt?: string; patchCont
 export type HybridResult = { orders: WorkOrder[]; review: Review; stages: { plans: number; patches: number; revisions: number; executions: number; reviews: number; rounds: number } };
 
 export function revisePrompt(problems: string[], diff: string, ctx: { planPrompt: string; previousOrder: WorkOrder }): string {
+  const previousOrder = diff.trim() ? { ...ctx.previousOrder, steps: ctx.previousOrder.steps.map((step) => step.text && step.text.length > 400 ? { ...step, text: `[${step.text.length} characters, already applied: see the DIFF]` } : step) } : ctx.previousOrder;
   return [
     'Below is the ORIGINAL BRIEF you were given, then the order you wrote from it, then why it is not approved. Write a corrected order.',
     '=== ORIGINAL BRIEF ===', ctx.planPrompt, '=== END OF ORIGINAL BRIEF ===',
-    '=== YOUR PREVIOUS ORDER (JSON) ===', JSON.stringify(ctx.previousOrder, null, 2), '=== END OF PREVIOUS ORDER ===',
+    '=== YOUR PREVIOUS ORDER (JSON) ===', JSON.stringify(previousOrder, null, 2), '=== END OF PREVIOUS ORDER ===',
     '=== PROBLEMS ===', ...problems.map((problem) => '- ' + problem),
     '=== CURRENT CHANGES IN THE WORKTREE (diff with context; empty means nothing was written) ===',
     diff.slice(0, 60000) + (diff.length > 60000 ? '\n[diff cut]' : ''), '=== END OF DIFF ===',
@@ -134,7 +136,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
     let changeRaw: string | undefined;
     if (!problems.length) {
       d.stage?.('reviewing');
-      const review = await d.review([...orders], d.diff(), [...seenProblems]);
+      const review = await d.review([...orders], d.reviewDiff?.() ?? d.diff(), [...seenProblems]);
       stages.reviews++;
       if (review.ok) return { orders, review, stages };
       for (const problem of review.problems) {

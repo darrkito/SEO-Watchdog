@@ -182,7 +182,7 @@ test('research prompt requests sourced findings without site instructions', () =
   const prompt = researchPrompt({ siteUrl: 'https://example.test', brief: 'brief context', title: 'Topic', query: 'query', audience: 'audience context' });
   for (const part of ['WebSearch', 'WebFetch', '900 palabras', '12 hallazgos', '"findings"', '"point"', '"source"', '"angle"', '"avoid"', 'brief context', 'audience context']) assert.ok(prompt.includes(part), part);
   for (const part of ['REGLAS DEL SITIO', 'GUÍAS DEL REPO', 'EJEMPLO REAL', 'playbook']) assert.ok(!prompt.includes(part), part);
-  assert.ok(prompt.includes('Límites: máximo 6 turnos; abre como máximo 3 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.'));
+  assert.ok(prompt.includes('Límites: máximo 4 turnos; abre como máximo 2 páginas con WebFetch (prefiere los resultados de WebSearch); no abras la misma página dos veces; para en cuanto tengas los hechos.'));
   assert.ok(prompt.includes('Los datos propios del negocio (precios, productos, enlaces internos, textos del sitio) ya los trae el repo: NO los busques ni los repitas en los hallazgos; investiga solo hechos EXTERNOS (cifras, normas, comparaciones, qué responden los competidores).'));
   const improveRule = 'Es una mejora de un post existente: busca como máximo 4 hallazgos externos y solo los que el post actual no cubre.';
   assert.ok(!prompt.includes(improveRule));
