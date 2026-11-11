@@ -47,3 +47,15 @@ Estimate after phase 1: happy path $0.55 -> about $0.30; blended $1.23 -> about 
 ## Verification after each ticket (Claude, outside Codex's sandbox)
 
 `npm test`, `git status --short` (scope), read the diff, then `node src/cli.ts tokens 3` once runs exist. pm2 `seo-watchdog` is restarted only when the queue is empty.
+
+## Results after phase 1 + ticket E (2026-11-10/11, measured with `wd tokens`)
+
+| Role | Baseline ok avg | After | Change |
+|---|---|---|---|
+| Improver | $0.815 | $0.373 | -54% (6 runs + 3 ES-twin + 1 replacement) |
+| Writer | $0.68 (142k in, 26k out) | $0.45 over 5 scheduler runs ($0.42 for the 4 first-try ones) | about -34% |
+
+- Ticket E (commit 8684673): dizaynseo ES-twin locating, end anchors `},` / `})`, build error tail, empty-diff guard. 0 failures in the first attempts of 7 improver runs.
+- Plan output (~14-24k tokens) is now 56-72% of each run: phase 2 target.
+- A Claude 5-hour limit cut the Dizayn MX writer (#2635, $0.32 lost); the scheduler retried it after the reset (#2636, $0.59). A cut run re-pays the whole plan.
+- Sample is small (5 writers, 10 improvers). Re-measure with `node src/cli.ts tokens 3` after 2-3 days of real traffic, then decide phase 2.
