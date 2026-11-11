@@ -168,6 +168,20 @@ def newpost(repo):
     P.run(scratch, sys.executable, os.path.join(here, "prep.py"), scratch)
     chk = subprocess.run([sys.executable, os.path.join(here, "check_post.py"), scratch, post["slug"], "new"], capture_output=True, text=True)
     assert chk.returncode == 0 and chk.stdout == "", "validator rejected a good post: " + chk.stdout
+    # Parity failures tell the reviser which rendered ids and links need attention.
+    es_path = os.path.join(scratch, "_src/posts_es.py")
+    es_source = P.read(es_path)
+    changed_body = es_post["body"].replace('id="s0"', 'id="extra"').replace(
+        'href="/services/seo"', 'href="/different"') + '<table></table><a href="https://example.com/source">fuente</a>'
+    P.write(es_path, es_source + "\nPOSTS_ES[-1]['body'] = %r\n" % changed_body)
+    chk = subprocess.run([sys.executable, os.path.join(here, "check_post.py"), scratch, post["slug"], "new"], capture_output=True, text=True)
+    assert chk.returncode == 1, chk.stdout
+    for detail in ("missing in ES ['s0']", "extra in ES ['extra']", "table count differs: EN 0; ES 1",
+                   "external link count differs: EN 0; ES 1", "https://example.com/source",
+                   "/services/seo", "/different", "Fix by editing the Spanish twin"):
+        assert detail in chk.stdout, chk.stdout
+    assert len(chk.stdout) <= 1500, chk.stdout
+    P.write(es_path, es_source)
     P.run(scratch, "git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A")
     P.run(scratch, "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "draft")
     snap = P.run(scratch, "git", "status", "--short") + P.run(scratch, "git", "diff", "--stat")

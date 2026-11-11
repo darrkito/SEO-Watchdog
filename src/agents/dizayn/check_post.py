@@ -10,6 +10,7 @@ wt, slug = sys.argv[1], sys.argv[2]
 is_new = (sys.argv[3] if len(sys.argv) > 3 else "new") == "new"
 sys.path.insert(0, os.path.join(wt, "_src"))
 bad = []
+parity_hint = False
 try:
     import posts as PO
     p = next((x for x in PO.POSTS if x["slug"] == slug), None)
@@ -106,11 +107,36 @@ if ES:
                 try: en_body = PO.render(p)
                 except Exception: en_body = None
                 if en_body is not None:
-                    if re.findall(r'<h2 id="([^"]+)">', es_body) != re.findall(r'<h2 id="([^"]+)">', en_body):
-                        bad.append("Spanish h2 ids or order differ from English")
-                    for pattern, label in ((r'<table\b', 'table'), (r'href="http', 'external link'), (r'href="/', 'internal link')):
-                        if len(re.findall(pattern, es_body)) != len(re.findall(pattern, en_body)):
-                            bad.append("Spanish %s count differs from English" % label)
+                    en_h2 = re.findall(r'<h2 id="([^"]+)">', en_body)
+                    es_h2 = re.findall(r'<h2 id="([^"]+)">', es_body)
+                    parity = []
+                    # Keep diagnostics bounded so the revise prompt retains the actionable details.
+                    def show(values, limit=90):
+                        value = repr(values)
+                        return value if len(value) <= limit else value[:limit - 3] + "..."
+                    def only(left, right):
+                        return list(dict.fromkeys(x for x in left if x not in right))
+                    if es_h2 != en_h2:
+                        misordered = [x for x in en_h2 if x in es_h2 and en_h2.index(x) != es_h2.index(x)]
+                        parity.append("Spanish h2 ids or order differ: EN %s; ES %s; missing in ES %s; extra in ES %s; misordered %s" %
+                                      tuple(show(x) for x in (en_h2, es_h2, only(en_h2, es_h2), only(es_h2, en_h2), misordered)))
+                    en_tables, es_tables = (len(re.findall(r'<table\b', body)) for body in (en_body, es_body))
+                    link_data = []
+                    for pattern, label in ((r'href="(http[^"]*)"', 'external'), (r'href="(/[^"]*)"', 'internal')):
+                        en_links, es_links = (re.findall(pattern, body) for body in (en_body, es_body))
+                        link_data.append((label, en_links, es_links))
+                    if en_tables != es_tables:
+                        parity.append("Spanish table count differs: EN %d; ES %d" % (en_tables, es_tables))
+                    for pattern, label in ((r'href="http', 'external'), (r'href="/', 'internal')):
+                        en_count, es_count = (len(re.findall(pattern, body)) for body in (en_body, es_body))
+                        if en_count != es_count:
+                            parity.append("Spanish %s link count differs: EN %d; ES %d" % (label, en_count, es_count))
+                    if parity:
+                        for label, en_links, es_links in link_data:
+                            parity.append("%s hrefs: EN (%d) %s; ES (%d) %s; only EN %s; only ES %s" %
+                                          ((label, len(en_links), show(en_links, 60), len(es_links), show(es_links, 60)) + tuple(show(x, 60) for x in (only(en_links, es_links), only(es_links, en_links)))))
+                        parity_hint = True
+                        bad.extend(parity)
                 text = re.sub(r'<a\b[^>]*>.*?</a>', ' ', es_body, flags=re.I | re.S)
                 text = re.sub(r'<[^>]*>', ' ', text)
                 leaks = re.findall(r'\b(?:the|your|you|with)\b', text, flags=re.I)
@@ -126,5 +152,7 @@ if ES:
                     bad.append("English html has no Spanish hreflang")
                 if not has("es/blog/%s.html" % es_slug, 'hreflang="en-US" href="%s%s"' % (site, route)):
                     bad.append("Spanish html has no English hreflang")
+if parity_hint:
+    bad.append("Fix by editing the Spanish twin in _src/posts_es.py (or the English post) so both render the same h2 ids in the same order and the same hrefs; ES text is a faithful translation, hrefs stay identical (internal links keep their /blog/<en-slug> targets only if the ES page uses the same targets as the existing ES twins do; check how render_es maps them).")
 if bad: print("\n".join(bad))
 sys.exit(1 if bad else 0)
