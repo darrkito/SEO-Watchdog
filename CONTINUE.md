@@ -217,6 +217,6 @@ Luvory (#1) and Vexon (#5) run all seven agents (`src/agents/sites.ts`, `hooks.t
 - Commands: `research-replay <site> [--no-expand]` (pool and clusters, no model), `research-rescore <site> [--apply]` (old backlog vs measured demand, dry run by default), `research-outcomes [site]` (published topics by score bucket vs impressions in 28 days).
 - Env: `TOPIC_PAA_MAX` (8) besides the earlier ones.
 - First live run (Luvory, before Trends/questions were added): pool 260, 11 picked, 2 kept at 9, one call, 19.6k tokens in.
-- Owner decisions applied 2026-11-12: keep threshold is now 8 (`minTopicScore()`, `MIN_TOPIC_SCORE` clamped 8..10); a local business query earns the local point with the city in it OR >=10 own Search Console impressions; `research-rescore --apply` ran on all sites (58 old topics rejected; backlog left: Luvory 1, Vexon 3).
+- Owner decisions applied 2026-11-12: keep threshold is now 8 (`minTopicScore()`, `MIN_TOPIC_SCORE` clamped 8..10); a local business query earns the local point with the city in it OR >=10 own Search Console impressions; `research-rescore --apply` ran on all sites (57 old topics rejected; backlog left: Luvory 1, Vexon 3).
 - "Already covered" check: a taken slug/title hides a query only when it has at most 2 more significant words than the query (a long slug had hidden the 123-impression Vexon head query).
 - Search Console rows have no country, so foreign impressions are filtered only by the model's `fit`.
