@@ -24,7 +24,7 @@ import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
-import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, headTerms, trendsFor, trendForCluster, takenSlugs, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
+import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, headTerms, trendsFor, minTopicScore, trendForCluster, takenSlugs, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
 
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
@@ -342,7 +342,7 @@ Responde SOLO con un arreglo JSON: [{"clusterId":"...","title":"...","slug":"keb
   const accepted = acceptPicks(proposed, shortlist, [...posts.map((p) => p.slug), ...backlog]);
   const trends = await trendsFor(headTerms(clusters, services), opts.country, { db: c.db, max: 5 });
   const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score, segment, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const rawMin = Number(process.env.MIN_TOPIC_SCORE ?? 9), min = Number.isFinite(rawMin) ? Math.max(9, Math.min(10, rawMin)) : 9;
+  const min = minTopicScore();
   const candidates: Awaited<ReturnType<typeof verifyQuery>>[] = [], scored: ScoredCandidate[] = [];
   let n = 0;
   for (const t of accepted) {

@@ -43,7 +43,7 @@ export async function verifyQuery(query: string, opts: Options, deps: { db?: Dat
 }
 /* Score rubric: demand 0-5 (GSC, Bing or exact suggestion, plus a second signal),
    winnability 0-3 (brands, small sites, weakly targeted SERP), fit 0-2
-   (customer and service match, clear intent and local modifier).
+   (customer and service match, clear intent and local modifier or >=10 own GSC impressions).
    Unverified or zero demand caps the score at 7; own top 3 is excluded. */
 export function demandPoints(e: Evidence): number {
   const g = Math.max(e.cluster?.gscImpressions ?? 0, e.ownImpressions60d + e.gscVariantImpressions60d);
@@ -63,7 +63,7 @@ export function scoreTopic(e: Evidence, opts: { isLocalBusiness: boolean; servic
   if (e.serpTop10.some((x) => /(^|\.)(reddit|quora)\./i.test(x.host) || /\b(forum|foro)\b/i.test(x.url + ' ' + x.title)) || e.serpTop10.filter((x) => { const words = new Set(wordsOf(x.title)); return qwords.length > 0 && qwords.every((w) => words.has(w)); }).length < 3) score++;
   const service = new Set(opts.serviceWords.flatMap(clusterWords));
   if (e.fit === true && clusterWords(e.query).some((w) => service.has(w))) score++;
-  if (wordsOf(e.query).length >= 2 && (!opts.isLocalBusiness || !!e.location && poolKey(e.query).includes(poolKey(e.location)))) score++;
+  if (wordsOf(e.query).length >= 2 && (!opts.isLocalBusiness || !!e.location && poolKey(e.query).includes(poolKey(e.location)) || (e.cluster?.gscImpressions ?? 0) >= 10)) score++;
   return Math.max(1, Math.min(e.verified && demand > 0 ? 10 : 7, score));
 }
 export type DropReason = 'unverified' | 'own top3' | 'no measured demand' | `score<${number}`;
@@ -233,7 +233,7 @@ export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { 
   const geo = new Set((opts.geoWords ?? []).flatMap(clusterWords));
   const reference = [...rows.map((r) => r.query), ...(opts.services ?? [])].map((s) => new Set(clusterWords(s).filter((w) => !geo.has(w))));
   const taken = (opts.taken ?? []).map((s) => new Set(clusterWords(s)));
-  return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && reference.some((ref) => words.filter((w) => !geo.has(w) && ref.has(w)).length >= (e.sources.includes('gsc') ? 1 : 2)) && !(words.length >= 2 && taken.some((t) => words.every((w) => t.has(w)))); });
+  return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && reference.some((ref) => words.filter((w) => !geo.has(w) && ref.has(w)).length >= (e.sources.includes('gsc') ? 1 : 2)) && !(words.length >= 2 && taken.some((t) => t.size <= words.length + 2 && words.every((w) => t.has(w)))); });
 }
 export const clusterId = (query: string) => clusterWords(query).join('-');
 export function clusterQueries(pool: PoolEntry[]): Cluster[] {
@@ -255,8 +255,10 @@ export function trendForCluster(cluster: Cluster, trends: Map<string, TrendData>
   for (const [term, trend] of trends) { const head = clusterWords(term); if (!trend.noData && head.length && head.every((w) => words.has(w)) && (!best || trend.mean > best.mean)) best = trend; }
   return best;
 }
+/** Keep threshold: MIN_TOPIC_SCORE clamped to 8..10, default 8 (owner decision 2026-11-12). */
+export function minTopicScore(value = process.env.MIN_TOPIC_SCORE): number { const n = Number(value ?? 8); return Number.isFinite(n) ? Math.max(8, Math.min(10, n)) : 8; }
 export function takenSlugs(db: DatabaseSync, siteId: number): string[] {
-  return (db.prepare("SELECT slug FROM topics WHERE site_id = ? AND (status IN ('drafted','published') OR (status = 'new' AND score >= 9))").all(siteId) as { slug: string }[]).map((r) => r.slug);
+  return (db.prepare("SELECT slug FROM topics WHERE site_id = ? AND (status IN ('drafted','published') OR (status = 'new' AND score >= ?))").all(siteId, minTopicScore()) as { slug: string }[]).map((r) => r.slug);
 }
 export function researchOutcomes(db: DatabaseSync, siteId?: number): { siteId: number; bucket: string; topics: number; withImpressions: number; impressions: number }[] {
   const topics = db.prepare("SELECT site_id, query, score FROM topics WHERE status = 'published' AND trim(query) != '' AND (? IS NULL OR site_id = ?)").all(siteId ?? null, siteId ?? null) as { site_id: number; query: string; score: number }[];

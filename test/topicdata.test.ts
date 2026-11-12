@@ -151,16 +151,16 @@ test('score v2 rubric points and caps', async () => {
   const sites = Array.from({ length: 5 }, (_, i) => ({ host: `site${i}.test`, url: `https://site${i}.test`, title: 'unrelated' }));
   const args = { isLocalBusiness: true, serviceWords: ['industrial maintenance'] };
   const cases = [
-    ['no demand', {}, 1], ['gsc 1', { cluster: cluster(1) }, 3], ['gsc 10', { cluster: cluster(10) }, 4], ['gsc 20', { cluster: cluster(20) }, 5], ['gsc 50', { cluster: cluster(50) }, 6],
+    ['no demand', {}, 1], ['gsc 1', { cluster: cluster(1) }, 3], ['gsc 10', { cluster: cluster(10) }, 5], ['gsc 20', { cluster: cluster(20) }, 6], ['gsc 50', { cluster: cluster(50) }, 7],
     ['bing 10', { cluster: cluster(0, [], 10) }, 4], ['bing 50', { cluster: cluster(0, [], 50) }, 5],
     ['exact suggestion', { suggestions: ['INDUSTRIAL MAINTENANCE CHECKLIST'] }, 4], ['second source', { cluster: cluster(1, ['autocomplete']) }, 5],
-    ['trends bonus', { cluster: cluster(10), trends: { mean: 1, last8Mean: 1, slope: 'flat' as const, rising: [], top: [] } }, 5],
-    ['brand and small sites', { cluster: cluster(10), serpTop10: sites, bigBrandCount: 2, smallSiteCount: 3 }, 6],
-    ['targeted titles', { cluster: cluster(10), serpTop10: sites.map((x) => ({ ...x, title: 'industrial maintenance checklist' })) }, 3],
-    ['forum', { cluster: cluster(10), serpTop10: sites.map((x, i) => ({ ...x, host: i ? x.host : 'reddit.com', title: 'industrial maintenance checklist' })) }, 4],
-    ['service fit', { cluster: cluster(10), fit: true }, 5], ['local intent', { cluster: cluster(10), location: 'maintenance' }, 5],
+    ['trends bonus', { cluster: cluster(10), trends: { mean: 1, last8Mean: 1, slope: 'flat' as const, rising: [], top: [] } }, 6],
+    ['brand and small sites', { cluster: cluster(10), serpTop10: sites, bigBrandCount: 2, smallSiteCount: 3 }, 7],
+    ['targeted titles', { cluster: cluster(10), serpTop10: sites.map((x) => ({ ...x, title: 'industrial maintenance checklist' })) }, 4],
+    ['forum', { cluster: cluster(10), serpTop10: sites.map((x, i) => ({ ...x, host: i ? x.host : 'reddit.com', title: 'industrial maintenance checklist' })) }, 5],
+    ['service fit', { cluster: cluster(10), fit: true }, 6], ['local intent', { cluster: cluster(10), location: 'maintenance' }, 5],
     ['autocomplete only full', { cluster: cluster(0, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true, location: 'maintenance' }, 8],
-    ['gsc and autocomplete full with one fit', { cluster: cluster(20, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true }, 9],
+    ['gsc and autocomplete full with one fit', { cluster: cluster(20, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true }, 10],
     ['unverified cap', { cluster: cluster(50, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true, location: 'maintenance', verified: false }, 7],
   ];
   for (const [name, changes, expected] of cases) assert.equal(scoreTopic({ ...base, ...changes }, args), expected, String(name));
@@ -211,7 +211,7 @@ test('taken slugs and published outcomes use site, status, score and query clust
   const { openDb } = await import('../src/db.ts'); const { takenSlugs, researchOutcomes } = await import('../src/agents/topicdata.ts');
   const db = openDb(':memory:');
   const topic = db.prepare('INSERT INTO topics (site_id, title, slug, query, score, status) VALUES (?, ?, ?, ?, ?, ?)');
-  topic.run(1, 'a', 'a', ' Oficinas móviles ', 9, 'published'); topic.run(1, 'b', 'b', 'no demand', 8, 'published'); topic.run(1, 'c', 'c', 'other term', 6, 'published'); topic.run(1, 'd', 'd', '', 10, 'published'); topic.run(1, 'e', 'e', 'pending topic', 9, 'new'); topic.run(1, 'f', 'f', 'pending low', 8, 'new'); topic.run(1, 'g', 'g', 'draft term', 1, 'drafted'); topic.run(2, 'h', 'h', 'oficinas moviles', 10, 'published');
+  topic.run(1, 'a', 'a', ' Oficinas móviles ', 9, 'published'); topic.run(1, 'b', 'b', 'no demand', 8, 'published'); topic.run(1, 'c', 'c', 'other term', 6, 'published'); topic.run(1, 'd', 'd', '', 10, 'published'); topic.run(1, 'e', 'e', 'pending topic', 9, 'new'); topic.run(1, 'f', 'f', 'pending low', 7, 'new'); topic.run(1, 'g', 'g', 'draft term', 1, 'drafted'); topic.run(2, 'h', 'h', 'oficinas moviles', 10, 'published');
   const metric = db.prepare("INSERT INTO metrics (site_id, source, date, query, impressions) VALUES (?, ?, ?, ?, ?)");
   metric.run(1, 'gsc', new Date().toISOString().slice(0, 10), 'OFICINAS MÓVILES', 5); metric.run(1, 'gsc', new Date().toISOString().slice(0, 10), 'moviles oficinas', 7); metric.run(1, 'gsc', '2000-01-01', 'oficinas moviles', 100); metric.run(1, 'bing', new Date().toISOString().slice(0, 10), 'other term', 100);
   assert.deepEqual(takenSlugs(db, 1).sort(), ['a', 'b', 'c', 'd', 'e', 'g']);

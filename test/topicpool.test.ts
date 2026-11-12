@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { buildDemandPool, clusterQueries, replayReport, type PoolEntry } from '../src/agents/topicdata.ts';
+import { buildDemandPool, clusterQueries, replayReport, type PoolEntry, minTopicScore, scoreTopic as scoreV2 } from '../src/agents/topicdata.ts';
 
 const database = () => { const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE metrics (site_id INTEGER, source TEXT, date TEXT, query TEXT, impressions REAL, position REAL); CREATE TABLE research_cache (key TEXT PRIMARY KEY, text TEXT, created_at TEXT)'); return db; };
 const insert = (db: DatabaseSync, query: string, impressions: number, position: number) => db.prepare("INSERT INTO metrics VALUES (1, 'gsc', date('now'), ?, ?, ?)").run(query, impressions, position);
@@ -66,4 +66,20 @@ test('head terms and trend selection use significant cluster words', async () =>
   const trend = (mean: number, noData = false) => ({ mean, last8Mean: mean, slope: 'flat' as const, rising: [], top: [], noData });
   const trends = new Map([['oficinas moviles', trend(20)], ['moviles guadalajara', trend(50)], ['precio oficinas', trend(90, true)], ['other term', trend(100)]]);
   assert.equal(trendForCluster(clusters[0], trends)?.mean, 50); assert.equal(trendForCluster(clusters[2], trends), null);
+});
+
+test('threshold defaults to 8 and a local business query with own GSC demand earns the local point', () => {
+  assert.equal(minTopicScore(undefined), 8); assert.equal(minTopicScore('5'), 8); assert.equal(minTopicScore('9'), 9); assert.equal(minTopicScore('x'), 8);
+  const e: any = { verified: true, serpVerified: true, query: 'banos moviles', serpTop10: [], paa: [], related: [], suggestions: [], bigBrandCount: 0, smallSiteCount: 0, ownRank: null, ownImpressions60d: 0, location: 'Guadalajara', bing: null, trends: null, gscVariantImpressions60d: 0, trendsRisingMatch: false, cluster: { id: 'bano-movil', gscImpressions: 9, bingImpressions: 0, sources: ['gsc'], bestPosition: 6, members: ['banos moviles'] } };
+  const opts = { isLocalBusiness: true, serviceWords: [] };
+  const without = scoreV2(e, opts); e.cluster.gscImpressions = 10;
+  assert.equal(scoreV2(e, opts), without + 2); // 9 -> 10 impressions: demand 2 -> 3 and the local point
+});
+
+test('a much longer taken slug does not hide a short head query', async () => {
+  const { openDb } = await import('../src/db.ts'); const db = openDb(':memory:');
+  db.prepare("INSERT INTO metrics (site_id, source, date, query, impressions, position) VALUES (1, 'gsc', date('now'), 'oficinas moviles en renta guadalajara', 50, 40)").run();
+  const opts = { lang: 'es', country: 'MX' };
+  assert.equal((await buildDemandPool(db, 1, { ...opts, taken: ['oficina-prefabricada-o-movil-para-nave-industrial-en-guadalajara'] }, { expand: false })).length, 1);
+  assert.equal((await buildDemandPool(db, 1, { ...opts, taken: ['renta-de-oficinas-moviles-guadalajara'] }, { expand: false })).length, 0);
 });
