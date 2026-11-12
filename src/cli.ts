@@ -22,6 +22,7 @@ const HELP = `seo-watchdog <command>
   competitors <site>        list discovered competitors and alternatives
   serve [port]              localhost dashboard (default http://127.0.0.1:4321); also runs the agent scheduler
   agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
+  research-replay <site> [--no-expand]  report demand clusters without an LLM
   tokens [days]             token and cost report (default: 7 days)
   approvals                 list pending drafts/fixes; approve|reject <id> decides one
   mute <finding-id> | unmute <finding-id>
@@ -33,7 +34,7 @@ const { positionals: [cmd, arg], values: opt } = parseArgs({
   allowPositionals: true,
   options: {
     market: { type: 'string' }, limit: { type: 'string' }, 'competitor-of': { type: 'string' }, ua: { type: 'string' },
-    concurrency: { type: 'string' }, 'no-alert': { type: 'boolean' },
+    concurrency: { type: 'string' }, 'no-alert': { type: 'boolean' }, 'no-expand': { type: 'boolean' },
     severity: { type: 'string' }, status: { type: 'string' }, run: { type: 'string' },
   },
 });
@@ -114,6 +115,18 @@ switch (cmd) {
     const { candidates } = await import('./competitors.ts');
     for (const c of candidates(db, site(arg).id).filter((c) => c.status !== 'rejected'))
       console.log(`[${c.status}] ${c.domain}  score ${c.score}  ${c.types.join('+')}  ${c.evidence.overlap ?? 0} shared keywords${c.evidence.best ? `, best #${c.evidence.best}` : ''}${c.evidence.reason ? `\n    ${c.evidence.reason}` : ''}`);
+    break;
+  }
+  case 'research-replay': {
+    const s = site(arg), { AGENT_SITES } = await import('./agents/sites.ts');
+    const { buildDemandPool, clusterQueries, replayReport } = await import('./agents/topicdata.ts');
+    const cfg = AGENT_SITES[new URL(s.url).hostname.replace(/^www\./, '')];
+    const row = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(s.id) as { data_json: string } | undefined;
+    let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
+    const posts = cfg?.listPosts(cfg.repo) ?? [];
+    const backlog = db.prepare('SELECT slug FROM topics WHERE site_id = ?').all(s.id) as { slug: string }[];
+    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog.map((p) => p.slug)] }, { expand: !opt['no-expand'] });
+    console.log(replayReport(clusterQueries(pool), pool));
     break;
   }
   case 'agent': {

@@ -194,3 +194,52 @@ export async function collectResearchAngles<T>(angles: string[], askAngle: (angl
   }
   return all;
 }
+
+export type PoolEntry = { query: string; sources: ('gsc' | 'autocomplete' | 'bing')[]; gscImpressions: number; gscPosition: number | null; bingImpressions: number; suggestedBy: string[] };
+export type Cluster = { id: string; primary: string; members: PoolEntry[]; gscImpressions: number; bingImpressions: number; sources: string[]; bestPosition: number | null };
+export const DEMAND_DENYLIST = ['fortnite', 'minecraft', 'roblox', 'dibujo', 'png', 'gif', 'meme'];
+const poolKey = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/\s+/g, ' ');
+const clusterWords = (s: string) => [...new Set(wordsOf(s).filter((w) => !STOPWORDS.has(w)).map((w) => w.length > 4 ? w.endsWith('ces') ? w.slice(0, -1) : w.replace(/(?:es|s)$/, '') : w).filter((w) => !['renta', 'alquiler', 'rent', 'rental'].includes(w)))].sort();
+export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number } = {}): Promise<PoolEntry[]> {
+  const rows = db.prepare("SELECT query, SUM(impressions) impressions, SUM(position * impressions) / NULLIF(SUM(impressions), 0) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= date('now', '-60 days') AND date <= date('now') GROUP BY query HAVING SUM(impressions) >= 1 ORDER BY impressions DESC").all(siteId) as { query: string; impressions: number; position: number | null }[];
+  const excluded = new Set(rows.filter((r) => r.position != null && r.position <= 3).map((r) => poolKey(r.query)));
+  const brands = (opts.brandTerms ?? []).map(poolKey).filter(Boolean);
+  const entries = new Map<string, PoolEntry>();
+  const add = (query: string, source: PoolEntry['sources'][number]) => {
+    const key = poolKey(query); if (!key || excluded.has(key) || brands.some((b) => key.includes(b))) return null;
+    let entry = entries.get(key); if (!entry) { entry = { query: query.trim(), sources: [], gscImpressions: 0, gscPosition: null, bingImpressions: 0, suggestedBy: [] }; entries.set(key, entry); }
+    if (!entry.sources.includes(source)) entry.sources.push(source); return entry;
+  };
+  for (const row of rows) { const e = add(row.query, 'gsc'); if (e) { const total = e.gscImpressions + row.impressions; e.gscPosition = e.gscPosition == null ? row.position : row.position == null ? e.gscPosition : (e.gscPosition * e.gscImpressions + row.position * row.impressions) / total; e.gscImpressions = total; } }
+  const gscKeys = new Set([...entries.keys()]);
+  const seeds = [...new Map([...entries.values()].sort((a, b) => b.gscImpressions - a.gscImpressions).map((e) => [poolKey(e.query), e.query]).concat((opts.services ?? []).map((s) => [poolKey(s), s] as [string, string]))).values()].filter(Boolean).slice(0, deps.maxSeeds ?? 12);
+  if (deps.expand !== false) {
+    const modifiers = opts.lang.toLowerCase().startsWith('es') ? ['para', 'precio', 'cuanto', 'como', 'que', 'vs', ...(opts.location ? [opts.location] : [])] : ['for', 'cost', 'how', 'what', 'vs', 'near me'];
+    for (const seed of seeds) {
+      for (const query of [seed, ...modifiers.map((m) => `${seed} ${m}`)]) {
+        const key = 'topic-ac:' + JSON.stringify([poolKey(query), opts.lang, opts.country]);
+        let suggestions = cacheGet(db, key); if (!Array.isArray(suggestions)) { suggestions = await autocomplete(query, opts, deps.fetch); cachePut(db, key, suggestions); }
+        for (const suggestion of suggestions) { if (typeof suggestion !== 'string' || (poolKey(suggestion) === poolKey(seed) && !gscKeys.has(poolKey(seed)))) continue; const e = add(suggestion, 'autocomplete'); if (e && !e.suggestedBy.includes(seed)) e.suggestedBy.push(seed); }
+      }
+      const bing = await bingKeyword(seed, opts.country, { db, fetch: deps.fetch });
+      for (const item of bing?.related ?? []) if (item.impressions >= 1) { const e = add(item.query, 'bing'); if (e) e.bingImpressions = Math.max(e.bingImpressions, item.impressions); }
+    }
+  }
+  const reference = new Set([...rows.map((r) => r.query), ...(opts.services ?? [])].flatMap(clusterWords));
+  const taken = (opts.taken ?? []).map((s) => new Set(clusterWords(s)));
+  return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && words.some((w) => reference.has(w)) && !(words.length >= 2 && taken.some((t) => words.every((w) => t.has(w)))); });
+}
+export function clusterQueries(pool: PoolEntry[]): Cluster[] {
+  const groups = new Map<string, PoolEntry[]>();
+  for (const entry of pool) { const id = clusterWords(entry.query).join('-'); const members = groups.get(id) ?? []; members.push(entry); groups.set(id, members); }
+  return [...groups].map(([id, members]) => {
+    const primary = [...members].sort((a, b) => b.gscImpressions - a.gscImpressions || b.sources.length - a.sources.length || a.query.length - b.query.length)[0].query;
+    const positions = members.flatMap((m) => m.gscPosition == null ? [] : [m.gscPosition]);
+    return { id, primary, members, gscImpressions: members.reduce((n, m) => n + m.gscImpressions, 0), bingImpressions: members.reduce((n, m) => n + m.bingImpressions, 0), sources: [...new Set(members.flatMap((m) => m.sources))], bestPosition: positions.length ? Math.min(...positions) : null };
+  }).sort((a, b) => b.gscImpressions - a.gscImpressions || b.sources.length - a.sources.length);
+}
+export function replayReport(clusters: Cluster[], pool: PoolEntry[]): string {
+  const counts = ['gsc', 'autocomplete', 'bing'].map((s) => `${s} ${pool.filter((e) => e.sources.includes(s as PoolEntry['sources'][number])).length}`).join('; ');
+  const lines = clusters.slice(0, 25).map((c) => `${c.gscImpressions}\t${c.bestPosition == null ? '-' : c.bestPosition.toFixed(1)}\t${c.sources.join(',')}\t${c.members.length}\t${c.primary}`);
+  return [`Pool: ${pool.length}; ${counts}`, `Clusters: ${clusters.length}`, 'GSC impressions\tBest position\tSources\tMembers\tPrimary', ...lines, `Clusters: >=50 ${clusters.filter((c) => c.gscImpressions >= 50).length}; >=20 ${clusters.filter((c) => c.gscImpressions >= 20).length}; >=10 ${clusters.filter((c) => c.gscImpressions >= 10).length}; 2+ sources ${clusters.filter((c) => new Set(c.sources).size >= 2).length}`].join('\n');
+}
