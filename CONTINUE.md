@@ -209,3 +209,12 @@ Luvory (#1) and Vexon (#5) run all seven agents (`src/agents/sites.ts`, `hooks.t
 - Open: Google Trends was 429-blocked on 2026-11-12, so the first live runs (Luvory best 8, Vexon best 6) kept 0 topics. Re-check after the unblock.
 - Dizayn SEO: `check_post.py` now names the exact h2 ids/hrefs that differ between the EN post and its ES twin.
 - After switching Claude accounts run `pm2 restart seo-watchdog --update-env`: the scheduler keeps the old limit pause in memory.
+
+## 2026-11-12 (later): topic researcher v2, demand-first (PLAN-topic-research-v2.md)
+- Flow: `buildDemandPool` (Search Console pos >3, Google autocomplete expansion, Bing related, Serper questions) -> `clusterQueries` -> ONE model call that picks up to 12 clusters (query is always the cluster primary, out-of-pool picks are rejected) -> Serper check -> `scoreTopic` v2 (demand 0-5, winnability 0-3, fit 0-2), keep >= 9.
+- Why: the old flow let the model invent queries; Bing is empty in Mexico, Trends has no data for long queries, and Serper returns no PAA with `gl=mx`. Spanish questions come from a call with `hl=es-419` and no `gl` (Spanish-language demand, not Mexico-measured).
+- Trends: at most 5 head terms per site per run (`headTerms`), never from tests or probes.
+- Commands: `research-replay <site> [--no-expand]` (pool and clusters, no model), `research-rescore <site> [--apply]` (old backlog vs measured demand, dry run by default), `research-outcomes [site]` (published topics by score bucket vs impressions in 28 days).
+- Env: `TOPIC_PAA_MAX` (8) besides the earlier ones.
+- First live run (Luvory, before Trends/questions were added): pool 260, 11 picked, 2 kept at 9, one call, 19.6k tokens in.
+- Open (owner): count a query as local when the site already has >=10 impressions for it without the city name; apply `research-rescore --apply` to the old backlog. Search Console rows have no country, so foreign impressions are filtered only by the model's `fit`.
