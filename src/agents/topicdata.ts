@@ -4,7 +4,7 @@ import { registrableDomain } from '../crawl.ts';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 
-export type Evidence = { verified: boolean; serpVerified: boolean; query: string; serpTop10: { url: string; host: string; title: string }[]; paa: string[]; related: string[]; suggestions: string[]; bigBrandCount: number; smallSiteCount: number; ownRank: number | null; ownImpressions60d: number; location: string; bing: BingData | null; trends: TrendData | null; gscVariantImpressions60d: number; trendsRisingMatch: boolean };
+export type Evidence = { verified: boolean; serpVerified: boolean; query: string; serpTop10: { url: string; host: string; title: string }[]; paa: string[]; related: string[]; suggestions: string[]; bigBrandCount: number; smallSiteCount: number; ownRank: number | null; ownImpressions60d: number; location: string; bing: BingData | null; trends: TrendData | null; gscVariantImpressions60d: number; trendsRisingMatch: boolean; cluster?: { id: string; gscImpressions: number; bingImpressions: number; sources: string[]; bestPosition: number | null; members: string[] }; fit?: boolean };
 type Options = { lang: string; country: string; location?: string; ownHost?: string; ownImpressions60d?: number };
 type Budget = { calls: number; max: number };
 const big = /(^|\.)(wikipedia|amazon|mercadolibre|youtube|pinterest|facebook|instagram|reddit|quora|yelp|tripadvisor|ebay|etsy|walmart|tiktok|linkedin|fiverr|upwork|theknot|weddingwire)\./i;
@@ -41,41 +41,30 @@ export async function verifyQuery(query: string, opts: Options, deps: { db?: Dat
   const bigBrandCount = serpTop10.filter((x: any) => big.test(x.host)).length;
   return { verified: false, serpVerified: !!data && serpTop10.length > 0, query, serpTop10, paa: strings(data?.paa, 'question'), related: strings(data?.related, 'query'), suggestions: strings(data?.suggestions, ''), bigBrandCount, smallSiteCount: serpTop10.length - bigBrandCount, ownRank: index < 0 ? null : index + 1, ownImpressions60d: opts.ownImpressions60d ?? 0, location: opts.location ?? '', bing: null, trends: null, gscVariantImpressions60d: 0, trendsRisingMatch: false };
 }
-/* Score rubric (points; total capped at 10):
-   Base                                      1
-   Exact/near autocomplete, PAA or related   1
-   Bing exact/related impressions >=10 / >=50 2 / 3
-   GSC exact/variant impressions >0 / >=10    1 / 2
-   Trends mean >0 and flat/up                1
-   Trends rising match                       1
-   At most 2 big brands among >=5 results    1
-   At least 3 non-brand sites                1
-   Clear intent (2+ words)                    1
-   Local geo present, or non-local business  1
-   Competitor topic gap (bonus)              1
-   Forum/thin result (bonus)                 1
-   Unverified or zero measured demand is capped at 7; top-3 own rank is excluded. */
-export function scoreTopic(e: Evidence, opts: { gscImpressions: number; competitorGap: boolean; isLocalBusiness: boolean }): number {
-  const q = normalize(e.query), queryWords = new Set(wordsOf(q));
-  const matches = (s: string) => {
-    const words = new Set(wordsOf(s));
-    const common = [...queryWords].filter((w) => words.has(w)).length;
-    return normalize(s) === q || (queryWords.size >= 2 && common >= 2 && common / Math.max(queryWords.size, words.size) >= 0.8);
-  };
-  let score = 1;
-  if ([...e.suggestions, ...e.paa, ...e.related].some(matches)) score++;
-  const bing = Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0);
-  score += bing >= 50 ? 3 : bing >= 10 ? 2 : 0;
-  score += opts.gscImpressions >= 10 ? 2 : opts.gscImpressions > 0 ? 1 : 0;
-  if (e.trends && e.trends.mean > 0 && e.trends.slope !== 'down') score++;
-  if (e.trends && (e.trendsRisingMatch || e.trends.rising.some((s) => normalize(s) === q))) score++;
+/* Score rubric: demand 0-5 (GSC, Bing or exact suggestion, plus a second signal),
+   winnability 0-3 (brands, small sites, weakly targeted SERP), fit 0-2
+   (customer and service match, clear intent and local modifier).
+   Unverified or zero demand caps the score at 7; own top 3 is excluded. */
+export function demandPoints(e: Evidence): number {
+  const g = Math.max(e.cluster?.gscImpressions ?? 0, e.ownImpressions60d + e.gscVariantImpressions60d);
+  const b = Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0, e.cluster?.bingImpressions ?? 0);
+  const suggest = e.cluster?.sources.includes('autocomplete') || [...e.suggestions, ...e.paa, ...e.related].some((s) => poolKey(s) === poolKey(e.query));
+  const gscPts = g >= 50 ? 5 : g >= 20 ? 4 : g >= 10 ? 3 : g >= 1 ? 2 : 0;
+  const bingPts = b >= 50 ? 4 : b >= 10 ? 3 : 0;
+  let demand = Math.max(gscPts, bingPts, suggest ? 3 : 0);
+  if (demand > 0 && ([g >= 1, b >= 10, !!suggest].filter(Boolean).length >= 2 || !!e.trends && e.trends.mean > 0 && e.trends.slope !== 'down')) demand++;
+  return Math.min(5, demand);
+}
+export function scoreTopic(e: Evidence, opts: { isLocalBusiness: boolean; serviceWords: string[] }): number {
+  const demand = demandPoints(e), qwords = [...new Set(wordsOf(e.query).filter((w) => !STOPWORDS.has(w)))];
+  let score = demand;
   if (e.serpTop10.length >= 5 && e.bigBrandCount <= 2) score++;
   if (e.smallSiteCount >= 3) score++;
-  if (q.split(/\s+/).length >= 2) score++;
-  if (!opts.isLocalBusiness || (e.location && q.includes(normalize(e.location)))) score++;
-  if (opts.competitorGap) score++;
-  if (e.serpTop10.some((x) => /(^|\.)(reddit|quora)\./i.test(x.host) || /\b(forum|foro)\b/i.test(x.url + ' ' + x.title))) score++;
-  return Math.max(1, Math.min(e.verified && measuredDemand(e) ? 10 : 7, score));
+  if (e.serpTop10.some((x) => /(^|\.)(reddit|quora)\./i.test(x.host) || /\b(forum|foro)\b/i.test(x.url + ' ' + x.title)) || e.serpTop10.filter((x) => { const words = new Set(wordsOf(x.title)); return qwords.length > 0 && qwords.every((w) => words.has(w)); }).length < 3) score++;
+  const service = new Set(opts.serviceWords.flatMap(clusterWords));
+  if (e.fit === true && clusterWords(e.query).some((w) => service.has(w))) score++;
+  if (wordsOf(e.query).length >= 2 && (!opts.isLocalBusiness || !!e.location && poolKey(e.query).includes(poolKey(e.location)))) score++;
+  return Math.max(1, Math.min(e.verified && demand > 0 ? 10 : 7, score));
 }
 export type DropReason = 'unverified' | 'own top3' | 'no measured demand' | `score<${number}`;
 export function topicDropReason(e: Evidence, score: number, min: number): DropReason | null {
@@ -93,7 +82,7 @@ export function droppedSummary(rows: ScoredCandidate[]): string {
   return `dropped best: ${best.length ? best.map((r) => `${r.query} (${r.score}, ${r.reason})`).join('; ') : 'none'}`;
 }
 export function keepTopic(e: Evidence, score: number, min: number): boolean { return topicDropReason(e, score, min) === null; }
-export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends ${e.trends ? `12m avg ${e.trends.mean} ${e.trends.slope}${e.trends.noData ? ' (no data)' : ''}` : 'not measured (optional)'}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
+export function evidenceLine(e: Evidence): string { return `Demand: GSC ${e.cluster ? `cluster ${e.cluster.gscImpressions} imp/60d (${e.cluster.members.length} variants, best pos ${e.cluster.bestPosition == null ? '-' : e.cluster.bestPosition.toFixed(1)})` : `${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d`}; ${e.cluster?.sources.includes('autocomplete') ? 'autocomplete; ' : ''}Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends ${e.trends ? `12m avg ${e.trends.mean} ${e.trends.slope}${e.trends.noData ? ' (no data)' : ''}` : 'not measured (optional)'}; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
 
 export type BingData = { impressions: number; broadImpressions: number; related: { query: string; impressions: number; broadImpressions: number }[]; relatedDemand?: { query: string; impressions: number } | null };
 export type TrendData = { mean: number; last8Mean: number; slope: 'up' | 'flat' | 'down'; rising: string[]; top: string[]; noData?: boolean };
@@ -145,9 +134,7 @@ export function relatedDemand(query: string, related: BingData['related']): { qu
 export function setDemandEvidence(e: Evidence, bing: BingData | null, trends: TrendData | null): void {
   e.bing = bing ? { ...bing, relatedDemand: relatedDemand(e.query, bing.related) } : null; e.trends = trends; e.verified = e.serpVerified && bing !== null;
 }
-export function measuredDemand(e: Evidence): boolean {
-  return e.ownImpressions60d + e.gscVariantImpressions60d > 0 || Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0) >= 10 || !!e.trends && ((e.trends.mean > 0 && e.trends.slope !== 'down') || (e.trendsRisingMatch || e.trends.rising.some((q) => normalize(q) === normalize(e.query))));
-}
+export function measuredDemand(e: Evidence): boolean { return demandPoints(e) > 0; }
 /** Cached queries do not consume the per-run allowance. */
 export async function trendsFor(queries: string[], country: string, deps: { db?: DatabaseSync; max?: number; run?: (queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void, onBlocked: () => void) => Promise<void> } = {}): Promise<Map<string, TrendData> & { paused: boolean }> {
   const out = Object.assign(new Map<string, TrendData>(), { paused: false });
@@ -200,7 +187,7 @@ export type Cluster = { id: string; primary: string; members: PoolEntry[]; gscIm
 export const DEMAND_DENYLIST = ['fortnite', 'minecraft', 'roblox', 'dibujo', 'png', 'gif', 'meme'];
 const poolKey = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/\s+/g, ' ');
 const clusterWords = (s: string) => [...new Set(wordsOf(s).filter((w) => !STOPWORDS.has(w)).map((w) => w.length > 4 ? w.endsWith('ces') ? w.slice(0, -1) : w.replace(/(?:es|s)$/, '') : w).filter((w) => !['renta', 'alquiler', 'rent', 'rental'].includes(w)))].sort();
-export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number } = {}): Promise<PoolEntry[]> {
+export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; geoWords?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number } = {}): Promise<PoolEntry[]> {
   const rows = db.prepare("SELECT query, SUM(impressions) impressions, SUM(position * impressions) / NULLIF(SUM(impressions), 0) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= date('now', '-60 days') AND date <= date('now') GROUP BY query HAVING SUM(impressions) >= 1 ORDER BY impressions DESC").all(siteId) as { query: string; impressions: number; position: number | null }[];
   const excluded = new Set(rows.filter((r) => r.position != null && r.position <= 3).map((r) => poolKey(r.query)));
   const brands = (opts.brandTerms ?? []).map(poolKey).filter(Boolean);
@@ -225,13 +212,15 @@ export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { 
       for (const item of bing?.related ?? []) if (item.impressions >= 1) { const e = add(item.query, 'bing'); if (e) e.bingImpressions = Math.max(e.bingImpressions, item.impressions); }
     }
   }
-  const reference = new Set([...rows.map((r) => r.query), ...(opts.services ?? [])].flatMap(clusterWords));
+  const geo = new Set((opts.geoWords ?? []).flatMap(clusterWords));
+  const reference = [...rows.map((r) => r.query), ...(opts.services ?? [])].map((s) => new Set(clusterWords(s).filter((w) => !geo.has(w))));
   const taken = (opts.taken ?? []).map((s) => new Set(clusterWords(s)));
-  return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && words.some((w) => reference.has(w)) && !(words.length >= 2 && taken.some((t) => words.every((w) => t.has(w)))); });
+  return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && reference.some((ref) => words.filter((w) => !geo.has(w) && ref.has(w)).length >= (e.sources.includes('gsc') ? 1 : 2)) && !(words.length >= 2 && taken.some((t) => words.every((w) => t.has(w)))); });
 }
+export const clusterId = (query: string) => clusterWords(query).join('-');
 export function clusterQueries(pool: PoolEntry[]): Cluster[] {
   const groups = new Map<string, PoolEntry[]>();
-  for (const entry of pool) { const id = clusterWords(entry.query).join('-'); const members = groups.get(id) ?? []; members.push(entry); groups.set(id, members); }
+  for (const entry of pool) { const id = clusterId(entry.query); const members = groups.get(id) ?? []; members.push(entry); groups.set(id, members); }
   return [...groups].map(([id, members]) => {
     const primary = [...members].sort((a, b) => b.gscImpressions - a.gscImpressions || b.sources.length - a.sources.length || a.query.length - b.query.length)[0].query;
     const positions = members.flatMap((m) => m.gscPosition == null ? [] : [m.gscPosition]);
@@ -243,3 +232,18 @@ export function replayReport(clusters: Cluster[], pool: PoolEntry[]): string {
   const lines = clusters.slice(0, 25).map((c) => `${c.gscImpressions}\t${c.bestPosition == null ? '-' : c.bestPosition.toFixed(1)}\t${c.sources.join(',')}\t${c.members.length}\t${c.primary}`);
   return [`Pool: ${pool.length}; ${counts}`, `Clusters: ${clusters.length}`, 'GSC impressions\tBest position\tSources\tMembers\tPrimary', ...lines, `Clusters: >=50 ${clusters.filter((c) => c.gscImpressions >= 50).length}; >=20 ${clusters.filter((c) => c.gscImpressions >= 20).length}; >=10 ${clusters.filter((c) => c.gscImpressions >= 10).length}; 2+ sources ${clusters.filter((c) => new Set(c.sources).size >= 2).length}`].join('\n');
 }
+
+export type ResearchPick = { clusterId: string; title: string; slug: string; action: string; why: string; fit: boolean };
+export function acceptPicks(picks: unknown, shortlist: Cluster[], takenSlugs: Iterable<string>): (ResearchPick & { query: string; cluster: Cluster })[] {
+  const taken = new Set(takenSlugs), seen = new Set<string>(), clusters = new Map(shortlist.map((c) => [c.id, c]));
+  if (!Array.isArray(picks)) return [];
+  const accepted: (ResearchPick & { query: string; cluster: Cluster })[] = [];
+  for (const p of picks) {
+    const cluster = clusters.get(p?.clusterId);
+    if (!cluster || seen.has(cluster.id) || typeof p.title !== 'string' || !p.title.trim() || typeof p.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(p.slug) || taken.has(p.slug) || typeof p.fit !== 'boolean' || typeof p.why !== 'string' || typeof p.action !== 'string' || !/^(new|merge:[a-z0-9]+(?:-[a-z0-9]+)*)$/.test(p.action)) continue;
+    seen.add(cluster.id); taken.add(p.slug); accepted.push({ ...p, query: cluster.primary, cluster });
+    if (accepted.length === 12) break;
+  }
+  return accepted;
+}
+export function rescoreVerdict(cluster: Cluster | undefined): 'keep' | 'reject' { return cluster && cluster.gscImpressions >= 10 ? 'keep' : 'reject'; }

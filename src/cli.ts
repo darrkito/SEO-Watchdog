@@ -23,6 +23,7 @@ const HELP = `seo-watchdog <command>
   serve [port]              localhost dashboard (default http://127.0.0.1:4321); also runs the agent scheduler
   agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
   research-replay <site> [--no-expand]  report demand clusters without an LLM
+  research-rescore <site> [--apply]  review new topics against GSC demand
   tokens [days]             token and cost report (default: 7 days)
   approvals                 list pending drafts/fixes; approve|reject <id> decides one
   mute <finding-id> | unmute <finding-id>
@@ -34,7 +35,7 @@ const { positionals: [cmd, arg], values: opt } = parseArgs({
   allowPositionals: true,
   options: {
     market: { type: 'string' }, limit: { type: 'string' }, 'competitor-of': { type: 'string' }, ua: { type: 'string' },
-    concurrency: { type: 'string' }, 'no-alert': { type: 'boolean' }, 'no-expand': { type: 'boolean' },
+    concurrency: { type: 'string' }, 'no-alert': { type: 'boolean' }, 'no-expand': { type: 'boolean' }, apply: { type: 'boolean' },
     severity: { type: 'string' }, status: { type: 'string' }, run: { type: 'string' },
   },
 });
@@ -125,8 +126,24 @@ switch (cmd) {
     let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
     const posts = cfg?.listPosts(cfg.repo) ?? [];
     const backlog = db.prepare('SELECT slug FROM topics WHERE site_id = ?').all(s.id) as { slug: string }[];
-    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog.map((p) => p.slug)] }, { expand: !opt['no-expand'] });
+    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string'), taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog.map((p) => p.slug)] }, { expand: !opt['no-expand'] });
     console.log(replayReport(clusterQueries(pool), pool));
+    break;
+  }
+  case 'research-rescore': {
+    const s = site(arg), { AGENT_SITES } = await import('./agents/sites.ts');
+    const { buildDemandPool, clusterQueries, clusterId, rescoreVerdict } = await import('./agents/topicdata.ts');
+    const cfg = AGENT_SITES[new URL(s.url).hostname.replace(/^www\./, '')];
+    const row = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(s.id) as { data_json: string } | undefined;
+    let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
+    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string') }, { expand: false });
+    const clusters = new Map(clusterQueries(pool).map((c) => [c.id, c]));
+    const topics = db.prepare("SELECT id, score, query, title FROM topics WHERE site_id = ? AND status = 'new'").all(s.id) as { id: number; score: number; query: string; title: string }[];
+    const update = db.prepare("UPDATE topics SET status = 'rejected' WHERE id = ? AND site_id = ? AND status = 'new'");
+    let rejected = 0;
+    console.log('Old score\tGSC impressions\tVerdict\tTitle');
+    for (const topic of topics) { const cluster = clusters.get(clusterId(topic.query ?? '')), verdict = rescoreVerdict(cluster); console.log(`${topic.score}\t${cluster?.gscImpressions ?? '-'}\t${verdict}\t${topic.title}`); if (verdict === 'reject') { rejected++; if (opt.apply) update.run(topic.id, s.id); } }
+    console.log(opt.apply ? `kept ${topics.length - rejected}; rejected ${rejected}` : 'dry run');
     break;
   }
   case 'agent': {

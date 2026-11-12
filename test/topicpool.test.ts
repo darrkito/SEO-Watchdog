@@ -27,3 +27,19 @@ test('clusters variants and plurals and reports demand thresholds', () => {
   const clusters = clusterQueries(pool); assert.equal(clusters.length, 2); assert.equal(clusters[0].gscImpressions, 45); assert.equal(clusters[0].primary, 'oficinas moviles en guadalajara'); assert.equal(clusters[1].gscImpressions, 20);
   const report = replayReport(clusters, pool); assert.match(report, /Pool: 5; gsc 5; autocomplete 0; bing 1/); assert.match(report, />=50 0; >=20 2; >=10 2; 2\+ sources 1/);
 });
+
+test('expanded queries require two non-geo words in one reference', async () => {
+  const db = database(); insert(db, 'oficinas moviles guadalajara', 10, 8);
+  const fetcher = async (input: string | URL | Request) => new Response(JSON.stringify(String(input).includes('bing.com') ? { d: new URL(String(input)).pathname.endsWith('GetKeyword') ? { Impressions: 0, BroadImpressions: 0 } : ['hoteles en guadalajara', 'clima en guadalajara jalisco', 'oficinas moviles precio'].map((Query) => ({ Query, Impressions: 12, BroadImpressions: 12 })) } : ['', []]));
+  const old = process.env.BING_WEBMASTER_API_KEY; process.env.BING_WEBMASTER_API_KEY = 'test';
+  try { const pool = await buildDemandPool(db, 1, { lang: 'es', country: 'MX', services: ['Renta de oficinas móviles'], geoWords: ['Guadalajara', 'Jalisco', 'México'] }, { fetch: fetcher as typeof fetch }); assert.ok(pool.some((e) => e.query === 'oficinas moviles precio')); assert.ok(!pool.some((e) => /hoteles|clima/.test(e.query))); }
+  finally { if (old === undefined) delete process.env.BING_WEBMASTER_API_KEY; else process.env.BING_WEBMASTER_API_KEY = old; db.close(); }
+});
+test('picks use pool queries and rescore uses cluster demand', async () => {
+  const { acceptPicks, rescoreVerdict, clusterId } = await import('../src/agents/topicdata.ts');
+  const entry: PoolEntry = { query: 'oficinas móviles', sources: ['gsc'], gscImpressions: 10, gscPosition: 14, bingImpressions: 0, suggestedBy: [] };
+  const clusters = clusterQueries([entry]), pick = { clusterId: clusters[0].id, title: 'Title', slug: 'title', action: 'new', why: 'reason', fit: true, query: 'invented' };
+  const accepted = acceptPicks([{ ...pick, clusterId: 'invented' }, pick, { ...pick, slug: 'another' }], clusters, []);
+  assert.equal(accepted.length, 1); assert.equal(accepted[0].query, entry.query); assert.equal(clusterId('móviles oficinas'), clusters[0].id);
+  assert.equal(rescoreVerdict(clusters[0]), 'keep'); assert.equal(rescoreVerdict({ ...clusters[0], gscImpressions: 9 }), 'reject'); assert.equal(rescoreVerdict(undefined), 'reject');
+});

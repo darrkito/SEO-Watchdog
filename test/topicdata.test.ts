@@ -18,18 +18,6 @@ test('parses evidence, caches responses, and recalculates site data', async () =
   const missing = await verifyQuery('missing key', opts, { budget: makeBudget('2'), apiKey: '', fetch: fake as typeof fetch }); assert.equal(missing.verified, false);
   db.close();
 });
-test('scores signals deterministically and filters weak, unverified, and top-three results', async () => {
-  const e = await verifyQuery('how to paint', opts, { fetch: fake as typeof fetch, apiKey: 'test' });
-  e.verified = true;
-  const args = { gscImpressions: 20, competitorGap: true, isLocalBusiness: false };
-  const score = scoreTopic(e, args); assert.ok(score >= 9); assert.equal(keepTopic(e, score, 9), true);
-  assert.equal(keepTopic({ ...e, ownRank: 3 }, score, 9), false);
-  const weak = { ...e, serpTop10: [], suggestions: [], paa: [], related: [], bigBrandCount: 0, smallSiteCount: 0 };
-  assert.ok(scoreTopic(weak, { gscImpressions: 0, competitorGap: false, isLocalBusiness: true }) < 7);
-  const unverified = { ...e, verified: false }; assert.ok(scoreTopic(unverified, args) <= 7); assert.equal(keepTopic(unverified, 10, 9), false); assert.equal(keepTopic(e, 8, 9), false);
-});
-
-
 test('Bing parses both responses, locale and caches real zeroes', async () => {
   const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE research_cache (key TEXT PRIMARY KEY, text TEXT, created_at TEXT)');
   let calls = 0;
@@ -58,22 +46,6 @@ test('Trends contract, limit and cache preserve completed results on failure', a
   const second = await trendsFor(['a', 'b'], 'US', { db, max: 0, run }); assert.deepEqual(second.get('a'), trend); assert.equal(second.has('b'), false);
   db.close();
 });
-test('measured demand gates a high score', async () => {
-  const e = await verifyQuery('how to paint', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
-  setDemandEvidence(e, null, null); assert.equal(e.verified, false);
-  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [] }, null); assert.equal(e.verified, true); assert.equal(keepTopic(e, 9, 9), false);
-  setDemandEvidence(e, { impressions: 10, broadImpressions: 10, related: [] }, null); assert.equal(e.verified, true); assert.equal(keepTopic(e, 9, 9), true);
-  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [] }, { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] }); assert.equal(e.verified, true);
-  const args = { gscImpressions: 0, competitorGap: true, isLocalBusiness: false };
-  e.bing = { impressions: 0, broadImpressions: 20, related: [] }; e.trends = { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] };
-  assert.ok(scoreTopic(e, args) <= 7); assert.equal(keepTopic(e, 10, 9), false);
-  e.bing.impressions = 10; assert.equal(keepTopic(e, 9, 9), true);
-  e.bing.impressions = 0; e.gscVariantImpressions60d = 1; assert.equal(keepTopic(e, 9, 9), true);
-  e.gscVariantImpressions60d = 0; e.trends.mean = 10; e.trends.slope = 'down'; assert.equal(keepTopic(e, 9, 9), false);
-  e.trends.slope = 'flat'; assert.equal(keepTopic(e, 9, 9), true);
-  e.trends.mean = 0; e.trends.rising = ['how to paint']; assert.equal(keepTopic(e, 9, 9), true);
-});
-
 test('related Bing demand uses meaningful token overlap or a three-word prefix', async () => {
   const { relatedDemand, measuredDemand, evidenceLine } = await import('../src/agents/topicdata.ts');
   const rows = [
@@ -92,7 +64,7 @@ test('related Bing demand uses meaningful token overlap or a three-word prefix',
   assert.deepEqual(e.bing?.relatedDemand, { query: 'mantenimiento planta oficinas', impressions: 40 });
   assert.match(evidenceLine(e), /mantenimiento planta oficinas, 40 imp/);
   setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [rows[0]] }, zero);
-  assert.equal(measuredDemand(e), false); assert.ok(scoreTopic(e, { gscImpressions: 0, competitorGap: true, isLocalBusiness: false }) <= 7);
+  assert.equal(measuredDemand(e), false); assert.ok(scoreTopic(e, { serviceWords: [], isLocalBusiness: false }) <= 7);
   setDemandEvidence(e, e.bing, null); assert.equal(e.verified, true);
 });
 
@@ -172,20 +144,26 @@ test('Python emits interest before a related-queries 429 and then stops', async 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('score table gives measured demand and fit the requested weight', async () => {
-  const base = await verifyQuery('industrial maintenance checklist', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
-  const sites = ['alpha.test', 'beta.test', 'gamma.test', 'delta.test', 'epsilon.test'].map((host) => ({ host, url: `https://${host}/`, title: host }));
-  const initial = { ...base, serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, suggestions: ['industrial maintenance checklist'], paa: [], related: [], ownRank: null };
+test('score v2 rubric points and caps', async () => {
+  const raw = await verifyQuery('industrial maintenance checklist', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  const base = { ...raw, verified: true, serpTop10: [], bigBrandCount: 5, smallSiteCount: 0, suggestions: [], paa: [], related: [], ownImpressions60d: 0, location: '', fit: false };
+  const cluster = (g: number, sources: string[] = [], bingImpressions = 0) => ({ id: 'x', gscImpressions: g, bingImpressions, sources, bestPosition: 14.2, members: ['a', 'b', 'c'] });
+  const sites = Array.from({ length: 5 }, (_, i) => ({ host: `site${i}.test`, url: `https://site${i}.test`, title: 'unrelated' }));
+  const args = { isLocalBusiness: true, serviceWords: ['industrial maintenance'] };
   const cases = [
-    { name: 'strong', bing: 65, gsc: 15, suggestions: initial.suggestions, brands: 0, small: 5, expected: 10 },
-    { name: 'decent', bing: 20, gsc: 3, suggestions: initial.suggestions, brands: 0, small: 5, expected: 9 },
-    { name: 'weak', bing: 0, gsc: 0, suggestions: [], brands: 5, small: 0, expected: 3 },
+    ['no demand', {}, 1], ['gsc 1', { cluster: cluster(1) }, 3], ['gsc 10', { cluster: cluster(10) }, 4], ['gsc 20', { cluster: cluster(20) }, 5], ['gsc 50', { cluster: cluster(50) }, 6],
+    ['bing 10', { cluster: cluster(0, [], 10) }, 4], ['bing 50', { cluster: cluster(0, [], 50) }, 5],
+    ['exact suggestion', { suggestions: ['INDUSTRIAL MAINTENANCE CHECKLIST'] }, 4], ['second source', { cluster: cluster(1, ['autocomplete']) }, 5],
+    ['trends bonus', { cluster: cluster(10), trends: { mean: 1, last8Mean: 1, slope: 'flat' as const, rising: [], top: [] } }, 5],
+    ['brand and small sites', { cluster: cluster(10), serpTop10: sites, bigBrandCount: 2, smallSiteCount: 3 }, 6],
+    ['targeted titles', { cluster: cluster(10), serpTop10: sites.map((x) => ({ ...x, title: 'industrial maintenance checklist' })) }, 3],
+    ['forum', { cluster: cluster(10), serpTop10: sites.map((x, i) => ({ ...x, host: i ? x.host : 'reddit.com', title: 'industrial maintenance checklist' })) }, 4],
+    ['service fit', { cluster: cluster(10), fit: true }, 5], ['local intent', { cluster: cluster(10), location: 'maintenance' }, 5],
+    ['autocomplete only full', { cluster: cluster(0, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true, location: 'maintenance' }, 8],
+    ['gsc and autocomplete full with one fit', { cluster: cluster(20, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true }, 9],
+    ['unverified cap', { cluster: cluster(50, ['autocomplete']), serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, fit: true, location: 'maintenance', verified: false }, 7],
   ];
-  for (const row of cases) {
-    const e = { ...initial, suggestions: row.suggestions, bigBrandCount: row.brands, smallSiteCount: row.small, ownImpressions60d: row.gsc };
-    setDemandEvidence(e, { impressions: row.bing, broadImpressions: row.bing, related: [] }, null);
-    assert.equal(scoreTopic(e, { gscImpressions: row.gsc, competitorGap: false, isLocalBusiness: false }), row.expected, row.name);
-  }
+  for (const [name, changes, expected] of cases) assert.equal(scoreTopic({ ...base, ...changes }, args), expected, String(name));
 });
 
 test('audit records candidates and reports highest scoring drops', async () => {
@@ -200,7 +178,7 @@ test('audit records candidates and reports highest scoring drops', async () => {
   recordTopicCandidate(db, 9, e, 8, 'score<9');
   e.ownRank = 2; assert.equal(topicDropReason(e, 10, 9), 'own top3');
   e.ownRank = null; assert.equal(topicDropReason(e, 9, 9), null); recordTopicCandidate(db, 9, e, 9, null);
-  e.bing!.impressions = 0; assert.equal(topicDropReason(e, 7, 9), 'no measured demand');
+  e.bing!.impressions = 0; e.suggestions = []; e.paa = []; e.related = []; assert.equal(topicDropReason(e, 7, 9), 'no measured demand');
   const records = db.prepare('SELECT * FROM topic_candidates ORDER BY id').all() as any[];
   assert.equal(records.length, 3); assert.equal(records[0].dropReason, 'unverified'); assert.equal(records[1].score, 8); assert.equal(records[2].dropReason, null); assert.equal(JSON.parse(records[2].evidence).bing.impressions, 20); assert.ok(records[0].run_date);
   assert.equal(droppedSummary([{ query: 'low', score: 4, reason: 'unverified' }, { query: 'best', score: 8, reason: 'score<9' }, { query: 'kept', score: 10, reason: null }]), 'dropped best: best (8, score<9); low (4, unverified)');

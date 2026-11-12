@@ -24,7 +24,7 @@ import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
-import { autocomplete, verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, trendsFor, setDemandEvidence, researchFunnel, collectResearchAngles, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
+import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
 
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
@@ -315,72 +315,47 @@ type Topic = { title: string; slug: string; query: string; action: string; why: 
 
 export const researcherAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
-  const posts = c.cfg.listPosts(c.cfg.repo), s = weeklySummary(c.db, c.site.id, !!c.cfg.segments), b = battle(c.db, c.site);
-  const top = c.db.prepare("SELECT query, SUM(clicks) clicks, SUM(impressions) impressions, ROUND(SUM(position*impressions)/NULLIF(SUM(impressions),0),1) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= ? GROUP BY query ORDER BY impressions DESC LIMIT 40").all(c.site.id, dayAgo(60));
-  const backlog = c.db.prepare("SELECT slug FROM topics WHERE site_id = ?").all(c.site.id).map((r: any) => r.slug);
+  const posts = c.cfg.listPosts(c.cfg.repo);
+  const backlog = c.db.prepare("SELECT slug FROM topics WHERE site_id = ? AND (status IN ('drafted','published') OR (status = 'new' AND score >= 9))").all(c.site.id).map((r: any) => r.slug as string);
   const profileRow = c.db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(c.site.id) as { data_json: string } | undefined;
   let profile: any = {}; try { profile = JSON.parse(profileRow?.data_json ?? '{}'); } catch { /* no profile */ }
+  const services: string[] = Array.isArray(profile.services) ? profile.services : [];
+  const geoWords = [profile.city, profile.region, profile.country].filter((x): x is string => typeof x === 'string');
   const opts = { lang: c.cfg.lang, country: c.site.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', ownHost: new URL(c.site.url).hostname };
-  const gaps = b?.topicGaps ?? [];
-  const seeds = [...new Set([...(top as { query: string }[]).slice(0, 15).map((x) => x.query), ...gaps.slice(0, 15).map((x) => x.title)].filter(Boolean))];
-  const expansions = await Promise.all(seeds.map(async (query) => ({ query, suggestions: await autocomplete(query, opts), bing: await bingKeyword(query, opts.country, { db: c.db }) })));
-  const budget = makeBudget();
-  const wt = prepareWorktree(c.cfg, 'agent/research');
-  const relatedSeeds = expansions.flatMap((e) => e.bing?.related ?? []).sort((a, b) => b.impressions - a.impressions).slice(0, 50);
-  const common = `Eres investigador de temas SEO y GEO para ${c.site.url}. Escribe title, query y slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}. Propón hasta 12 temas relevantes para el cliente ideal; no inventes datos de demanda.
+  const taken = [...posts.flatMap((p) => [p.slug, p.title]), ...backlog];
+  const pool = await buildDemandPool(c.db, c.site.id, { ...opts, services, brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords, taken });
+  const clusters = clusterQueries(pool), shortlist = clusters.slice(0, 60);
+  const wt = prepareWorktree(c.cfg, 'agent/research'), budget = makeBudget();
+  const common = `Eres investigador de temas SEO y GEO para ${c.site.url}. Escribe title y slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}.
 Posts existentes: ${JSON.stringify(posts)}. Slugs en backlog: ${JSON.stringify(backlog)}.
 ${c.cfg.research.context}
 ${c.cfg.research.priority}
 ${audienceBrief(new URL(c.site.url).hostname)}${customerQuestions(new URL(c.site.url).hostname)}
-Elige búsquedas long-tail con intención clara, útiles para un cliente real, preferentemente perennes y con geo si es local; evita duplicar posts y usa merge:<slug> para ampliarlos. En why cita lo verificado.
+Elige hasta 12 clusters que el cliente ideal buscaría antes de comprar o contratar. Omite búsquedas sobre cosas que el negocio no vende (por ejemplo entradas para eventos). No inventes consultas. Evita duplicar posts y usa merge:<slug> para ampliarlos.
 ${c.cfg.rules}
-Responde SOLO con arreglo JSON: [{"title":"...","slug":"kebab-case","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras"}].`;
-  const angles = [
-    `Ángulo A1: preguntas y problemas del cliente ideal; usa el brief y consultas GSC: ${JSON.stringify(top)}. Autocompletado: ${JSON.stringify(expansions.map(({ query, suggestions }) => ({ query, suggestions })))}.`,
-    `Ángulo A2: oportunidades en temas de competidores y preguntas de clientes; busca SERP y PAA de rivales. Brechas: ${JSON.stringify(gaps.slice(0, 12))}. Consultas cerca de la primera página: ${JSON.stringify(s.strikingDistance)}.`,
-    `Ángulo A3: necesidades estacionales y comerciales (hoy ${mxNow().date}); usa estas consultas relacionadas de Bing ordenadas por impresiones: ${JSON.stringify(relatedSeeds)}.`,
-  ];
-  const proposed = await collectResearchAngles(angles, async (angle) => {
-    const text = await ask(c, { role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000, prompt: `${common}\n${angle}` });
-    return extractJson<Topic[]>(text);
-  }, (err) => err instanceof LimitError || err instanceof HybridLimit, () => c.log('Research usage limit: keeping candidates from completed angles.'));
-  const topics = proposed.filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.query === 'string' && t.query.trim() && typeof t.slug === 'string' && /^[a-z0-9-]+$/.test(t.slug));
+Clusters: ${JSON.stringify(shortlist.map((c) => ({ id: c.id, primary: c.primary, variants: c.members.map((m) => m.query), gscImpressions: c.gscImpressions, bestPosition: c.bestPosition, sources: c.sources })))}
+Responde SOLO con un arreglo JSON: [{"clusterId":"...","title":"...","slug":"kebab-case","action":"new"|"merge:<slug>","why":"máx 40 palabras","fit":true|false}]. fit indica si quien busca es un cliente potencial.`;
+  const text = await ask(c, { role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 15, timeoutMs: 1_200_000, prompt: common });
+  const proposed = extractJson<any[]>(text);
+  const ids = new Set(shortlist.map((cluster) => cluster.id));
+  if (Array.isArray(proposed)) for (const pick of proposed) if (!ids.has(pick?.clusterId)) c.log(`rejected out-of-pool: ${pick?.clusterId}`);
+  const accepted = acceptPicks(proposed, shortlist, [...posts.map((p) => p.slug), ...backlog]);
   const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score, segment, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  const impressions = c.db.prepare("SELECT COALESCE(SUM(impressions),0) n FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= ? AND date <= date('now') AND lower(trim(query)) = lower(trim(?))");
-  const taken = new Set([...posts.map((p) => p.slug), ...backlog]);
-  const seenQueries = new Set<string>();
   const rawMin = Number(process.env.MIN_TOPIC_SCORE ?? 9), min = Number.isFinite(rawMin) ? Math.max(9, Math.min(10, rawMin)) : 9;
-  const candidates: { topic: Topic; evidence: Awaited<ReturnType<typeof verifyQuery>>; gsc: number }[] = [];
-  for (const t of topics) {
-    const queryKey = t.query.trim().toLowerCase().replace(/\s+/g, ' ');
-    if (taken.has(t.slug) || seenQueries.has(queryKey)) continue;
-    taken.add(t.slug); seenQueries.add(queryKey);
-    const gsc = Number((impressions.get(c.site.id, dayAgo(60), t.query) as { n: number }).n);
-    const [evidence, bing] = await Promise.all([verifyQuery(t.query, { ...opts, ownImpressions60d: gsc }, { db: c.db, budget }), bingKeyword(t.query, opts.country, { db: c.db })]);
-    evidence.bing = bing;
-    // Related Bing queries sharing all substantive query words are close variants, not unrelated suggestions.
-    const words = queryKey.split(/\s+/).filter((w) => w.length > 2);
-    const variants = new Set((bing?.related ?? []).filter((v) => { const q = v.query.toLowerCase().trim(); return q !== queryKey && words.length > 0 && words.every((w) => q.split(/\s+/).includes(w)); }).map((v) => v.query.trim().toLowerCase()));
-    evidence.gscVariantImpressions60d = [...variants].reduce((sum, q) => sum + Number((impressions.get(c.site.id, dayAgo(60), q) as { n: number }).n), 0);
-    candidates.push({ topic: t, evidence, gsc });
-  }
-  candidates.sort((a, b) => (b.evidence.bing?.impressions ?? 0) + b.gsc + b.evidence.gscVariantImpressions60d - ((a.evidence.bing?.impressions ?? 0) + a.gsc + a.evidence.gscVariantImpressions60d));
-  const trends = await trendsFor(candidates.filter((x) => x.evidence.serpVerified && x.evidence.bing).map((x) => x.topic.query), opts.country, { db: c.db });
-  const risingQueries = new Set([...trends.values()].flatMap((t) => t.rising.map((q) => q.trim().toLowerCase().replace(/\s+/g, ' '))));
+  const candidates: Awaited<ReturnType<typeof verifyQuery>>[] = [], scored: ScoredCandidate[] = [];
   let n = 0;
-  const scored: ScoredCandidate[] = [];
-  for (const { topic: t, evidence, gsc } of candidates) {
-    setDemandEvidence(evidence, evidence.bing, trends.get(t.query) ?? null);
-    evidence.trendsRisingMatch = risingQueries.has(t.query.trim().toLowerCase().replace(/\s+/g, ' '));
-    const gap = gaps.some((g) => g.title.trim().toLowerCase() === t.query.trim().toLowerCase());
-    const score = scoreTopic(evidence, { gscImpressions: gsc + evidence.gscVariantImpressions60d, competitorGap: gap, isLocalBusiness: profile.scope === 'local' });
+  for (const t of accepted) {
+    const member = t.cluster.members.find((m) => m.query === t.query)!;
+    const [evidence, bing] = await Promise.all([verifyQuery(t.query, { ...opts, ownImpressions60d: member.gscImpressions }, { db: c.db, budget }), bingKeyword(t.query, opts.country, { db: c.db })]);
+    evidence.cluster = { id: t.cluster.id, gscImpressions: t.cluster.gscImpressions, bingImpressions: t.cluster.bingImpressions, sources: t.cluster.sources, bestPosition: t.cluster.bestPosition, members: t.cluster.members.map((m) => m.query) };
+    evidence.fit = t.fit; setDemandEvidence(evidence, bing, null); candidates.push(evidence);
+    const score = scoreTopic(evidence, { serviceWords: services, isLocalBusiness: profile.scope === 'local' });
     const reason = topicDropReason(evidence, score, min);
-    recordTopicCandidate(c.db, c.site.id, evidence, score, reason);
-    scored.push({ query: t.query, score, reason });
+    recordTopicCandidate(c.db, c.site.id, evidence, score, reason); scored.push({ query: t.query, score, reason });
     if (reason) continue;
-    n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action ?? 'new', `${t.why ?? ''}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
+    n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action, `${t.why}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
   }
-  const summary = `${researchFunnel(candidates.map((c) => c.evidence), n, min, trends.paused)}; ${droppedSummary(scored)}`;
+  const summary = `pool ${pool.length}; clusters ${clusters.length}; picked ${accepted.length}; ${researchFunnel(candidates, n, min)}; ${droppedSummary(scored)}`;
   c.log(summary);
   return summary;
 };
