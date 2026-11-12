@@ -52,7 +52,7 @@ export async function verifyQuery(query: string, opts: Options, deps: { db?: Dat
    Clear intent (2+ words)                   1
    Local query mentions its location, or non-local business 1
    Measured demand required: GSC > 0, Bing >= 10, or Trends > 0 and flat/up or rising.
-   All three sources must be available; unverified/zero-demand capped at 7; top 3 excluded. */
+   SERP and Bing must be available; unverified/zero-demand capped at 7; top 3 excluded. */
 export function scoreTopic(e: Evidence, opts: { gscImpressions: number; competitorGap: boolean; isLocalBusiness: boolean }): number {
   const q = normalize(e.query);
   let score = 1;
@@ -67,7 +67,7 @@ export function scoreTopic(e: Evidence, opts: { gscImpressions: number; competit
   return Math.max(1, Math.min(e.verified && measuredDemand(e) ? 10 : 7, score));
 }
 export function keepTopic(e: Evidence, score: number, min: number): boolean { return e.verified && measuredDemand(e) && !(e.ownRank != null && e.ownRank <= 3) && score >= min; }
-export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends 12m avg ${e.trends?.mean ?? 'unavailable'} ${e.trends?.slope ?? ''}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
+export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends ${e.trends ? `12m avg ${e.trends.mean} ${e.trends.slope}${e.trends.noData ? ' (no data)' : ''}` : 'not measured (optional)'}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
 
 export type BingData = { impressions: number; broadImpressions: number; related: { query: string; impressions: number; broadImpressions: number }[]; relatedDemand?: { query: string; impressions: number } | null };
 export type TrendData = { mean: number; last8Mean: number; slope: 'up' | 'flat' | 'down'; rising: string[]; top: string[]; noData?: boolean };
@@ -117,39 +117,44 @@ export function relatedDemand(query: string, related: BingData['related']): { qu
   return best;
 }
 export function setDemandEvidence(e: Evidence, bing: BingData | null, trends: TrendData | null): void {
-  e.bing = bing ? { ...bing, relatedDemand: relatedDemand(e.query, bing.related) } : null; e.trends = trends; e.verified = e.serpVerified && bing !== null && trends !== null;
+  e.bing = bing ? { ...bing, relatedDemand: relatedDemand(e.query, bing.related) } : null; e.trends = trends; e.verified = e.serpVerified && bing !== null;
 }
 export function measuredDemand(e: Evidence): boolean {
   return e.ownImpressions60d + e.gscVariantImpressions60d > 0 || Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0) >= 10 || !!e.trends && ((e.trends.mean > 0 && e.trends.slope !== 'down') || (e.trendsRisingMatch || e.trends.rising.some((q) => normalize(q) === normalize(e.query))));
 }
 /** Cached queries do not consume the per-run allowance. */
-export async function trendsFor(queries: string[], country: string, deps: { db?: DatabaseSync; max?: number; run?: (queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void) => Promise<void> } = {}): Promise<Map<string, TrendData>> {
-  const out = new Map<string, TrendData>(), locale = marketLocale(country); if (!locale) return out;
+export async function trendsFor(queries: string[], country: string, deps: { db?: DatabaseSync; max?: number; run?: (queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void, onBlocked: () => void) => Promise<void> } = {}): Promise<Map<string, TrendData> & { paused: boolean }> {
+  const out = Object.assign(new Map<string, TrendData>(), { paused: false });
+  const blocked = deps.db?.prepare("SELECT 1 FROM research_cache WHERE key = 'topic-trends-blocked' AND created_at > datetime('now', '-60 minutes')").get();
+  if (blocked) { out.paused = true; return out; }
+  const locale = marketLocale(country); if (!locale) return out;
   const cacheKey = (q: string) => 'topic-trends:' + JSON.stringify([normalize(q), locale]);
   const missing: string[] = [];
   for (const q of [...new Set(queries)]) { const data = parseTrend(cacheGet(deps.db, cacheKey(q))); if (data) out.set(q, data); else missing.push(q); }
   const envMax = process.env.TOPIC_TRENDS_MAX, max = deps.max ?? (envMax != null && /^\d+$/.test(envMax) ? Number(envMax) : 12);
   const selected = missing.slice(0, max);
   if (selected.length) try {
-    await (deps.run ?? runTrends)(selected, country, (query, raw, noData) => { if (!selected.includes(query)) return; const data = parseTrend(noData === true && raw && typeof raw === 'object' ? { ...raw, noData: true } : raw); if (data) { out.set(query, data); cachePut(deps.db, cacheKey(query), data); } });
-  } catch { /* unavailable */ }
+    await (deps.run ?? runTrends)(selected, country, (query, raw, noData) => { if (!selected.includes(query)) return; const data = parseTrend(noData === true && raw && typeof raw === 'object' ? { ...raw, noData: true } : raw); if (data) { out.set(query, data); cachePut(deps.db, cacheKey(query), data); } }, () => { out.paused = true; cachePut(deps.db, 'topic-trends-blocked', { reason: '429' }); });
+  } catch (err) {
+    if (/429|TooManyRequestsError/i.test(String(err))) { out.paused = true; cachePut(deps.db, 'topic-trends-blocked', { reason: '429' }); }
+  }
   return out;
 }
-async function runTrends(queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void): Promise<void> {
+async function runTrends(queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void, onBlocked: () => void): Promise<void> {
   await new Promise<void>((resolve) => {
     const child = spawn(process.env.TRENDS_PY || '/home/darrkito/Yume/.trends-venv/bin/python3', [join(import.meta.dirname, 'trends.py')], { stdio: ['pipe', 'pipe', 'ignore'] });
     let pending = '';
     const timer = setTimeout(() => child.kill(), Math.min(30 * 60_000, queries.length * 90_000 + 30_000));
-    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { pending += chunk; const lines = pending.split('\n'); pending = lines.pop()!; for (const line of lines) try { const result = JSON.parse(line); onResult(result.query, result.data, result.noData); } catch { /* ignore invalid output */ } });
+    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { pending += chunk; const lines = pending.split('\n'); pending = lines.pop()!; for (const line of lines) try { const result = JSON.parse(line); if (result.event === 'rate_limited') onBlocked(); else onResult(result.query, result.data, result.noData); } catch { /* ignore invalid output */ } });
     child.on('error', () => { clearTimeout(timer); resolve(); }); child.on('close', () => { clearTimeout(timer); resolve(); });
     child.stdin.on('error', () => {}); child.stdin.end(JSON.stringify({ queries, country }));
   });
 }
 
 /** Funnel counts are over valid, deduplicated candidates submitted for verification. */
-export function researchFunnel(evidence: Evidence[], kept: number, min: number): string {
+export function researchFunnel(evidence: Evidence[], kept: number, min: number, trendsPaused = false): string {
   const serp = evidence.filter((e) => e.serpVerified).length, bing = evidence.filter((e) => e.bing !== null).length;
   const measured = evidence.filter((e) => e.trends !== null).length, noData = evidence.filter((e) => e.trends?.noData === true).length;
   const demand = evidence.filter((e) => e.verified && measuredDemand(e)).length;
-  return `candidates ${evidence.length}; serp ok ${serp}; bing ok ${bing}; trends measured ${measured} (noData ${noData}, unmeasured ${evidence.length - measured}); demand-gated ${demand}; kept ${kept} (>=${min})`;
+  return `candidates ${evidence.length}; serp ok ${serp}; bing ok ${bing}; trends ${trendsPaused ? 'paused; trends ' : ''}measured ${measured} (noData ${noData}, unmeasured ${evidence.length - measured}); demand-gated ${demand}; kept ${kept} (>=${min})`;
 }

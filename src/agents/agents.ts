@@ -378,7 +378,7 @@ ${c.cfg.rules}\n${c.cfg.writerRules}`,
     if (!keepTopic(evidence, score, min)) continue;
     n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action ?? 'new', `${t.why ?? ''}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
   }
-  const summary = researchFunnel(candidates.map((c) => c.evidence), n, min);
+  const summary = researchFunnel(candidates.map((c) => c.evidence), n, min, trends.paused);
   c.log(summary);
   return summary;
 };

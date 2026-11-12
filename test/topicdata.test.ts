@@ -52,7 +52,7 @@ test('Trends contract, limit and cache preserve completed results on failure', a
   const trend = { mean: 31, last8Mean: 35, slope: 'up', rising: ['other query'], top: [] };
   assert.deepEqual(parseTrend(trend), trend); assert.equal(parseTrend({ ...trend, slope: 'rising' }), null);
   let selected: string[] = [];
-  const run = async (queries: string[], _country: string, onResult: (query: string, data: unknown) => void) => { selected = queries; onResult(queries[0], trend); throw Error('429'); };
+  const run = async (queries: string[], _country: string, onResult: (query: string, data: unknown) => void) => { selected = queries; onResult(queries[0], trend); throw Error('network unavailable'); };
   const first = await trendsFor(['a', 'b', 'c'], 'US', { db, max: 2, run });
   assert.deepEqual(selected, ['a', 'b']); assert.deepEqual(first.get('a'), trend); assert.equal(first.has('b'), false);
   const second = await trendsFor(['a', 'b'], 'US', { db, max: 0, run }); assert.deepEqual(second.get('a'), trend); assert.equal(second.has('b'), false);
@@ -61,7 +61,8 @@ test('Trends contract, limit and cache preserve completed results on failure', a
 test('measured demand gates a high score', async () => {
   const e = await verifyQuery('how to paint', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
   setDemandEvidence(e, null, null); assert.equal(e.verified, false);
-  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [] }, null); assert.equal(e.verified, false);
+  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [] }, null); assert.equal(e.verified, true); assert.equal(keepTopic(e, 9, 9), false);
+  setDemandEvidence(e, { impressions: 10, broadImpressions: 10, related: [] }, null); assert.equal(e.verified, true); assert.equal(keepTopic(e, 9, 9), true);
   setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [] }, { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] }); assert.equal(e.verified, true);
   const args = { gscImpressions: 0, competitorGap: true, isLocalBusiness: false };
   e.bing = { impressions: 0, broadImpressions: 20, related: [] }; e.trends = { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] };
@@ -92,7 +93,7 @@ test('related Bing demand uses meaningful token overlap or a three-word prefix',
   assert.match(evidenceLine(e), /mantenimiento planta oficinas, 40 imp/);
   setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [rows[0]] }, zero);
   assert.equal(measuredDemand(e), false); assert.ok(scoreTopic(e, { gscImpressions: 0, competitorGap: true, isLocalBusiness: false }) <= 7);
-  setDemandEvidence(e, e.bing, null); assert.equal(e.verified, false);
+  setDemandEvidence(e, e.bing, null); assert.equal(e.verified, true);
 });
 
 test('measured zero survives Trends cache, and funnel reports each stage', async () => {
@@ -127,6 +128,46 @@ test('Python Trends emits measured zero for empty and missing frames, stops on 4
     });
     assert.equal(result.code, 0, result.stderr);
     const lines = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(lines, ['empty', 'missing'].map((query) => ({ query, data: { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] }, noData: true })));
+    assert.deepEqual(lines, [...['empty', 'missing'].map((query) => ({ query, data: { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] }, noData: true })), { event: 'rate_limited' }]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('429 pauses future runs for an hour and preserves results obtained first', async () => {
+  const { researchFunnel, evidenceLine } = await import('../src/agents/topicdata.ts');
+  const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE research_cache (key TEXT PRIMARY KEY, text TEXT, created_at TEXT)');
+  const trend = { mean: 25, last8Mean: 25, slope: 'flat', rising: [], top: [] };
+  let calls = 0;
+  const run = async (queries: string[], _country: string, onResult: (q: string, data: unknown) => void, onBlocked: () => void) => { calls++; onResult(queries[0], trend); onBlocked(); };
+  const first = await trendsFor(['a', 'b'], 'US', { db, run });
+  assert.equal(first.paused, true); assert.deepEqual(first.get('a'), trend); assert.equal(calls, 1);
+  assert.ok(db.prepare("SELECT 1 FROM research_cache WHERE key = 'topic-trends-blocked'").get());
+  const paused = await trendsFor(['a', 'b'], 'US', { db, run }); assert.equal(paused.paused, true); assert.equal(paused.size, 0); assert.equal(calls, 1);
+  assert.match(researchFunnel([], 0, 9, paused.paused), /trends paused/);
+  db.prepare("UPDATE research_cache SET created_at = datetime('now', '-61 minutes') WHERE key = 'topic-trends-blocked'").run();
+  const again = await trendsFor(['a', 'b'], 'US', { db, run }); assert.equal(calls, 2); assert.deepEqual(again.get('a'), trend);
+  const e = await verifyQuery('how to paint', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  setDemandEvidence(e, { impressions: 10, broadImpressions: 10, related: [] }, null);
+  assert.match(evidenceLine(e), /Trends not measured \(optional\)/); assert.equal(keepTopic(e, 9, 9), true);
+  db.close();
+});
+
+test('Python emits interest before a related-queries 429 and then stops', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { spawn } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'trends-related-'));
+  try {
+    mkdirSync(join(dir, 'pytrends')); writeFileSync(join(dir, 'pytrends', '__init__.py'), '');
+    writeFileSync(join(dir, 'pytrends', 'request.py'), `class Series:\n    def tolist(self): return [10, 20]\nclass Frame:\n    empty = False\n    def __contains__(self, key): return True\n    def __getitem__(self, key): return Series()\nclass TrendReq:\n    def __init__(self, **kwargs): pass\n    def _get_data(self, *args, **kwargs): pass\n    def build_payload(self, queries, **kwargs): pass\n    def interest_over_time(self): return Frame()\n    def related_queries(self): raise Exception('429')\n`);
+    const result = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+      const child = spawn('/usr/bin/python3', ['src/agents/trends.py'], { cwd: process.cwd(), env: { ...process.env, PYTHONPATH: dir } });
+      let stdout = ''; child.stdout.on('data', (chunk) => { stdout += chunk; }); child.on('error', reject); child.on('close', (code) => resolve({ code, stdout }));
+      child.stdin.end(JSON.stringify({ country: 'US', queries: ['first', 'later'] }));
+    });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.stdout.trim().split('\n').map((line) => JSON.parse(line)), [
+      { query: 'first', data: { mean: 15, last8Mean: 15, slope: 'flat', rising: [], top: [] } }, { event: 'rate_limited' },
+    ]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
