@@ -24,6 +24,7 @@ const HELP = `seo-watchdog <command>
   agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
   research-replay <site> [--no-expand]  report demand clusters without an LLM
   research-rescore <site> [--apply]  review new topics against GSC demand
+  research-outcomes [site]  report published topic impressions
   tokens [days]             token and cost report (default: 7 days)
   approvals                 list pending drafts/fixes; approve|reject <id> decides one
   mute <finding-id> | unmute <finding-id>
@@ -120,30 +121,35 @@ switch (cmd) {
   }
   case 'research-replay': {
     const s = site(arg), { AGENT_SITES } = await import('./agents/sites.ts');
-    const { buildDemandPool, clusterQueries, replayReport } = await import('./agents/topicdata.ts');
+    const { buildDemandPool, clusterQueries, replayReport, takenSlugs } = await import('./agents/topicdata.ts');
     const cfg = AGENT_SITES[new URL(s.url).hostname.replace(/^www\./, '')];
     const row = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(s.id) as { data_json: string } | undefined;
     let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
     const posts = cfg?.listPosts(cfg.repo) ?? [];
-    const backlog = db.prepare('SELECT slug FROM topics WHERE site_id = ?').all(s.id) as { slug: string }[];
-    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string'), taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog.map((p) => p.slug)] }, { expand: !opt['no-expand'] });
+    const backlog = takenSlugs(db, s.id);
+    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string'), taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog] }, { expand: !opt['no-expand'] });
     console.log(replayReport(clusterQueries(pool), pool));
     break;
   }
   case 'research-rescore': {
     const s = site(arg), { AGENT_SITES } = await import('./agents/sites.ts');
-    const { buildDemandPool, clusterQueries, clusterId, rescoreVerdict } = await import('./agents/topicdata.ts');
+    const { buildDemandPool, clusterQueries, clusterId, rescoreVerdict, takenSlugs } = await import('./agents/topicdata.ts');
     const cfg = AGENT_SITES[new URL(s.url).hostname.replace(/^www\./, '')];
     const row = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(s.id) as { data_json: string } | undefined;
     let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
-    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string') }, { expand: false });
-    const clusters = new Map(clusterQueries(pool).map((c) => [c.id, c]));
-    const topics = db.prepare("SELECT id, score, query, title FROM topics WHERE site_id = ? AND status = 'new'").all(s.id) as { id: number; score: number; query: string; title: string }[];
+    const poolOpts = { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string') };
+    const taken = takenSlugs(db, s.id);
+    const topics = db.prepare("SELECT id, score, query, title, slug FROM topics WHERE site_id = ? AND status = 'new'").all(s.id) as { id: number; score: number; query: string; title: string; slug: string }[];
     const update = db.prepare("UPDATE topics SET status = 'rejected' WHERE id = ? AND site_id = ? AND status = 'new'");
     let rejected = 0;
     console.log('Old score\tGSC impressions\tVerdict\tTitle');
-    for (const topic of topics) { const cluster = clusters.get(clusterId(topic.query ?? '')), verdict = rescoreVerdict(cluster); console.log(`${topic.score}\t${cluster?.gscImpressions ?? '-'}\t${verdict}\t${topic.title}`); if (verdict === 'reject') { rejected++; if (opt.apply) update.run(topic.id, s.id); } }
+    for (const topic of topics) { const pool = await buildDemandPool(db, s.id, { ...poolOpts, taken: taken.filter((slug) => slug !== topic.slug) }, { expand: false }); const cluster = clusterQueries(pool).find((c) => c.id === clusterId(topic.query ?? '')), verdict = rescoreVerdict(cluster); console.log(`${topic.score}\t${cluster?.gscImpressions ?? '-'}\t${verdict}\t${topic.title}`); if (verdict === 'reject') { rejected++; if (opt.apply) update.run(topic.id, s.id); } }
     console.log(opt.apply ? `kept ${topics.length - rejected}; rejected ${rejected}` : 'dry run');
+    break;
+  }
+  case 'research-outcomes': {
+    const { researchOutcomes } = await import('./agents/topicdata.ts');
+    console.table(researchOutcomes(db, arg ? site(arg).id : undefined).map((row) => ({ ...row, hitRate: `${(100 * row.withImpressions / row.topics).toFixed(1)}%` })));
     break;
   }
   case 'agent': {

@@ -24,7 +24,7 @@ import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
-import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
+import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, headTerms, trendsFor, trendForCluster, takenSlugs, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
 
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
@@ -316,7 +316,7 @@ type Topic = { title: string; slug: string; query: string; action: string; why: 
 export const researcherAgent: AgentFn = async (c) => {
   if (!c.cfg) throw new Error('no agent config for this site');
   const posts = c.cfg.listPosts(c.cfg.repo);
-  const backlog = c.db.prepare("SELECT slug FROM topics WHERE site_id = ? AND (status IN ('drafted','published') OR (status = 'new' AND score >= 9))").all(c.site.id).map((r: any) => r.slug as string);
+  const backlog = takenSlugs(c.db, c.site.id);
   const profileRow = c.db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(c.site.id) as { data_json: string } | undefined;
   let profile: any = {}; try { profile = JSON.parse(profileRow?.data_json ?? '{}'); } catch { /* no profile */ }
   const services: string[] = Array.isArray(profile.services) ? profile.services : [];
@@ -334,12 +334,13 @@ ${audienceBrief(new URL(c.site.url).hostname)}${customerQuestions(new URL(c.site
 Elige hasta 12 clusters que el cliente ideal buscaría antes de comprar o contratar. Omite búsquedas sobre cosas que el negocio no vende (por ejemplo entradas para eventos). No inventes consultas. Evita duplicar posts y usa merge:<slug> para ampliarlos.
 ${c.cfg.rules}
 Clusters: ${JSON.stringify(shortlist.map((c) => ({ id: c.id, primary: c.primary, variants: c.members.map((m) => m.query), gscImpressions: c.gscImpressions, bestPosition: c.bestPosition, sources: c.sources })))}
-Responde SOLO con un arreglo JSON: [{"clusterId":"...","title":"...","slug":"kebab-case","action":"new"|"merge:<slug>","why":"máx 40 palabras","fit":true|false}]. fit indica si quien busca es un cliente potencial.`;
+Responde SOLO con un arreglo JSON: [{"clusterId":"...","title":"...","slug":"kebab-case","action":"new"|"merge:<slug>","why":"máx 40 palabras","fit":true|false}]. fit indica si quien busca es un cliente potencial. fit debe ser false cuando la redacción o el idioma de la consulta indique que quien busca está fuera del mercado del sitio (por ejemplo, consultas en inglés o de dialecto extranjero para un negocio local mexicano), aunque tenga muchas impresiones.`;
   const text = await ask(c, { role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 15, timeoutMs: 1_200_000, prompt: common });
   const proposed = extractJson<any[]>(text);
   const ids = new Set(shortlist.map((cluster) => cluster.id));
   if (Array.isArray(proposed)) for (const pick of proposed) if (!ids.has(pick?.clusterId)) c.log(`rejected out-of-pool: ${pick?.clusterId}`);
   const accepted = acceptPicks(proposed, shortlist, [...posts.map((p) => p.slug), ...backlog]);
+  const trends = await trendsFor(headTerms(clusters, services), opts.country, { db: c.db, max: 5 });
   const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score, segment, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const rawMin = Number(process.env.MIN_TOPIC_SCORE ?? 9), min = Number.isFinite(rawMin) ? Math.max(9, Math.min(10, rawMin)) : 9;
   const candidates: Awaited<ReturnType<typeof verifyQuery>>[] = [], scored: ScoredCandidate[] = [];
@@ -348,14 +349,14 @@ Responde SOLO con un arreglo JSON: [{"clusterId":"...","title":"...","slug":"keb
     const member = t.cluster.members.find((m) => m.query === t.query)!;
     const [evidence, bing] = await Promise.all([verifyQuery(t.query, { ...opts, ownImpressions60d: member.gscImpressions }, { db: c.db, budget }), bingKeyword(t.query, opts.country, { db: c.db })]);
     evidence.cluster = { id: t.cluster.id, gscImpressions: t.cluster.gscImpressions, bingImpressions: t.cluster.bingImpressions, sources: t.cluster.sources, bestPosition: t.cluster.bestPosition, members: t.cluster.members.map((m) => m.query) };
-    evidence.fit = t.fit; setDemandEvidence(evidence, bing, null); candidates.push(evidence);
+    evidence.fit = t.fit; setDemandEvidence(evidence, bing, trendForCluster(t.cluster, trends)); candidates.push(evidence);
     const score = scoreTopic(evidence, { serviceWords: services, isLocalBusiness: profile.scope === 'local' });
     const reason = topicDropReason(evidence, score, min);
     recordTopicCandidate(c.db, c.site.id, evidence, score, reason); scored.push({ query: t.query, score, reason });
     if (reason) continue;
     n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action, `${t.why}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
   }
-  const summary = `pool ${pool.length}; clusters ${clusters.length}; picked ${accepted.length}; ${researchFunnel(candidates, n, min)}; ${droppedSummary(scored)}`;
+  const summary = `pool ${pool.length}; clusters ${clusters.length}; picked ${accepted.length}; ${researchFunnel(candidates, n, min, trends.paused)}; ${droppedSummary(scored)}`;
   c.log(summary);
   return summary;
 };

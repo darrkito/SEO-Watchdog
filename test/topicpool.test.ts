@@ -43,3 +43,27 @@ test('picks use pool queries and rescore uses cluster demand', async () => {
   assert.equal(accepted.length, 1); assert.equal(accepted[0].query, entry.query); assert.equal(clusterId('móviles oficinas'), clusters[0].id);
   assert.equal(rescoreVerdict(clusters[0]), 'keep'); assert.equal(rescoreVerdict({ ...clusters[0], gscImpressions: 9 }), 'reject'); assert.equal(rescoreVerdict(undefined), 'reject');
 });
+
+test('PAA uses market locale, caches seeds and limits uncached calls', async () => {
+  const db = database(); insert(db, 'oficinas moviles', 20, 8); insert(db, 'banos portatiles', 10, 8); let bodies: any[] = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).includes('serper.dev')) { bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify({ peopleAlsoAsk: [{ question: `${bodies.at(-1).q} precio` }], relatedSearches: [{ query: `${bodies.at(-1).q} costos` }, { query: 'clima guadalajara' }] })); }
+    return new Response(JSON.stringify(['', []]));
+  };
+  const opts = { lang: 'es', country: 'MX' }, deps = { fetch: fetcher as typeof fetch, apiKey: 'key', paaMax: 1 };
+  const first = await buildDemandPool(db, 1, opts, deps); assert.deepEqual(bodies, [{ q: 'oficinas moviles', hl: 'es-419' }]);
+  assert.ok(first.some((e) => e.sources.includes('paa') && e.suggestedBy.includes('oficinas moviles'))); assert.ok(!first.some((e) => e.query === 'clima guadalajara'));
+  bodies = []; await buildDemandPool(db, 1, opts, { ...deps, paaMax: 0 }); assert.equal(bodies.length, 0);
+  await buildDemandPool(db, 1, opts, deps); assert.deepEqual(bodies, [{ q: 'banos portatiles', hl: 'es-419' }]);
+  bodies = []; await buildDemandPool(db, 1, { lang: 'en', country: 'US' }, deps); assert.deepEqual(bodies, [{ q: 'oficinas moviles', gl: 'us', hl: 'en' }]); db.close();
+});
+
+test('head terms and trend selection use significant cluster words', async () => {
+  const { headTerms, trendForCluster } = await import('../src/agents/topicdata.ts');
+  const entry = (query: string, n: number): PoolEntry => ({ query, sources: ['gsc'], gscImpressions: n, gscPosition: 8, bingImpressions: 0, suggestedBy: [] });
+  const clusters = clusterQueries([entry('oficinas moviles guadalajara precio', 30), entry('oficinas moviles', 20), entry('baños portatiles', 10)]);
+  assert.deepEqual(headTerms(clusters, ['móviles oficinas', 'industrial maintenance', 'one']), ['oficinas moviles', 'baños portatiles', 'industrial maintenance']);
+  const trend = (mean: number, noData = false) => ({ mean, last8Mean: mean, slope: 'flat' as const, rising: [], top: [], noData });
+  const trends = new Map([['oficinas moviles', trend(20)], ['moviles guadalajara', trend(50)], ['precio oficinas', trend(90, true)], ['other term', trend(100)]]);
+  assert.equal(trendForCluster(clusters[0], trends)?.mean, 50); assert.equal(trendForCluster(clusters[2], trends), null);
+});

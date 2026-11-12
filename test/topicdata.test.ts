@@ -199,3 +199,22 @@ test('three distinct research angles collect candidates and stop safely on later
   await assert.rejects(collectResearchAngles(angles, async () => { throw Error('limit'); }, () => true, () => {}), /limit/);
   await assert.rejects(collectResearchAngles(angles, async (angle) => { if (angle === 'rivals') throw Error('failure'); return [angle]; }, () => false, () => {}), /failure/);
 });
+
+test('PAA cluster supplies suggestion demand and evidence', async () => {
+  const { demandPoints, evidenceLine } = await import('../src/agents/topicdata.ts');
+  const e = await verifyQuery('industrial maintenance', opts, { apiKey: '', fetch: fake as typeof fetch });
+  e.cluster = { id: 'industrial-maintenance', gscImpressions: 0, bingImpressions: 0, sources: ['paa'], bestPosition: null, members: ['industrial maintenance'] }; e.ownImpressions60d = 0;
+  assert.equal(demandPoints(e), 3); assert.match(evidenceLine(e), /questions; /);
+});
+
+test('taken slugs and published outcomes use site, status, score and query clusters', async () => {
+  const { openDb } = await import('../src/db.ts'); const { takenSlugs, researchOutcomes } = await import('../src/agents/topicdata.ts');
+  const db = openDb(':memory:');
+  const topic = db.prepare('INSERT INTO topics (site_id, title, slug, query, score, status) VALUES (?, ?, ?, ?, ?, ?)');
+  topic.run(1, 'a', 'a', ' Oficinas móviles ', 9, 'published'); topic.run(1, 'b', 'b', 'no demand', 8, 'published'); topic.run(1, 'c', 'c', 'other term', 6, 'published'); topic.run(1, 'd', 'd', '', 10, 'published'); topic.run(1, 'e', 'e', 'pending topic', 9, 'new'); topic.run(1, 'f', 'f', 'pending low', 8, 'new'); topic.run(1, 'g', 'g', 'draft term', 1, 'drafted'); topic.run(2, 'h', 'h', 'oficinas moviles', 10, 'published');
+  const metric = db.prepare("INSERT INTO metrics (site_id, source, date, query, impressions) VALUES (?, ?, ?, ?, ?)");
+  metric.run(1, 'gsc', new Date().toISOString().slice(0, 10), 'OFICINAS MÓVILES', 5); metric.run(1, 'gsc', new Date().toISOString().slice(0, 10), 'moviles oficinas', 7); metric.run(1, 'gsc', '2000-01-01', 'oficinas moviles', 100); metric.run(1, 'bing', new Date().toISOString().slice(0, 10), 'other term', 100);
+  assert.deepEqual(takenSlugs(db, 1).sort(), ['a', 'b', 'c', 'd', 'e', 'g']);
+  assert.deepEqual(researchOutcomes(db, 1), [{ siteId: 1, bucket: '9-10', topics: 1, withImpressions: 1, impressions: 12 }, { siteId: 1, bucket: '7-8', topics: 1, withImpressions: 0, impressions: 0 }, { siteId: 1, bucket: '<7', topics: 1, withImpressions: 0, impressions: 0 }]);
+  assert.equal(researchOutcomes(db).length, 4); db.close();
+});
