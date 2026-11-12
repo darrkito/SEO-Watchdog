@@ -24,7 +24,7 @@ import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
-import { autocomplete, verifyQuery, scoreTopic, keepTopic, evidenceLine, makeBudget, bingKeyword, trendsFor, setDemandEvidence } from './topicdata.ts';
+import { autocomplete, verifyQuery, scoreTopic, keepTopic, evidenceLine, makeBudget, bingKeyword, trendsFor, setDemandEvidence, researchFunnel } from './topicdata.ts';
 
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
@@ -369,17 +369,18 @@ ${c.cfg.rules}\n${c.cfg.writerRules}`,
   candidates.sort((a, b) => (b.evidence.bing?.impressions ?? 0) + b.gsc + b.evidence.gscVariantImpressions60d - ((a.evidence.bing?.impressions ?? 0) + a.gsc + a.evidence.gscVariantImpressions60d));
   const trends = await trendsFor(candidates.filter((x) => x.evidence.serpVerified && x.evidence.bing).map((x) => x.topic.query), opts.country, { db: c.db });
   const risingQueries = new Set([...trends.values()].flatMap((t) => t.rising.map((q) => q.trim().toLowerCase().replace(/\s+/g, ' '))));
-  let n = 0, verified = 0;
+  let n = 0;
   for (const { topic: t, evidence, gsc } of candidates) {
     setDemandEvidence(evidence, evidence.bing, trends.get(t.query) ?? null);
     evidence.trendsRisingMatch = risingQueries.has(t.query.trim().toLowerCase().replace(/\s+/g, ' '));
-    if (evidence.verified) verified++;
     const gap = gaps.some((g) => g.title.trim().toLowerCase() === t.query.trim().toLowerCase());
     const score = scoreTopic(evidence, { gscImpressions: gsc + evidence.gscVariantImpressions60d, competitorGap: gap, isLocalBusiness: profile.scope === 'local' });
     if (!keepTopic(evidence, score, min)) continue;
     n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action ?? 'new', `${t.why ?? ''}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
   }
-  return `${n} topics kept (score>=${min}) of ${verified} verified; ${topics.length - n} dropped; serper calls ${budget.calls}`;
+  const summary = researchFunnel(candidates.map((c) => c.evidence), n, min);
+  c.log(summary);
+  return summary;
 };
 
 // ---------- writer ----------

@@ -67,10 +67,10 @@ export function scoreTopic(e: Evidence, opts: { gscImpressions: number; competit
   return Math.max(1, Math.min(e.verified && measuredDemand(e) ? 10 : 7, score));
 }
 export function keepTopic(e: Evidence, score: number, min: number): boolean { return e.verified && measuredDemand(e) && !(e.ownRank != null && e.ownRank <= 3) && score >= min; }
-export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d; Trends 12m avg ${e.trends?.mean ?? 'unavailable'} ${e.trends?.slope ?? ''}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
+export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends 12m avg ${e.trends?.mean ?? 'unavailable'} ${e.trends?.slope ?? ''}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
 
-export type BingData = { impressions: number; broadImpressions: number; related: { query: string; impressions: number; broadImpressions: number }[] };
-export type TrendData = { mean: number; last8Mean: number; slope: 'up' | 'flat' | 'down'; rising: string[]; top: string[] };
+export type BingData = { impressions: number; broadImpressions: number; related: { query: string; impressions: number; broadImpressions: number }[]; relatedDemand?: { query: string; impressions: number } | null };
+export type TrendData = { mean: number; last8Mean: number; slope: 'up' | 'flat' | 'down'; rising: string[]; top: string[]; noData?: boolean };
 export function marketLocale(country: string): { country: string; language: string } | null {
   const c = country.toUpperCase(); return c === 'MX' ? { country: 'mx', language: 'es-MX' } : c === 'US' ? { country: 'us', language: 'en-US' } : null;
 }
@@ -100,16 +100,30 @@ export async function bingKeyword(query: string, country: string, deps: { db?: D
 export function parseTrend(value: any): TrendData | null {
   const valid = (x: any) => typeof x === 'number' && Number.isFinite(x) && x >= 0;
   if (!value || !valid(value.mean) || !valid(value.last8Mean) || !['up', 'flat', 'down'].includes(value.slope) || !Array.isArray(value.rising) || !value.rising.every((x: any) => typeof x === 'string') || !Array.isArray(value.top) || !value.top.every((x: any) => typeof x === 'string')) return null;
-  return { mean: value.mean, last8Mean: value.last8Mean, slope: value.slope, rising: value.rising, top: value.top };
+  if (value.noData !== undefined && typeof value.noData !== 'boolean') return null;
+  return { mean: value.mean, last8Mean: value.last8Mean, slope: value.slope, rising: value.rising, top: value.top, ...(value.noData === true ? { noData: true } : {}) };
+}
+// Compare whole normalized words; repeated words cannot inflate overlap. Prefixes must contain three words.
+const STOPWORDS = new Set('a al ante bajo con contra de del desde durante el en entre es la las lo los para por que se sin sobre su un una unas uno unos y the a an and at by for from in of on or the to with'.split(' '));
+const wordsOf = (s: string) => (s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+export function relatedDemand(query: string, related: BingData['related']): { query: string; impressions: number } | null {
+  const words = wordsOf(query), significant = new Set(words.filter((w) => !STOPWORDS.has(w)));
+  let best: { query: string; impressions: number } | null = null;
+  for (const item of related) {
+    const candidate = wordsOf(item.query), overlap = new Set(candidate.filter((w) => significant.has(w)));
+    const prefix = words.length >= 3 && candidate.length >= 3 && words.slice(0, 3).every((word, i) => candidate[i] === word);
+    if ((overlap.size >= 2 || prefix) && (!best || item.impressions > best.impressions)) best = { query: item.query, impressions: item.impressions };
+  }
+  return best;
 }
 export function setDemandEvidence(e: Evidence, bing: BingData | null, trends: TrendData | null): void {
-  e.bing = bing; e.trends = trends; e.verified = e.serpVerified && !!bing && !!trends;
+  e.bing = bing ? { ...bing, relatedDemand: relatedDemand(e.query, bing.related) } : null; e.trends = trends; e.verified = e.serpVerified && bing !== null && trends !== null;
 }
 export function measuredDemand(e: Evidence): boolean {
-  return e.ownImpressions60d + e.gscVariantImpressions60d > 0 || (e.bing?.impressions ?? 0) >= 10 || !!e.trends && ((e.trends.mean > 0 && e.trends.slope !== 'down') || (e.trendsRisingMatch || e.trends.rising.some((q) => normalize(q) === normalize(e.query))));
+  return e.ownImpressions60d + e.gscVariantImpressions60d > 0 || Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0) >= 10 || !!e.trends && ((e.trends.mean > 0 && e.trends.slope !== 'down') || (e.trendsRisingMatch || e.trends.rising.some((q) => normalize(q) === normalize(e.query))));
 }
 /** Cached queries do not consume the per-run allowance. */
-export async function trendsFor(queries: string[], country: string, deps: { db?: DatabaseSync; max?: number; run?: (queries: string[], country: string, onResult: (query: string, data: unknown) => void) => Promise<void> } = {}): Promise<Map<string, TrendData>> {
+export async function trendsFor(queries: string[], country: string, deps: { db?: DatabaseSync; max?: number; run?: (queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void) => Promise<void> } = {}): Promise<Map<string, TrendData>> {
   const out = new Map<string, TrendData>(), locale = marketLocale(country); if (!locale) return out;
   const cacheKey = (q: string) => 'topic-trends:' + JSON.stringify([normalize(q), locale]);
   const missing: string[] = [];
@@ -117,17 +131,25 @@ export async function trendsFor(queries: string[], country: string, deps: { db?:
   const envMax = process.env.TOPIC_TRENDS_MAX, max = deps.max ?? (envMax != null && /^\d+$/.test(envMax) ? Number(envMax) : 12);
   const selected = missing.slice(0, max);
   if (selected.length) try {
-    await (deps.run ?? runTrends)(selected, country, (query, raw) => { if (!selected.includes(query)) return; const data = parseTrend(raw); if (data) { out.set(query, data); cachePut(deps.db, cacheKey(query), data); } });
+    await (deps.run ?? runTrends)(selected, country, (query, raw, noData) => { if (!selected.includes(query)) return; const data = parseTrend(noData === true && raw && typeof raw === 'object' ? { ...raw, noData: true } : raw); if (data) { out.set(query, data); cachePut(deps.db, cacheKey(query), data); } });
   } catch { /* unavailable */ }
   return out;
 }
-async function runTrends(queries: string[], country: string, onResult: (query: string, data: unknown) => void): Promise<void> {
+async function runTrends(queries: string[], country: string, onResult: (query: string, data: unknown, noData?: boolean) => void): Promise<void> {
   await new Promise<void>((resolve) => {
     const child = spawn(process.env.TRENDS_PY || '/home/darrkito/Yume/.trends-venv/bin/python3', [join(import.meta.dirname, 'trends.py')], { stdio: ['pipe', 'pipe', 'ignore'] });
     let pending = '';
     const timer = setTimeout(() => child.kill(), Math.min(30 * 60_000, queries.length * 90_000 + 30_000));
-    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { pending += chunk; const lines = pending.split('\n'); pending = lines.pop()!; for (const line of lines) try { const result = JSON.parse(line); onResult(result.query, result.data); } catch { /* ignore invalid output */ } });
+    child.stdout.setEncoding('utf8'); child.stdout.on('data', (chunk: string) => { pending += chunk; const lines = pending.split('\n'); pending = lines.pop()!; for (const line of lines) try { const result = JSON.parse(line); onResult(result.query, result.data, result.noData); } catch { /* ignore invalid output */ } });
     child.on('error', () => { clearTimeout(timer); resolve(); }); child.on('close', () => { clearTimeout(timer); resolve(); });
     child.stdin.on('error', () => {}); child.stdin.end(JSON.stringify({ queries, country }));
   });
+}
+
+/** Funnel counts are over valid, deduplicated candidates submitted for verification. */
+export function researchFunnel(evidence: Evidence[], kept: number, min: number): string {
+  const serp = evidence.filter((e) => e.serpVerified).length, bing = evidence.filter((e) => e.bing !== null).length;
+  const measured = evidence.filter((e) => e.trends !== null).length, noData = evidence.filter((e) => e.trends?.noData === true).length;
+  const demand = evidence.filter((e) => e.verified && measuredDemand(e)).length;
+  return `candidates ${evidence.length}; serp ok ${serp}; bing ok ${bing}; trends measured ${measured} (noData ${noData}, unmeasured ${evidence.length - measured}); demand-gated ${demand}; kept ${kept} (>=${min})`;
 }

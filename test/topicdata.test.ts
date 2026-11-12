@@ -72,3 +72,61 @@ test('measured demand gates a high score', async () => {
   e.trends.slope = 'flat'; assert.equal(keepTopic(e, 9, 9), true);
   e.trends.mean = 0; e.trends.rising = ['how to paint']; assert.equal(keepTopic(e, 9, 9), true);
 });
+
+test('related Bing demand uses meaningful token overlap or a three-word prefix', async () => {
+  const { relatedDemand, measuredDemand, evidenceLine } = await import('../src/agents/topicdata.ts');
+  const rows = [
+    { query: 'oficina y para', impressions: 500, broadImpressions: 500 },
+    { query: 'mantenimiento industrial en planta', impressions: 15, broadImpressions: 20 },
+    { query: 'mantenimiento planta oficinas', impressions: 40, broadImpressions: 50 },
+  ];
+  assert.deepEqual(relatedDemand('oficina para mantenimiento en planta', rows), { query: 'mantenimiento planta oficinas', impressions: 40 });
+  assert.equal(relatedDemand('oficina para mantenimiento en planta', [rows[0]]), null);
+  assert.deepEqual(relatedDemand('the office for repairs', [{ query: 'the office for rent', impressions: 12, broadImpressions: 15 }]), { query: 'the office for rent', impressions: 12 });
+  assert.equal(relatedDemand('paint house', [{ query: 'paint paint the', impressions: 100, broadImpressions: 100 }]), null);
+  const e = await verifyQuery('oficina para mantenimiento en planta', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  const zero = { mean: 0, last8Mean: 0, slope: 'flat' as const, rising: [], top: [], noData: true };
+  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: rows }, zero);
+  assert.equal(e.verified, true); assert.equal(measuredDemand(e), true);
+  assert.deepEqual(e.bing?.relatedDemand, { query: 'mantenimiento planta oficinas', impressions: 40 });
+  assert.match(evidenceLine(e), /mantenimiento planta oficinas, 40 imp/);
+  setDemandEvidence(e, { impressions: 0, broadImpressions: 0, related: [rows[0]] }, zero);
+  assert.equal(measuredDemand(e), false); assert.ok(scoreTopic(e, { gscImpressions: 0, competitorGap: true, isLocalBusiness: false }) <= 7);
+  setDemandEvidence(e, e.bing, null); assert.equal(e.verified, false);
+});
+
+test('measured zero survives Trends cache, and funnel reports each stage', async () => {
+  const { researchFunnel } = await import('../src/agents/topicdata.ts');
+  const db = new DatabaseSync(':memory:'); db.exec('CREATE TABLE research_cache (key TEXT PRIMARY KEY, text TEXT, created_at TEXT)');
+  const zero = { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] };
+  const run = async (queries: string[], _country: string, onResult: (query: string, data: unknown, noData?: boolean) => void) => onResult(queries[0], zero, true);
+  const first = await trendsFor(['a', 'b'], 'US', { db, max: 2, run });
+  assert.deepEqual(first.get('a'), { ...zero, noData: true }); assert.equal(first.has('b'), false);
+  const cached = await trendsFor(['a'], 'US', { db, max: 0 }); assert.deepEqual(cached.get('a'), first.get('a'));
+  const e = await verifyQuery('how to paint', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  setDemandEvidence(e, { impressions: 20, broadImpressions: 20, related: [] }, first.get('a')!);
+  const missing = { ...e, trends: null, verified: false, bing: null, serpVerified: false };
+  assert.equal(researchFunnel([e, missing], 1, 9), 'candidates 2; serp ok 1; bing ok 1; trends measured 1 (noData 1, unmeasured 1); demand-gated 1; kept 1 (>=9)');
+  db.close();
+});
+
+test('Python Trends emits measured zero for empty and missing frames, stops on 429', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { spawn } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'trends-fake-'));
+  try {
+    mkdirSync(join(dir, 'pytrends')); writeFileSync(join(dir, 'pytrends', '__init__.py'), '');
+    writeFileSync(join(dir, 'pytrends', 'request.py'), `class Frame:\n    def __init__(self, query): self.empty = query == 'empty'\n    def __contains__(self, key): return key == 'empty'\nclass TrendReq:\n    def __init__(self, **kwargs): pass\n    def _get_data(self, *args, **kwargs): pass\n    def build_payload(self, queries, **kwargs):\n        self.query = queries[0]\n        if queries[0] == 'limited': raise Exception('429')\n    def interest_over_time(self): return Frame(self.query)\n`);
+    const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn('/usr/bin/python3', ['src/agents/trends.py'], { cwd: process.cwd(), env: { ...process.env, PYTHONPATH: dir } });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += chunk; }); child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', reject); child.on('close', (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(JSON.stringify({ country: 'MX', queries: ['empty', 'missing', 'limited', 'later'] }));
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const lines = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(lines, ['empty', 'missing'].map((query) => ({ query, data: { mean: 0, last8Mean: 0, slope: 'flat', rising: [], top: [] }, noData: true })));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

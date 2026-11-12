@@ -25,6 +25,8 @@ def main():
             client.build_payload([query], timeframe='today 12-m', geo=country)
             frame = client.interest_over_time()
             if query not in frame or frame.empty:
+                data = {'mean': 0, 'last8Mean': 0, 'slope': 'flat', 'rising': [], 'top': []}
+                print(json.dumps({'query': query, 'data': data, 'noData': True}, ensure_ascii=False), flush=True)
                 continue
             values = [float(x) for x in frame[query].tolist()]
             avg = sum(values) / len(values)
