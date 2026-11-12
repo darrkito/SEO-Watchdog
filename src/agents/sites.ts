@@ -191,7 +191,6 @@ AGENT_SITES['vexonmexico.com.mx'] = {
   guideFiles: ['README.md'],
   factFiles: ['src/data/modelos.ts', 'src/lib/site.ts', 'src/data/faqs.ts'],
   short: 'vexon', label: 'Vexon (vexonmexico.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: mdxPosts, postFiles: (slug) => [`src/content/blog/${slug}.mdx`], wholeFile: true,
-  pendingNote: 'Search Console is not connected for this site yet (no service account has access to vexonmexico.com.mx), so the analyst and the blog score have no Google data until you add one.',
   research: {
     context: 'Vexon by Capelton renta oficinas móviles (línea VX, de 3 a 10 m) para obra en Guadalajara, Zapopan y la ZMG. Puedes leer el repo (src/data/modelos.ts, src/data/faqs.ts, src/data/soluciones.ts, src/content/blog) y buscar en la web para validar demanda y qué publica la competencia (cvsolucionesmoviles.com, atcoespaciomovil.com, remobras.mx). Solo temas que Vexon pueda cumplir con sus modelos reales.',
     priority: 'Prioridad: temas que responden una duda concreta de un residente de obra, de compras de una constructora, de un negocio en remodelación o de una planta (qué oficina necesito, requisitos, costos y qué incluye una renta, instalación, comparativas con caseta o contenedor, checklist de obra). Al menos 5 de los 8 temas con modificador local (Guadalajara, Zapopan, ZMG, El Salto, Tlajomulco). No propongas temas de precios, plazos o cobertura que el dueño aún no ha confirmado.',
