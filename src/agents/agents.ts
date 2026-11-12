@@ -24,7 +24,7 @@ import { locatePost, currentOf, exampleOf } from './locate.ts';
 import { insertPointsFor } from './insertpoints.ts';
 import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
-import { autocomplete, verifyQuery, scoreTopic, keepTopic, evidenceLine, makeBudget, bingKeyword, trendsFor, setDemandEvidence, researchFunnel } from './topicdata.ts';
+import { autocomplete, verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, trendsFor, setDemandEvidence, researchFunnel, collectResearchAngles, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
 
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
@@ -311,9 +311,6 @@ ${JSON.stringify(s)}`,
 };
 
 // ---------- researcher ----------
-/** Get Found: how to pick keywords. The researcher is told, and the writer later runs the mini audit against the real #1. */
-const KEYWORD_CRITERIA = `Criterios del playbook para elegir cada tema (aplícalos y verifícalos con búsquedas reales): (1) palabra clave long-tail de 3 o más palabras con intención clara (informativa, comercial o transaccional); (2) perenne antes que de moda; (3) con modificador geográfico cuando el negocio es local; (4) baja dificultad: que los primeros resultados sean sitios pequeños o genéricos, no marcas enormes (estrategia avalancha, 10 a 100 búsquedas al mes al empezar); (5) responde una pregunta concreta de un cliente real (revisa "otras preguntas de la gente" y las dudas del brief); (6) no canibaliza un post existente: si se parece, usa action "merge:<slug>". En "why" di qué verificaste en los primeros resultados.`;
-
 type Topic = { title: string; slug: string; query: string; action: string; why: string; score: number };
 
 export const researcherAgent: AgentFn = async (c) => {
@@ -329,24 +326,25 @@ export const researcherAgent: AgentFn = async (c) => {
   const expansions = await Promise.all(seeds.map(async (query) => ({ query, suggestions: await autocomplete(query, opts), bing: await bingKeyword(query, opts.country, { db: c.db }) })));
   const budget = makeBudget();
   const wt = prepareWorktree(c.cfg, 'agent/research');
-  const text = await ask(c, {
-    role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000,
-    prompt: `Eres el investigador de temas SEO y GEO de ${c.site.url}. Escribe los temas, el campo query y el slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}. Propón hasta 30 temas de blog NUEVOS que aún no cubrimos y que pueden traer búsquedas reales o ser citados por buscadores con IA.
-Datos reales (no inventes volúmenes de búsqueda; usa solo estos números y lo que verifiques en la web):
-- Expansiones de autocompletado y consultas relacionadas de Bing con impresiones medidas: ${JSON.stringify(expansions)}
-- Consultas de Search Console (60 días): ${JSON.stringify(top)}
-- Consultas cerca de la primera página (posición 8-20): ${JSON.stringify(s.strikingDistance)}
-- Temas donde la competencia tiene más páginas que nosotros: ${JSON.stringify(b?.topicGaps?.slice(0, 12) ?? [])}
-- Posts que YA existen (no los dupliques; si un tema se parece, usa action "merge:<slug-existente>" para ampliarlo): ${JSON.stringify(posts)}
-- Slugs ya en el backlog (no repetir): ${JSON.stringify(backlog)}
+  const relatedSeeds = expansions.flatMap((e) => e.bing?.related ?? []).sort((a, b) => b.impressions - a.impressions).slice(0, 50);
+  const common = `Eres investigador de temas SEO y GEO para ${c.site.url}. Escribe title, query y slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}. Propón hasta 12 temas relevantes para el cliente ideal; no inventes datos de demanda.
+Posts existentes: ${JSON.stringify(posts)}. Slugs en backlog: ${JSON.stringify(backlog)}.
 ${c.cfg.research.context}
-${c.cfg.research.priority} Considera la temporada (hoy es ${mxNow().date}).
-${KEYWORD_CRITERIA}
-${audience(c)}${customerQuestions(new URL(c.site.url).hostname)}
-Responde SOLO con un arreglo JSON, sin texto extra: [{"title":"...","slug":"kebab-case","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras"}]
-${c.cfg.rules}\n${c.cfg.writerRules}`,
-  });
-  const topics = extractJson<Topic[]>(text).slice(0, 30).filter((t) => t.title && t.query?.trim() && /^[a-z0-9-]+$/.test(t.slug));
+${c.cfg.research.priority}
+${audienceBrief(new URL(c.site.url).hostname)}${customerQuestions(new URL(c.site.url).hostname)}
+Elige búsquedas long-tail con intención clara, útiles para un cliente real, preferentemente perennes y con geo si es local; evita duplicar posts y usa merge:<slug> para ampliarlos. En why cita lo verificado.
+${c.cfg.rules}
+Responde SOLO con arreglo JSON: [{"title":"...","slug":"kebab-case","query":"búsqueda principal","action":"new"|"merge:<slug>","why":"evidencia concreta, máx 40 palabras"}].`;
+  const angles = [
+    `Ángulo A1: preguntas y problemas del cliente ideal; usa el brief y consultas GSC: ${JSON.stringify(top)}. Autocompletado: ${JSON.stringify(expansions.map(({ query, suggestions }) => ({ query, suggestions })))}.`,
+    `Ángulo A2: oportunidades en temas de competidores y preguntas de clientes; busca SERP y PAA de rivales. Brechas: ${JSON.stringify(gaps.slice(0, 12))}. Consultas cerca de la primera página: ${JSON.stringify(s.strikingDistance)}.`,
+    `Ángulo A3: necesidades estacionales y comerciales (hoy ${mxNow().date}); usa estas consultas relacionadas de Bing ordenadas por impresiones: ${JSON.stringify(relatedSeeds)}.`,
+  ];
+  const proposed = await collectResearchAngles(angles, async (angle) => {
+    const text = await ask(c, { role: 'research', cwd: wt, tools: ['WebSearch', 'WebFetch', 'Read', 'Grep', 'Glob'], maxTurns: 25, timeoutMs: 1_200_000, prompt: `${common}\n${angle}` });
+    return extractJson<Topic[]>(text);
+  }, (err) => err instanceof LimitError || err instanceof HybridLimit, () => c.log('Research usage limit: keeping candidates from completed angles.'));
+  const topics = proposed.filter((t) => typeof t.title === 'string' && t.title.trim() && typeof t.query === 'string' && t.query.trim() && typeof t.slug === 'string' && /^[a-z0-9-]+$/.test(t.slug));
   const ins = c.db.prepare('INSERT OR IGNORE INTO topics (site_id, title, slug, query, action, why, score, segment, evidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   const impressions = c.db.prepare("SELECT COALESCE(SUM(impressions),0) n FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= ? AND date <= date('now') AND lower(trim(query)) = lower(trim(?))");
   const taken = new Set([...posts.map((p) => p.slug), ...backlog]);
@@ -370,15 +368,19 @@ ${c.cfg.rules}\n${c.cfg.writerRules}`,
   const trends = await trendsFor(candidates.filter((x) => x.evidence.serpVerified && x.evidence.bing).map((x) => x.topic.query), opts.country, { db: c.db });
   const risingQueries = new Set([...trends.values()].flatMap((t) => t.rising.map((q) => q.trim().toLowerCase().replace(/\s+/g, ' '))));
   let n = 0;
+  const scored: ScoredCandidate[] = [];
   for (const { topic: t, evidence, gsc } of candidates) {
     setDemandEvidence(evidence, evidence.bing, trends.get(t.query) ?? null);
     evidence.trendsRisingMatch = risingQueries.has(t.query.trim().toLowerCase().replace(/\s+/g, ' '));
     const gap = gaps.some((g) => g.title.trim().toLowerCase() === t.query.trim().toLowerCase());
     const score = scoreTopic(evidence, { gscImpressions: gsc + evidence.gscVariantImpressions60d, competitorGap: gap, isLocalBusiness: profile.scope === 'local' });
-    if (!keepTopic(evidence, score, min)) continue;
+    const reason = topicDropReason(evidence, score, min);
+    recordTopicCandidate(c.db, c.site.id, evidence, score, reason);
+    scored.push({ query: t.query, score, reason });
+    if (reason) continue;
     n += Number(ins.run(c.site.id, t.title, t.slug, t.query, t.action ?? 'new', `${t.why ?? ''}\n${evidenceLine(evidence)}`, score, segmentOf(`${t.title} ${t.query}`), JSON.stringify(evidence)).changes);
   }
-  const summary = researchFunnel(candidates.map((c) => c.evidence), n, min, trends.paused);
+  const summary = `${researchFunnel(candidates.map((c) => c.evidence), n, min, trends.paused)}; ${droppedSummary(scored)}`;
   c.log(summary);
   return summary;
 };

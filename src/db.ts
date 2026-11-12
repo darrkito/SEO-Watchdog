@@ -83,6 +83,10 @@ CREATE TABLE IF NOT EXISTS metrics (
   site_id INTEGER NOT NULL, source TEXT NOT NULL, date TEXT NOT NULL, query TEXT NOT NULL DEFAULT '', page TEXT NOT NULL DEFAULT '',
   clicks REAL NOT NULL DEFAULT 0, impressions REAL NOT NULL DEFAULT 0, position REAL NOT NULL DEFAULT 0,
   PRIMARY KEY (site_id, source, date, query, page));
+CREATE TABLE IF NOT EXISTS topic_candidates (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, run_date TEXT NOT NULL DEFAULT (datetime('now')),
+  query TEXT NOT NULL, score REAL NOT NULL, dropReason TEXT, evidence TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS topic_candidates_site_date ON topic_candidates(site_id, run_date);
 CREATE TABLE IF NOT EXISTS topics (
   id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, title TEXT NOT NULL, slug TEXT NOT NULL, query TEXT NOT NULL DEFAULT '',
   action TEXT NOT NULL DEFAULT 'new', why TEXT NOT NULL DEFAULT '', score REAL NOT NULL DEFAULT 0,

@@ -171,3 +171,53 @@ test('Python emits interest before a related-queries 429 and then stops', async 
     ]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('score table gives measured demand and fit the requested weight', async () => {
+  const base = await verifyQuery('industrial maintenance checklist', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  const sites = ['alpha.test', 'beta.test', 'gamma.test', 'delta.test', 'epsilon.test'].map((host) => ({ host, url: `https://${host}/`, title: host }));
+  const initial = { ...base, serpTop10: sites, bigBrandCount: 0, smallSiteCount: 5, suggestions: ['industrial maintenance checklist'], paa: [], related: [], ownRank: null };
+  const cases = [
+    { name: 'strong', bing: 65, gsc: 15, suggestions: initial.suggestions, brands: 0, small: 5, expected: 10 },
+    { name: 'decent', bing: 20, gsc: 3, suggestions: initial.suggestions, brands: 0, small: 5, expected: 9 },
+    { name: 'weak', bing: 0, gsc: 0, suggestions: [], brands: 5, small: 0, expected: 3 },
+  ];
+  for (const row of cases) {
+    const e = { ...initial, suggestions: row.suggestions, bigBrandCount: row.brands, smallSiteCount: row.small, ownImpressions60d: row.gsc };
+    setDemandEvidence(e, { impressions: row.bing, broadImpressions: row.bing, related: [] }, null);
+    assert.equal(scoreTopic(e, { gscImpressions: row.gsc, competitorGap: false, isLocalBusiness: false }), row.expected, row.name);
+  }
+});
+
+test('audit records candidates and reports highest scoring drops', async () => {
+  const { openDb } = await import('../src/db.ts');
+  const { recordTopicCandidate, topicDropReason, droppedSummary } = await import('../src/agents/topicdata.ts');
+  const db = openDb(':memory:');
+  const e = await verifyQuery('maintenance checklist', { ...opts, ownImpressions60d: 0 }, { fetch: fake as typeof fetch, apiKey: 'test' });
+  assert.equal(topicDropReason(e, 7, 9), 'unverified');
+  recordTopicCandidate(db, 9, e, 7, 'unverified');
+  setDemandEvidence(e, { impressions: 20, broadImpressions: 20, related: [] }, null);
+  assert.equal(topicDropReason(e, 8, 9), 'score<9');
+  recordTopicCandidate(db, 9, e, 8, 'score<9');
+  e.ownRank = 2; assert.equal(topicDropReason(e, 10, 9), 'own top3');
+  e.ownRank = null; assert.equal(topicDropReason(e, 9, 9), null); recordTopicCandidate(db, 9, e, 9, null);
+  e.bing!.impressions = 0; assert.equal(topicDropReason(e, 7, 9), 'no measured demand');
+  const records = db.prepare('SELECT * FROM topic_candidates ORDER BY id').all() as any[];
+  assert.equal(records.length, 3); assert.equal(records[0].dropReason, 'unverified'); assert.equal(records[1].score, 8); assert.equal(records[2].dropReason, null); assert.equal(JSON.parse(records[2].evidence).bing.impressions, 20); assert.ok(records[0].run_date);
+  assert.equal(droppedSummary([{ query: 'low', score: 4, reason: 'unverified' }, { query: 'best', score: 8, reason: 'score<9' }, { query: 'kept', score: 10, reason: null }]), 'dropped best: best (8, score<9); low (4, unverified)');
+  const many = Array.from({ length: 7 }, (_, i) => ({ query: `query${i}`, score: i, reason: 'score<9' as const }));
+  const summary = droppedSummary(many); assert.match(summary, /query6/); assert.doesNotMatch(summary, /query1|query0/);
+  db.close();
+});
+
+test('three distinct research angles collect candidates and stop safely on later account limits', async () => {
+  const { collectResearchAngles } = await import('../src/agents/topicdata.ts');
+  const angles = ['questions', 'rivals', 'seasonal']; let calls: string[] = [];
+  assert.deepEqual(await collectResearchAngles(angles, async (angle) => { calls.push(angle); return [angle]; }, () => false, () => {}), angles);
+  assert.deepEqual(calls, angles);
+  assert.equal((await collectResearchAngles(['one'], async () => Array.from({ length: 20 }, (_, i) => i), () => false, () => {})).length, 12);
+  calls = []; let limited = 0;
+  const partial = await collectResearchAngles(angles, async (angle) => { calls.push(angle); if (angle === 'rivals') throw new Error('limit'); return [angle]; }, (err) => (err as Error).message === 'limit', () => limited++);
+  assert.deepEqual(partial, ['questions']); assert.deepEqual(calls, ['questions', 'rivals']); assert.equal(limited, 1);
+  await assert.rejects(collectResearchAngles(angles, async () => { throw Error('limit'); }, () => true, () => {}), /limit/);
+  await assert.rejects(collectResearchAngles(angles, async (angle) => { if (angle === 'rivals') throw Error('failure'); return [angle]; }, () => false, () => {}), /failure/);
+});

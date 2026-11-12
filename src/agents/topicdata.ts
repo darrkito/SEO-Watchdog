@@ -41,32 +41,58 @@ export async function verifyQuery(query: string, opts: Options, deps: { db?: Dat
   const bigBrandCount = serpTop10.filter((x: any) => big.test(x.host)).length;
   return { verified: false, serpVerified: !!data && serpTop10.length > 0, query, serpTop10, paa: strings(data?.paa, 'question'), related: strings(data?.related, 'query'), suggestions: strings(data?.suggestions, ''), bigBrandCount, smallSiteCount: serpTop10.length - bigBrandCount, ownRank: index < 0 ? null : index + 1, ownImpressions60d: opts.ownImpressions60d ?? 0, location: opts.location ?? '', bing: null, trends: null, gscVariantImpressions60d: 0, trendsRisingMatch: false };
 }
-/* Rubric (maximum 10):
+/* Score rubric (points; total capped at 10):
    Base                                      1
-   Exact query in autocomplete, PAA or related 2
-   GSC impressions >= 10                     1
-   Matched competitor topic gap              1
-   At most 2 big brands among >= 5 results   1
-   At least 3 non-brand sites                 1
-   Forum result                              1
-   Clear intent (2+ words)                   1
-   Local query mentions its location, or non-local business 1
-   Measured demand required: GSC > 0, Bing >= 10, or Trends > 0 and flat/up or rising.
-   SERP and Bing must be available; unverified/zero-demand capped at 7; top 3 excluded. */
+   Exact/near autocomplete, PAA or related   1
+   Bing exact/related impressions >=10 / >=50 2 / 3
+   GSC exact/variant impressions >0 / >=10    1 / 2
+   Trends mean >0 and flat/up                1
+   Trends rising match                       1
+   At most 2 big brands among >=5 results    1
+   At least 3 non-brand sites                1
+   Clear intent (2+ words)                    1
+   Local geo present, or non-local business  1
+   Competitor topic gap (bonus)              1
+   Forum/thin result (bonus)                 1
+   Unverified or zero measured demand is capped at 7; top-3 own rank is excluded. */
 export function scoreTopic(e: Evidence, opts: { gscImpressions: number; competitorGap: boolean; isLocalBusiness: boolean }): number {
-  const q = normalize(e.query);
+  const q = normalize(e.query), queryWords = new Set(wordsOf(q));
+  const matches = (s: string) => {
+    const words = new Set(wordsOf(s));
+    const common = [...queryWords].filter((w) => words.has(w)).length;
+    return normalize(s) === q || (queryWords.size >= 2 && common >= 2 && common / Math.max(queryWords.size, words.size) >= 0.8);
+  };
   let score = 1;
-  if ([...e.suggestions, ...e.paa, ...e.related].some((s) => normalize(s) === q)) score += 2;
-  if (opts.gscImpressions >= 10) score++;
-  if (opts.competitorGap) score++;
+  if ([...e.suggestions, ...e.paa, ...e.related].some(matches)) score++;
+  const bing = Math.max(e.bing?.impressions ?? 0, e.bing?.relatedDemand?.impressions ?? 0);
+  score += bing >= 50 ? 3 : bing >= 10 ? 2 : 0;
+  score += opts.gscImpressions >= 10 ? 2 : opts.gscImpressions > 0 ? 1 : 0;
+  if (e.trends && e.trends.mean > 0 && e.trends.slope !== 'down') score++;
+  if (e.trends && (e.trendsRisingMatch || e.trends.rising.some((s) => normalize(s) === q))) score++;
   if (e.serpTop10.length >= 5 && e.bigBrandCount <= 2) score++;
   if (e.smallSiteCount >= 3) score++;
-  if (e.serpTop10.some((x) => /(^|\.)(reddit|quora)\./i.test(x.host) || /\b(forum|foro)\b/i.test(x.url + ' ' + x.title))) score++;
   if (q.split(/\s+/).length >= 2) score++;
   if (!opts.isLocalBusiness || (e.location && q.includes(normalize(e.location)))) score++;
+  if (opts.competitorGap) score++;
+  if (e.serpTop10.some((x) => /(^|\.)(reddit|quora)\./i.test(x.host) || /\b(forum|foro)\b/i.test(x.url + ' ' + x.title))) score++;
   return Math.max(1, Math.min(e.verified && measuredDemand(e) ? 10 : 7, score));
 }
-export function keepTopic(e: Evidence, score: number, min: number): boolean { return e.verified && measuredDemand(e) && !(e.ownRank != null && e.ownRank <= 3) && score >= min; }
+export type DropReason = 'unverified' | 'own top3' | 'no measured demand' | `score<${number}`;
+export function topicDropReason(e: Evidence, score: number, min: number): DropReason | null {
+  if (!e.verified) return 'unverified';
+  if (e.ownRank != null && e.ownRank <= 3) return 'own top3';
+  if (!measuredDemand(e)) return 'no measured demand';
+  return score < min ? `score<${min}` : null;
+}
+export function recordTopicCandidate(db: DatabaseSync, siteId: number, e: Evidence, score: number, reason: DropReason | null): void {
+  db.prepare('INSERT INTO topic_candidates (site_id, query, score, dropReason, evidence) VALUES (?, ?, ?, ?, ?)').run(siteId, e.query, score, reason, JSON.stringify(e));
+}
+export type ScoredCandidate = { query: string; score: number; reason: DropReason | null };
+export function droppedSummary(rows: ScoredCandidate[]): string {
+  const best = rows.filter((r) => r.reason !== null).sort((a, b) => b.score - a.score).slice(0, 5);
+  return `dropped best: ${best.length ? best.map((r) => `${r.query} (${r.score}, ${r.reason})`).join('; ') : 'none'}`;
+}
+export function keepTopic(e: Evidence, score: number, min: number): boolean { return topicDropReason(e, score, min) === null; }
 export function evidenceLine(e: Evidence): string { return `Bing ${e.bing?.impressions ?? 'unavailable'} imp/40d${e.bing?.relatedDemand ? ` (related: ${e.bing.relatedDemand.query}, ${e.bing.relatedDemand.impressions} imp)` : ''}; Trends ${e.trends ? `12m avg ${e.trends.mean} ${e.trends.slope}${e.trends.noData ? ' (no data)' : ''}` : 'not measured (optional)'}; GSC ${e.ownImpressions60d + e.gscVariantImpressions60d} imp/60d; SERP #1: ${e.serpTop10[0]?.host ?? 'none'}; big brands: ${e.bigBrandCount}; PAA: ${e.paa.length}`; }
 
 export type BingData = { impressions: number; broadImpressions: number; related: { query: string; impressions: number; broadImpressions: number }[]; relatedDemand?: { query: string; impressions: number } | null };
@@ -157,4 +183,14 @@ export function researchFunnel(evidence: Evidence[], kept: number, min: number, 
   const measured = evidence.filter((e) => e.trends !== null).length, noData = evidence.filter((e) => e.trends?.noData === true).length;
   const demand = evidence.filter((e) => e.verified && measuredDemand(e)).length;
   return `candidates ${evidence.length}; serp ok ${serp}; bing ok ${bing}; trends ${trendsPaused ? 'paused; trends ' : ''}measured ${measured} (noData ${noData}, unmeasured ${evidence.length - measured}); demand-gated ${demand}; kept ${kept} (>=${min})`;
+}
+
+/** Run distinct angles in order; a later account limit preserves earlier candidates. */
+export async function collectResearchAngles<T>(angles: string[], askAngle: (angle: string) => Promise<T[]>, isLimit: (err: unknown) => boolean, onLimit: () => void): Promise<T[]> {
+  const all: T[] = [];
+  for (const [index, angle] of angles.entries()) {
+    try { all.push(...(await askAngle(angle)).slice(0, 12)); }
+    catch (err) { if (index > 0 && isLimit(err)) { onLimit(); break; } throw err; }
+  }
+  return all;
 }
