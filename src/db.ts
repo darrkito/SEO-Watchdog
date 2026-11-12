@@ -101,7 +101,7 @@ export function openDb(file = join(DATA_DIR, 'watchdog.db')): DatabaseSync {
     'ALTER TABLE agent_runs ADD COLUMN stage TEXT', 'ALTER TABLE agent_runs ADD COLUMN progress TEXT',
     "ALTER TABLE agent_queue ADD COLUMN state TEXT NOT NULL DEFAULT 'queued'", 'ALTER TABLE agent_queue ADD COLUMN last_error TEXT',
     'ALTER TABLE agent_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0', 'ALTER TABLE agent_queue ADD COLUMN updated_at TEXT',
-    'ALTER TABLE discoveries ADD COLUMN serp_json TEXT', 'ALTER TABLE agent_runs ADD COLUMN detail TEXT', "ALTER TABLE topics ADD COLUMN segment TEXT NOT NULL DEFAULT 'other'"]) try { db.exec(sql); } catch { /* already applied */ }
+    'ALTER TABLE discoveries ADD COLUMN serp_json TEXT', 'ALTER TABLE agent_runs ADD COLUMN detail TEXT', "ALTER TABLE topics ADD COLUMN segment TEXT NOT NULL DEFAULT 'other'", 'ALTER TABLE topics ADD COLUMN evidence TEXT']) try { db.exec(sql); } catch { /* already applied */ }
   return db;
 }
 

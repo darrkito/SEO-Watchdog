@@ -108,9 +108,9 @@ Return the business profile. For "keywords": choose 8-12 searches a potential cu
 type Hit = { url: string; position: number; title?: string };
 type Place = { website: string; name: string; rating: number | null; reviews: number | null };
 
-async function serper(path: 'search' | 'places', q: string, loc: Loc, lang: string) {
+export async function serper(path: 'search' | 'places', q: string, loc: Loc, lang: string, fetcher: typeof fetch = fetch) {
   const location = [loc.city, loc.region, loc.country && new Intl.DisplayNames('en', { type: 'region' }).of(loc.country)].filter(Boolean).join(', ');
-  const r = await fetch(`https://google.serper.dev/${path}`, {
+  const r = await fetcher(`https://google.serper.dev/${path}`, {
     method: 'POST', headers: { 'X-API-KEY': process.env.SERPER_API_KEY!, 'content-type': 'application/json' },
     body: JSON.stringify({ q, ...(loc.country && { gl: loc.country.toLowerCase() }), ...(lang && { hl: lang }), ...(location && { location }), num: 10 }),
   });

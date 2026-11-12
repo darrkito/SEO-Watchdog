@@ -170,7 +170,7 @@ export function siteAgentsPage(db: DatabaseSync, short: string, msg?: { error?: 
     ${cfg.capabilities.includes('improver') ? blogSection(db, site, showAll, cfg.short) : ''}
     <h2 id="topics">Topic backlog</h2>
     <p class="muted small">"Write now" sends one topic to the writer immediately (about 5 to 10 minutes). The draft appears under "Waiting for you"; nothing goes live until you approve it.</p>
-    <div class="card">${topics.length ? h`<ul class="urls">${topics.map((t) => h`<li><span class="u"><b>${t.title}</b> ${t.action !== 'new' ? chip('info', t.action) : ''}<br><span class="m">${t.query ? `“${t.query}” · ` : ''}${t.why}</span></span><span class="m">score ${t.score}</span>${writeCell(t)}</li>`)}</ul>
+    <div class="card">${topics.length ? h`<ul class="urls">${topics.map((t) => h`<li><span class="u"><b>${t.title}</b> ${t.action !== 'new' ? chip('info', t.action) : ''}<br><span class="m" style="white-space:pre-line">${t.query ? `“${t.query}” · ` : ''}${t.why}</span></span><span class="m">score ${t.score}</span>${writeCell(t)}</li>`)}</ul>
       ${topicCount > topics.length || allTopics ? h`<p class="muted small">${allTopics ? `Showing all ${topicCount}.` : `Showing the top 10 of ${topicCount}.`} <a href="/agents/${cfg.short}?${allTopics ? '' : 'topics=all'}#topics">${allTopics ? 'Show only the top 10' : `Show all ${topicCount}`}</a></p>` : ''}` : h`<p class="muted small">Empty. The researcher fills it on Sundays.</p>`}</div>
     ${runsList(db, id)}${decidedList(db, id)}`, { refresh: inFlight().length ? 6 : undefined });
 }
