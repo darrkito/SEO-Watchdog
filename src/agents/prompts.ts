@@ -149,11 +149,12 @@ function buildPlanPrompt(i: PlanInput, slim: boolean): string {
   ]);
 }
 
-export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; facts: { file: string; text: string }[]; orders: WorkOrder[]; diff: string; derivedNote?: string; previousProblems?: string[] }): string {
+export function reviewPrompt(i: { rules: string; writerRules: string; audience: string; facts: { file: string; text: string }[]; verified?: string[]; orders: WorkOrder[]; diff: string; derivedNote?: string; previousProblems?: string[] }): string {
   return sections([
     `Eres el REVISOR. Otro agente (Codex) ejecutó una orden que tú o un colega escribieron. Decide si el trabajo quedó bien. No tienes acceso al repo: solo ves la orden y el diff con contexto.`,
     siteRules(i.rules, i.writerRules),
     factsSection(i.facts),
+    i.verified?.length ? ['HECHOS VERIFICADOS POR EL CÓDIGO (son ciertos: no los cuestiones ni pidas más contexto para comprobarlos):', ...i.verified.map((v) => '- ' + v)] : '',
     i.audience,
     ['ÓRDENES EJECUTADAS (en este orden; el DIFF es el resultado ACUMULADO de todas)', ...i.orders.flatMap((order, index) => [`ORDEN ${index + 1} (${index === 0 ? 'original' : 'corrección'}): ${order.title}: ${order.doneWhen || 'todos los pasos aplicados'}`, ...order.steps.map((s) => `${s.n}. ${s.do} en ${s.file}`), ...order.steps.flatMap((s) => [`Paso ${s.n}:`, ...Object.entries(s).filter(([key]) => key !== 'n').map(([key, value]) => `${key}: ${key === 'text' && typeof value === 'string' && value.length > 400 ? `[${value.length} characters, see the DIFF]` : value}`)]), `mustContain: ${JSON.stringify(order.mustContain)}`])].join('\n'),
     (() => {
@@ -165,7 +166,7 @@ export function reviewPrompt(i: { rules: string; writerRules: string; audience: 
     i.previousProblems?.length ? ['PROBLEMAS YA SEÑALADOS EN RONDAS ANTERIORES (verifica que quedaron resueltos en el DIFF; solo puedes señalar un problema NUEVO si lo introdujo una corrección o es una violación clara de una regla del sitio que se te pasó antes):', ...i.previousProblems.map((problem) => '- ' + problem)].join('\n') : '',
     [`DIFF (con contexto)`, i.diff.slice(0, 60000) + (i.diff.length > 60000 ? '\n[diff cut]' : '')].join('\n'),
     `QUÉ REVISAR
-1. Ya verificó el código, NO lo revises: rayas largas, número de palabras de las respuestas directas, enlaces internos que no existen, frases repetidas, fechas futuras, tipos de TypeScript, archivos generados.
+1. Ya verificó el código, NO lo revises: rayas largas, número de palabras de las respuestas directas, enlaces internos que no existen, frases repetidas, fechas futuras, tipos de TypeScript, archivos generados, los HECHOS VERIFICADOS POR EL CÓDIGO.
 2. Solo ves el diff. Nunca pidas ver ni cambiar archivos que no aparecen en el diff (i18n, sitemap, índices): el cableado lo comprueba el código.
 3. Una afirmación es problema SOLO si no está en DATOS AUTORIZADOS, ni en AFIRMACIONES VERIFICADAS, ni en las reglas del sitio. Si está en alguna, no la señales.
 4. Separa los hallazgos: blocking = rompe una regla dura del sitio, inventa un dato, o deja sintaxis inválida. minor = estilo o mejora opcional. Un hallazgo minor NUNCA rechaza el borrador.

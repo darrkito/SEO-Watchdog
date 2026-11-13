@@ -100,7 +100,7 @@ export function runAgent(db: DatabaseSync, agent: string, site: Site, slot: stri
       .run(status, ctx.usage.reduce((a, u) => a + u.tokensIn, 0), ctx.usage.reduce((a, u) => a + u.tokensOut, 0), ctx.usage.reduce((a, u) => a + u.costUsd, 0), output.slice(0, 20_000), error, id);
     retry = slot === null && status === 'failed' && (q?.attempts ?? 0) < MAX_AUTO_ATTEMPTS && !(q && q.attempts > 1 && q.last_error !== null && error !== null && failureSignature(q.last_error) === failureSignature(error));
     if (slot === null && status !== 'ok') db.prepare("UPDATE agent_queue SET state = ?, last_error = ?, updated_at = datetime('now') WHERE agent = ? AND site_id = ? AND slug = ?").run(status === 'limited' || retry ? 'queued' : 'failed', status === 'limited' ? q?.last_error ?? 'waiting for the usage limit to reset' : error?.slice(0, 500) ?? '', agent, site.id, detail);
-    if (status === 'failed' && !retry) await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 200)}`);
+    if (status === 'failed' && !retry) await sendAlert(`⚠️ Agente ${agent} falló en ${site.url}: ${error?.slice(0, 520)}`);
     if (status === 'limited') { limitedUntil = Math.max(limitedUntil, parseLimitReset(error ?? '', new Date()) ?? Date.now() + limitRetryMs); limited = slot === null; console.log(`[${agent}] usage limit reached; retry after ${new Date(limitedUntil).toISOString()}`); }
   }).catch((e) => console.error(`[${agent}]`, e)).finally(() => {
     if (limited || retry) {

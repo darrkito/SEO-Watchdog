@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseOrder, orderPrompt, fixPrompt, patchPrompt, applyPatches, applyOrder, simulateOrder, preflightOrder, compareFiles, verbatimCheck, writeStepFiles, clearStepFiles, type WorkOrder } from './orders.ts';
 import type { CodexResult } from './runner.ts';
+import { diagnose, rejectionMessage } from './feedback.ts';
 
 export class HybridLimit extends Error {}
 export type Review = { ok: boolean; problems: string[]; minor?: string[]; changeOrder?: string };
@@ -41,6 +42,7 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
   const stages = { plans: 0, patches: 0, revisions: 0, executions: 0, reviews: 0, rounds: 0 };
   const orders: WorkOrder[] = [];
   const seenProblems: string[] = [];
+  let escalated = false;
   let knownClaims: NonNullable<WorkOrder['claims']> = [];
   async function getOrder(ask: (prompt: string) => Promise<string>, firstPrompt: string): Promise<WorkOrder> {
     let problems: string[] = [];
@@ -139,9 +141,11 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       problems = other.map((p) => 'check: ' + p);
     }
     let changeRaw: string | undefined;
+    const earlier = [...seenProblems];
+    let dx = diagnose(problems, earlier);
     if (!problems.length) {
       d.stage?.('reviewing');
-      const review = await d.review([...orders], d.reviewDiff?.() ?? d.diff(), [...seenProblems]);
+      let review = await d.review([...orders], d.reviewDiff?.() ?? d.diff(), [...seenProblems]);
       stages.reviews++;
       if (review.ok) return { orders, review, stages };
       for (const problem of review.problems) {
@@ -150,12 +154,29 @@ export async function runHybrid(d: HybridDeps, input: HybridInput): Promise<Hybr
       }
       if (seenProblems.length > 20) seenProblems.splice(0, seenProblems.length - 20);
       problems = review.problems.map((p) => 'reviewer: ' + p);
+      dx = diagnose(problems, earlier);
+      if (dx.kind === 'missing-context' && !escalated) {
+        escalated = true;
+        d.log('review missing context; retrying with wide diff');
+        review = await d.review([...orders], d.diff(), [...seenProblems]);
+        stages.reviews++;
+        if (review.ok) return { orders, review, stages };
+        problems = review.problems.map((p) => 'reviewer: ' + p);
+        dx = diagnose(problems, earlier);
+        for (const problem of review.problems) {
+          const shortened = problem.slice(0, 300);
+          if (!seenProblems.includes(shortened)) seenProblems.push(shortened);
+        }
+        if (seenProblems.length > 20) seenProblems.splice(0, seenProblems.length - 20);
+      }
       changeRaw = review.changeOrder;
+      if (dx.kind === 'repeat') throw new Error(rejectionMessage('stuck after ' + (stages.rounds + 1) + ' rounds', problems, dx));
     }
     stages.rounds++;
     if (stages.rounds >= (input.maxRounds ?? 3)) {
-      throw new Error('not approved after ' + stages.rounds + ' rounds: ' + problems.join('; '));
+      throw new Error(rejectionMessage('not approved after ' + stages.rounds + ' rounds', problems, dx));
     }
+    problems = [...problems, `diagnóstico (${dx.kind}): ${dx.action}`];
     if (changeRaw === undefined) changeRaw = await revise(revisePrompt(problems, d.diff(), { planPrompt: input.revisePrompt ?? input.planPrompt, previousOrder: order }));
     let first = true;
     order = await getOrder((prompt) => {

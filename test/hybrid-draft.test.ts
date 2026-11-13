@@ -115,7 +115,7 @@ test('hybrid repeated review rejection stops after three rounds without approval
   await assert.rejects(draftTopicHybrid(c, topic, publishAt, s, {
     ...override,
     execute: async () => apply(current),
-    review: async () => { reviews++; return { ok: false, problems: ['Needs more detail'] }; },
+    review: async () => { reviews++; return { ok: false, problems: [['Needs more detail', 'Wrong tone', 'Missing sources'][reviews - 1]] }; }, // different objection each round: a repeated one now stops early
     revise: async () => {
       revisions++;
       current = { ...order, steps: [{ n: 1, file: 'blog.ts', do: 'insert-before', anchor: '];', text: `  // Revision ${revisions}\n` }] };

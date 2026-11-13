@@ -26,6 +26,22 @@ import { extractTypeDecls } from './typedefs.ts';
 import { stripOrderDerived } from './orders.ts';
 import { verifyQuery, scoreTopic, evidenceLine, makeBudget, bingKeyword, setDemandEvidence, researchFunnel, buildDemandPool, clusterQueries, headTerms, trendsFor, minTopicScore, trendForCluster, takenSlugs, acceptPicks, topicDropReason, recordTopicCandidate, droppedSummary, type ScoredCandidate } from './topicdata.ts';
 
+/** Code-verified twin link for the reviewer: the model only sees a -U3 diff and cannot see the `"en": "<slug>"` line above the twin's slug. */
+export function twinFacts(cfg: { twin?: { file: string; key: string } }, wt: string, slug: string): string[] {
+  if (!cfg.twin || !slug) return [];
+  const file = join(wt, cfg.twin.file);
+  if (!existsSync(file)) return [];
+  const lines = readFileSync(file, 'utf8').split('\n');
+  const key = `"${cfg.twin.key}": "${slug}",`;
+  const at = lines.findIndex((l) => l.trim() === key);
+  if (at < 0) return [];
+  for (let i = at + 1; i <= at + 3 && i < lines.length; i++) {
+    const m = lines[i].match(/^\s*"slug":\s*"([^"]+)"/);
+    if (m) return [`El post gemelo de "${slug}" es el que tiene "${cfg.twin.key}": "${slug}" (${cfg.twin.file}, línea ${at + 1}); su slug es "${m[1]}". Editar ese post es lo correcto: no pidas ver la línea "${cfg.twin.key}".`];
+  }
+  return [];
+}
+
 export function executorMode(): 'hybrid' | 'claude' {
   return process.env.AGENT_EXECUTOR === 'claude' ? 'claude' : 'hybrid';
 }
@@ -556,7 +572,7 @@ export async function draftTopicHybrid(c: Ctx, topic: Draftable, publishAt: stri
     },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audienceBrief(new URL(c.site.url).hostname), facts: planInput.facts, orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: cfg.rules, writerRules: cfg.writerRules, audience: audienceBrief(new URL(c.site.url).hostname), facts: planInput.facts, verified: twinFacts(cfg, wt, merge ?? topic.slug), orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 600_000 });
       const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
       const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
       const minor = (j.minor ?? []).map(String);
@@ -674,7 +690,7 @@ export async function fixerHybridText(c: Ctx, o: { cfg: AgentSite; wt: string; l
     },
     review: async (orders, diff, previousProblems): Promise<Review> => {
       const filtered = stripDerived(diff, o.cfg.derivedPaths);
-      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audienceBrief(new URL(c.site.url).hostname), facts: [], orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
+      const text = await ask(c, { role: 'review', prompt: reviewPrompt({ rules: o.cfg.rules, writerRules: '', audience: audienceBrief(new URL(c.site.url).hostname), facts: [], verified: [], orders, diff: filtered.diff, derivedNote: filtered.removed.join(', '), previousProblems }), cwd: tmpdir(), tools: [], maxTurns: 2, timeoutMs: 300_000 });
       const j = extractJson<{ ok?: boolean; blocking?: string[]; problems?: string[]; minor?: string[]; changeOrder?: unknown }>(text);
       const problems = (j.blocking ?? j.problems ?? []).map(String).filter((p) => !nonProblem(p));
       const minor = (j.minor ?? []).map(String);

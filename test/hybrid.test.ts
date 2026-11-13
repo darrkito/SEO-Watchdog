@@ -185,9 +185,9 @@ test('review without change order requests revision with diff and problem', asyn
 test('never approved stops after three rounds', async (t) => {
   const { d, input, codex } = fixture(t, [apply(initial), apply(initial), apply(initial)]);
   let revisions = 0, reviews = 0;
-  d.review = async () => { reviews++; return { ok: false, problems: ['still wrong'] }; };
+  d.review = async () => { reviews++; return { ok: false, problems: [['first issue', 'second matter', 'third thing'][reviews - 1]] }; }; // different objection each round: a repeated one now stops early (see rejection-feedback.test.ts)
   d.revise = async () => { revisions++; return raw(initial); };
-  await assert.rejects(runHybrid(d, input), /not approved after 3 rounds: reviewer: still wrong/);
+  await assert.rejects(runHybrid(d, input), /not approved after 3 rounds: reviewer: third thing/);
   assert.equal(codex.prompts.length, 3);
   assert.equal(reviews, 3);
   assert.equal(revisions, 2);
