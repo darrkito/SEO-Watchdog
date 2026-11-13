@@ -438,7 +438,9 @@ export function startDraft(c: Ctx, topic: Draftable, publishAt: string) {
   const merge = String(topic.action).startsWith('merge:') ? String(topic.action).slice(6) : null;
   if (!cfg.postBrief) throw new Error('this site has no writer brief configured');
   const opts = { slug: merge ?? topic.slug, improve: !!topic.improve, merge };
-  const brief = cfg.postBrief({ kind: topic.improve ? 'improve' : merge ? 'merge' : 'new', title: topic.title, slug: topic.slug, query: topic.query, why: topic.why, merge, publishAt });
+  const briefBase = cfg.postBrief({ kind: topic.improve ? 'improve' : merge ? 'merge' : 'new', title: topic.title, slug: topic.slug, query: topic.query, why: topic.why, merge, publishAt });
+  const contract = (topic.improve || merge) ? (cfg.postContract?.(wt, merge ?? topic.slug) ?? '') : '';
+  const brief = contract ? briefBase + '\n\n' + contract : briefBase;
   return { cfg, branch, wt, merge, opts, brief };
 }
 

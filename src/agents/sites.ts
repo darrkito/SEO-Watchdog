@@ -2,7 +2,7 @@
 import type { AnswerMode } from './accept.ts';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { dizaynEsSlug, dizaynPostEdit, dizaynValidate, luvoryPostEdit, luvoryValidate, vexonPostEdit, vexonValidate, type PostOpts } from './hooks.ts';
+import { dizaynContract, dizaynEsSlug, dizaynPostEdit, dizaynValidate, luvoryPostEdit, luvoryValidate, vexonPostEdit, vexonValidate, type PostOpts } from './hooks.ts';
 
 /** What a post brief is asked to do. `merge` is the existing slug being extended or improved. */
 export type BriefOpts = { kind: 'new' | 'merge' | 'improve'; title: string; slug: string; query: string; why: string; merge: string | null; publishAt: string };
@@ -43,6 +43,7 @@ export type AgentSite = {
   rules: string;         // appended to every writer/fixer prompt
   writerRules: string;   // writer only
   postBrief?: (o: BriefOpts) => string; // the task given to the writer for a new post, a merge or an improvement
+  postContract?: (wt: string, slug: string) => string; // facts the validator will enforce, appended to the brief so the first plan already satisfies them
   postEdit?: (wt: string, o: PostOpts) => void; // deterministic step after the model edits (regenerate derived files)
   validate?: (wt: string, o: PostOpts) => string[]; // deterministic checks that the post is wired in everywhere; messages go back to the writer
   deployHint?: string;   // shown when the push is not enough to go live (the owner must publish somewhere)
@@ -250,6 +251,7 @@ AGENT_SITES['dizaynseo.com'] = {
   unionPaths: ['_src/posts_agent.py', '_src/posts_es.py'], // two drafts both append at the end of these
   lintPaths: ['_src/posts_es.py', '_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
   postEdit: dizaynPostEdit, validate: dizaynValidate,
+  postContract: dizaynContract,
   postBrief: (o) => o.kind === 'improve' ? `Mejora el post EXISTENTE "${o.merge}" (no cambies su slug ni su URL; la fecha de actualización del sitio es global). Su puntaje de calidad es bajo por estas razones medidas: ${o.why}. Corrige exactamente eso, en inglés: amplía con contenido útil y verificable, agrega respuestas directas de 40 a 75 palabras al inicio de cada H2, enlaces internos reales y mejora title/desc si están fuera de rango. El post vive en _src/posts.py o _src/posts_funnel.py (busca su slug): edita solo su title, desc, lede y body. Conserva lo que ya funciona.
 ${ES_TWIN_IMPROVE}`
     : o.kind === 'merge' ? `${header(o)}\nEste tema se FUSIONA: amplía el post existente "${o.merge}" (busca su slug en _src/posts.py o _src/posts_funnel.py): secciones nuevas con su respuesta directa, sin crear un post nuevo. Escribe en inglés.

@@ -87,6 +87,30 @@ export function dizaynEsSlug(wt: string, enSlug: string): string | null {
     return run(wt, 'python3', ['-c', "import sys; sys.path.insert(0,'_src'); import posts_es; t=posts_es.twin_of(sys.argv[1]); print(t['slug'] if t else '')", enSlug]).trim() || null;
   } catch { return null; }
 }
+/** Current EN/ES structure of an existing post, as the validator will judge it. '' when the post has no ES twin yet. */
+export function dizaynContract(wt: string, enSlug: string): string {
+  try {
+    const out = run(wt, 'python3', ['-c', [
+      "import sys,re,json",
+      "sys.path.insert(0,'_src')",
+      "import posts as PO, posts_es as ES",
+      "p=next((x for x in PO.POSTS if x['slug']==sys.argv[1]),None); t=ES.twin_of(sys.argv[1])",
+      "if not p or not t: print('{}'); sys.exit()",
+      "en=PO.render(p); es=ES.render_es(t)",
+      "h=lambda b: re.findall(r'<h2 id=\"([^\"]+)\">',b); x=lambda b: len(re.findall(r'href=\"https?://',b))",
+      "print(json.dumps({'enH2':h(en),'esH2':h(es),'enMins':p['mins'],'esMins':t['mins'],'enExt':x(en),'esExt':x(es),'esSlug':t['slug']}))",
+    ].join('\n'), enSlug]).trim();
+    const c = JSON.parse(out) as { enH2?: string[]; esH2?: string[]; enMins?: number; esMins?: number; enExt?: number; esExt?: number; esSlug?: string };
+    if (!c.enH2 || !c.esH2) return '';
+    return [
+      'CONTRATO EN/ES (lo comprueba el código al final; si no se cumple, el trabajo se rechaza):',
+      `- Post EN "${enSlug}": ids <h2> actuales, en orden: ${JSON.stringify(c.enH2)}; mins ${c.enMins}; enlaces externos ${c.enExt}.`,
+      `- Gemelo ES "${c.esSlug}": ids <h2> actuales, en orden: ${JSON.stringify(c.esH2)}; mins ${c.esMins}; enlaces externos ${c.esExt}.`,
+      '- Al terminar, el gemelo ES debe tener EXACTAMENTE los mismos ids <h2> que el post EN, en el mismo orden; mins igual en ES y EN; el mismo número de enlaces externos.',
+      '- Si añades, quitas o mueves una sección en EN, haz el mismo cambio (mismo id y posición) en el gemelo ES en esta misma orden. Si hoy ya difieren, la orden debe dejar ES igual a EN.',
+    ].join('\n');
+  } catch { return ''; }
+}
 export function dizaynValidate(wt: string, o: PostOpts): string[] {
   try { run(wt, 'python3', [join(DIZAYN, 'check_post.py'), wt, o.merge ?? o.slug, o.improve || o.merge ? 'existing' : 'new']); return []; }
   catch (e) { return String((e as any).stdout ?? (e as Error).message).split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 12); }
