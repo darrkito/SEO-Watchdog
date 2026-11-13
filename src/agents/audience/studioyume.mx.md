@@ -88,3 +88,13 @@ placas-resenas-google-pago-unico-vs-suscripcion · como-configurar-perfil-de-goo
 
 ## Tono para estos posts
 Práctico, claro, de dueño a dueño: pasos, ejemplos por giro, cero promesas de "x reseñas garantizadas". CTA: cotizar/pedir por WhatsApp o ir a la ficha de placa/stand. Mencionar $140/$200 solo con el mensaje de precio vigente.
+
+## Inteligencia del competidor NFC directo (análisis 2026-11-13; interno, NUNCA nombrarlo en un post)
+Solo existe un rival NFC mexicano relevante en la lista. Qué hace, para decidir temas y ángulos:
+- **Catálogo**: ~25 fichas (Google, TripAdvisor, WhatsApp, Instagram, Facebook, MultiLink) en tarjeta, placa adherible, placa acrílico y banner. Precios de $299 a $499 (placa adherible $449, +$50 con logo/color). Yume: placa $140, stand $200; **entre 2 y 3 veces más barato**. Hecho verificable que se puede usar sin nombrarlo: "otras opciones del mercado cuestan $299-$499".
+- **Modelo**: producto físico + plan opcional ($0 básico; Premium $139/mes o $999/año con analíticas, alertas de reseñas menores a 4 estrellas, comparativa vs competencia, multi-sucursal). Su anuncio dice "pago único, sin mensualidades" pero vende suscripción. Ángulo legítimo de Yume: "pago único de verdad, sin plan Premium" (decirlo sin señalarlo).
+- **Contenido**: solo 3 artículos de blog (uno de feb 2026, uno de 267 palabras) y 3 páginas largas (inicio 1,665 palabras, /google-reviews 1,233, /tarjetas-nfc-para-negocios 884). Casi todo es ficha de producto; **casi nadie escribe guías por giro, objeciones, guion para el equipo ni cumplimiento de políticas de Google**. Ahí está el hueco para ganar con el blog.
+- **Lo que prometen y Yume puede igualar o superar**: envío a todo México con fecha de entrega visible en la ficha (DHL 1-2 días), "iPhone y Android", "sin apps", destino editable sin reemplazar la placa, asesoría por WhatsApp, personalización con logo.
+- **Lo que ofrecen y Yume no** (no prometer): panel de analíticas, alertas de reseñas negativas, multi-link y tarjetas de presentación NFC, banner de mostrador, placa para Instagram/Facebook/TripAdvisor. Si el lector las pide, ser honesto y ofrecer la placa de reseñas.
+- **Sus cifras ("+500", "+1900 negocios", "4.8") no están verificadas** y son inconsistentes entre páginas: no compararse con ellas ni repetirlas.
+- Posiciona en Mercado Libre además de su sitio: el comprador mexicano compra NFC ahí. Un post nunca debe mencionar Mercado Libre como competidor, pero sí puede responder "¿por qué no comprar la más barata genérica?" (probar antes, enlace correcto, QR respaldo, quién la configura).
