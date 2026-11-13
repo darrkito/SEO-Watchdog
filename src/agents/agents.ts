@@ -2,7 +2,7 @@ import { systemPrompt, EFFORT, MODEL, type Role } from './templates/roles.ts';
 import type { Stage } from './jobs.ts';
 // The fleet. Each agent = deterministic prep (SQL/git) + one `claude -p` call on the subscription + deterministic checks.
 // Nothing here pushes to production without passing typecheck, a path allowlist, and (unless autonomy=auto and low risk) a human approval.
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -738,7 +738,7 @@ Responde SOLO con JSON: {"fixed":[ids],"skipped":[{"id":n,"reason":"..."}]}`,
   const meta = (() => { try { return extractJson<{ fixed?: number[]; skipped?: unknown[] }>(text); } catch { return {} as { fixed?: number[]; skipped?: unknown[] }; } })();
   commit(wt, `seo(fix): ${meta.fixed?.length ?? files.length} watchdog findings\n\nFindings: ${(meta.fixed ?? []).join(', ')}`);
   const low = files.every((f) => pathAllowed(cfg.lowRiskPaths, f));
-  if (autonomy === 'auto' && low) { pushAndVerify(cfg, []); return `pushed ${files.length} low-risk files (${(meta.fixed ?? []).length} findings)`; }
+  if (autonomy === 'auto' && low) { pushAndVerify(cfg, []); void deployAfterPush(cfg); return `pushed ${files.length} low-risk files (${(meta.fixed ?? []).length} findings)`; }
   const id = approvalFor(c, 'fix', `Fix ${meta.fixed?.length ?? files.length} findings (${files.length} files${low ? '' : ', touches code outside content'})`, { branch, files, fixed: meta.fixed ?? [], skipped: meta.skipped ?? [], urls: [] }, diff);
   await sendAlert(`🔧 Lote de correcciones listo para aprobar (#${id}, ${files.length} archivos). Revisa en el dashboard: /agents`);
   return `fix batch approval #${id}: ${files.length} files`;
@@ -772,6 +772,39 @@ export function pushAndVerify(cfg: AgentSite, _urls: string[], post?: PostOpts):
   try { git(cfg.worktree, 'update-ref', `refs/remotes/${cfg.remote}/main`, 'HEAD'); }
   catch (e) { console.warn(`[sync] ${cfg.worktree} remote ref not updated: ${String((e as any).stderr ?? (e as Error).message ?? e).slice(0, 200)}`); }
   syncOwnerCheckout(cfg);
+}
+
+/** Runs cfg.deployCmd after a push to main. Never throws: returns a short status for the approval note. The token only goes to the child env and is redacted from every message. */
+export async function deployAfterPush(cfg: AgentSite, run: typeof execFile = execFile): Promise<string> {
+  if (!cfg.deployCmd) return '';
+  const token = process.env[cfg.deployTokenEnv ?? ''];
+  const redact = (text: string) => token ? text.split(token).join('<token>') : text;
+  let hostname = '';
+  let result: string;
+  try {
+    hostname = new URL(cfg.liveBase).hostname;
+    if (!token) {
+      result = `deploy skipped: ${cfg.deployTokenEnv} not set`;
+      try { await sendAlert(redact(`🚀 ${hostname}: pushed to main but NOT deployed: set ${cfg.deployTokenEnv} in SEO-Watchdog/.env, or run ${cfg.deployCmd[0]} with VERCEL_TOKEN set.`)); } catch { /* alert is best effort */ }
+    } else {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          run(cfg.deployCmd![0], cfg.deployCmd!.slice(1), { cwd: cfg.repo, env: { ...process.env, VERCEL_TOKEN: token }, timeout: 600_000, maxBuffer: 4_000_000 }, (err, stdout, stderr) => {
+            if (err) reject(new Error(String(stderr || stdout || err.message))); else resolve();
+          });
+        });
+        result = 'deployed';
+      } catch (e) {
+        result = `deploy failed: ${redact(String((e as Error)?.message ?? e)).slice(-200)}`;
+        try { await sendAlert(redact(`🚀 ${hostname}: deploy FAILED after push: ${result}`)); } catch { /* alert is best effort */ }
+      }
+    }
+  } catch (e) {
+    result = `deploy failed: ${redact(String((e as Error)?.message ?? e)).slice(-200)}`;
+  }
+  result = redact(result);
+  console.log(`[deploy] ${redact(hostname)}: ${result}`);
+  return result;
 }
 
 /** A rebase stopped only on generated files (e.g. Luvory's one-line blog-index.json, rewritten by every post): keep main's copy, regenerate from the merged sources, continue. */
@@ -928,12 +961,13 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
     const clamped = clampFutureDates(cfg.worktree, `${cfg.remote}/main`, p.publishAt); if (clamped) console.log(`[publish #${a.id}] ${clamped} future date line(s) set to today`);
     pushAndVerify(cfg, p.urls, a.kind === 'post' ? { slug: p.slug, improve: a.title.startsWith('Improve:'), merge: a.title.startsWith('Improve:') || a.title.startsWith('Update:') ? p.slug : null } : undefined);
     console.log(`[publish #${a.id}] pushed; confirming the deploy in the background`);
-    if (cfg.deployHint) await sendAlert(`📤 ${a.title}: ${cfg.deployHint}`);
+    if (cfg.deployHint && !cfg.deployCmd) await sendAlert(`📤 ${a.title}: ${cfg.deployHint}`);
     // The push is the only step that needs the shared worktree. Waiting for Vercel (minutes) must not hold up the next publish,
     // so the live check, IndexNow and the final status run detached. A restart before it finishes simply repeats it (the push is a no-op).
     void (async () => {
       let note = 'pushed';
       try {
+        const dep = await deployAfterPush(cfg);
         if (p.urls?.length) {
           const mins = cfg.liveTimeoutMin ?? 15;
           const live = await waitLive(p.urls.slice(0, 1), p.marker, mins * 60_000, mins > 15 ? 120_000 : 30_000); // the ES page carries the marker; EN follows the same deploy
@@ -941,6 +975,7 @@ export async function publish(db: DatabaseSync, approvalId: number): Promise<str
           if (live && cfg.indexnow) { try { sh(cfg.worktree, cfg.indexnow[0], [...cfg.indexnow.slice(1), ...p.urls]); note += ', IndexNow sent'; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
           if (live && cfg.indexnowKey) { try { note += `, ${await submitIndexNow(cfg, p.urls)}`; } catch (e) { note += `, IndexNow failed: ${String(e).slice(0, 120)}`; } }
         }
+        note = (dep ? dep + '; ' : '') + note;
         db.prepare("UPDATE approvals SET status = 'published', note = ?, decided_at = datetime('now') WHERE id = ?").run(note, a.id);
         if (p.topicId) db.prepare("UPDATE topics SET status = 'published' WHERE id = ?").run(p.topicId);
         console.log(`[publish #${a.id}] ${note}`);

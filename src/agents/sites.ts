@@ -46,6 +46,8 @@ export type AgentSite = {
   postEdit?: (wt: string, o: PostOpts) => void; // deterministic step after the model edits (regenerate derived files)
   validate?: (wt: string, o: PostOpts) => string[]; // deterministic checks that the post is wired in everywhere; messages go back to the writer
   deployHint?: string;   // shown when the push is not enough to go live (the owner must publish somewhere)
+  deployCmd?: string[];       // run after every push to main (argv, no shell); the push alone does not publish this site
+  deployTokenEnv?: string;    // name of the env var (from SEO-Watchdog/.env) holding the token; passed to deployCmd as VERCEL_TOKEN
   liveTimeoutMin?: number; // how long to wait for the live check (default 15)
 };
 
@@ -237,7 +239,7 @@ AGENT_SITES['dizaynseo.com'] = {
   short: 'dizaynseo', label: 'Dizayn SEO (dizaynseo.com)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'improver'], lang: 'en', segments: false, listPosts: staticPosts, postFiles: () => ['_src/posts.py', '_src/posts_funnel.py', '_src/posts_agent.py'],
   twin: { file: '_src/posts_es.py', key: 'en' },
   pendingNote: "Posts are written into _src/posts_agent.py (or the post's own file when improving) and the generated files are rebuilt by dizayn/prep.py, a stand-in for the partner's missing generator that is checked against the committed output. The fixer is off for this site.",
-  repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com',
+  repo: '/home/darrkito/dizaynseo', worktree: '/home/darrkito/dizaynseo-agent-wt', remote: 'origin', liveBase: 'https://www.dizaynseo.com', deployCmd: ['/home/darrkito/deploy-dizaynseo.sh'], deployTokenEnv: 'DIZAYNSEO_VERCEL_TOKEN', liveTimeoutMin: 20,
   blogUrl: (s) => { const es = dizaynEsSlug(AGENT_SITES['dizaynseo.com'].worktree, s); return [`https://www.dizaynseo.com/blog/${s}`, ...(es ? [`https://www.dizaynseo.com/es/blog/${es}`] : [])]; }, typecheck: ['true'],
   indexnowKey: 'ffea521f6f9644fc9a526c6c23c1cdb4.txt',
   orderPaths: ['_src/posts_es.py', '_src/posts_agent.py', '_src/posts.py', '_src/posts_funnel.py'],
