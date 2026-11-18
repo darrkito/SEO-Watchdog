@@ -340,7 +340,7 @@ export const researcherAgent: AgentFn = async (c) => {
   const opts = { lang: c.cfg.lang, country: c.site.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', ownHost: new URL(c.site.url).hostname };
   const taken = [...posts.flatMap((p) => [p.slug, p.title]), ...backlog];
   const pool = await buildDemandPool(c.db, c.site.id, { ...opts, services, brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], offLimits: c.cfg.offLimits, seedKeywords: c.cfg.seedKeywords, geoWords, taken });
-  const clusters = clusterQueries(pool), shortlist = clusters.slice(0, 60);
+  const clusters = clusterQueries(pool), withGsc = clusters.filter((x) => x.gscImpressions > 0), fresh = clusters.filter((x) => x.gscImpressions === 0), shortlist = [...withGsc.slice(0, 30), ...fresh.slice(0, 30)]; // top GSC clusters are mostly already written, so half the slots go to clusters found by the seeds
   const wt = prepareWorktree(c.cfg, 'agent/research'), budget = makeBudget();
   const common = `Eres investigador de temas SEO y GEO para ${c.site.url}. Escribe title y slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}.
 Posts existentes: ${JSON.stringify(posts)}. Slugs en backlog: ${JSON.stringify(backlog)}.
