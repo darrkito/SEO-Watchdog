@@ -187,10 +187,10 @@ export type Cluster = { id: string; primary: string; members: PoolEntry[]; gscIm
 export const DEMAND_DENYLIST = ['fortnite', 'minecraft', 'roblox', 'dibujo', 'png', 'gif', 'meme'];
 const poolKey = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/\s+/g, ' ');
 const clusterWords = (s: string) => [...new Set(wordsOf(s).filter((w) => !STOPWORDS.has(w)).map((w) => w.length > 4 ? w.endsWith('ces') ? w.slice(0, -1) : w.replace(/(?:es|s)$/, '') : w).filter((w) => !['renta', 'alquiler', 'rent', 'rental'].includes(w)))].sort();
-export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; geoWords?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number; apiKey?: string; paaMax?: number } = {}): Promise<PoolEntry[]> {
+export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; offLimits?: string[]; geoWords?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number; apiKey?: string; paaMax?: number } = {}): Promise<PoolEntry[]> {
   const rows = db.prepare("SELECT query, SUM(impressions) impressions, SUM(position * impressions) / NULLIF(SUM(impressions), 0) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= date('now', '-60 days') AND date <= date('now') GROUP BY query HAVING SUM(impressions) >= 1 ORDER BY impressions DESC").all(siteId) as { query: string; impressions: number; position: number | null }[];
   const excluded = new Set(rows.filter((r) => r.position != null && r.position <= 3).map((r) => poolKey(r.query)));
-  const brands = (opts.brandTerms ?? []).map(poolKey).filter(Boolean);
+  const brands = [...(opts.brandTerms ?? []), ...(opts.offLimits ?? [])].map(poolKey).filter(Boolean); // offLimits: services the site no longer sells
   const entries = new Map<string, PoolEntry>();
   const add = (query: string, source: PoolEntry['sources'][number]) => {
     const key = poolKey(query); if (!key || excluded.has(key) || brands.some((b) => key.includes(b))) return null;

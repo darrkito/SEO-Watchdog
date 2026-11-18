@@ -339,7 +339,7 @@ export const researcherAgent: AgentFn = async (c) => {
   const geoWords = [profile.city, profile.region, profile.country].filter((x): x is string => typeof x === 'string');
   const opts = { lang: c.cfg.lang, country: c.site.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', ownHost: new URL(c.site.url).hostname };
   const taken = [...posts.flatMap((p) => [p.slug, p.title]), ...backlog];
-  const pool = await buildDemandPool(c.db, c.site.id, { ...opts, services, brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords, taken });
+  const pool = await buildDemandPool(c.db, c.site.id, { ...opts, services, brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], offLimits: c.cfg.offLimits, geoWords, taken });
   const clusters = clusterQueries(pool), shortlist = clusters.slice(0, 60);
   const wt = prepareWorktree(c.cfg, 'agent/research'), budget = makeBudget();
   const common = `Eres investigador de temas SEO y GEO para ${c.site.url}. Escribe title y slug en ${c.cfg.lang === 'en' ? 'inglés' : 'español'}.

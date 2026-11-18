@@ -127,7 +127,7 @@ switch (cmd) {
     let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
     const posts = cfg?.listPosts(cfg.repo) ?? [];
     const backlog = takenSlugs(db, s.id);
-    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string'), taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog] }, { expand: !opt['no-expand'] });
+    const pool = await buildDemandPool(db, s.id, { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', location: profile.city || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], offLimits: cfg?.offLimits, geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string'), taken: [...posts.flatMap((p) => [p.slug, p.title]), ...backlog] }, { expand: !opt['no-expand'] });
     console.log(replayReport(clusterQueries(pool), pool));
     break;
   }
@@ -137,7 +137,7 @@ switch (cmd) {
     const cfg = AGENT_SITES[new URL(s.url).hostname.replace(/^www\./, '')];
     const row = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(s.id) as { data_json: string } | undefined;
     let profile: any = {}; try { profile = JSON.parse(row?.data_json ?? '{}'); } catch { /* no profile */ }
-    const poolOpts = { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string') };
+    const poolOpts = { lang: cfg?.lang ?? (s.market.split(',')[0]?.trim().toUpperCase() === 'US' ? 'en' : 'es'), country: s.market.split(',')[0]?.trim() || profile.country || '', services: Array.isArray(profile.services) ? profile.services : [], brandTerms: Array.isArray(profile.brand_terms) ? profile.brand_terms : [], offLimits: cfg?.offLimits, geoWords: [profile.city, profile.region, profile.country].filter((x) => typeof x === 'string') };
     const taken = takenSlugs(db, s.id);
     const topics = db.prepare("SELECT id, score, query, title, slug FROM topics WHERE site_id = ? AND status = 'new'").all(s.id) as { id: number; score: number; query: string; title: string; slug: string }[];
     const update = db.prepare("UPDATE topics SET status = 'rejected' WHERE id = ? AND site_id = ? AND status = 'new'");

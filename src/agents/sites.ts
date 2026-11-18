@@ -13,6 +13,7 @@ export type AgentSite = {
   capabilities: string[]; // agents this site runs (the rest are shown as waiting, with `pendingNote`)
   pendingNote?: string;
   neverWrite?: string[];
+  offLimits?: string[];  // query substrings the topic researcher never proposes (services the site no longer sells)
   lang: 'es' | 'en';     // language topics and posts are written in
   research: { context: string; priority: string }; // site-specific lines of the researcher prompt
   segments: boolean;     // classify queries by customer segment (needs an audience brief with segments)
@@ -290,7 +291,7 @@ AGENT_SITES['dizayn.com.mx'] = {
   ],
   guideFiles: ['CLAUDE.md', 'PLAN-redesign-web-seo-geo.md'],
   factFiles: ['content/mx-pricing.ts', 'content/cases.ts'],
-  short: 'dizayn', label: 'Dizayn MX (dizayn.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: dizaynMxPosts, postFiles: () => ['content/blog.ts'],
+  offLimits: ['video', 'fotograf', 'redes sociales', 'social media', 'community manager', 'instagram', 'facebook', 'tiktok', 'graphic design', 'diseno grafico', 'embudo', 'funnel'], short: 'dizayn', label: 'Dizayn MX (dizayn.com.mx)', capabilities: ['crawl', 'collect', 'analyst', 'researcher', 'writer', 'fixer', 'improver'], lang: 'es', segments: false, listPosts: dizaynMxPosts, postFiles: () => ['content/blog.ts'],
   research: {
     context: 'Dizayn es una agencia de diseño web, SEO y GEO en Guadalajara, Jalisco, que vende a negocios de México (la sección /usa es otro mercado y no se toca). Puedes leer el repo (content/blog.ts, content/services.ts, content/cases.ts, content/mx-pricing.ts) y buscar en la web para validar demanda y qué responde la competencia. Solo temas que Dizayn pueda cumplir con sus servicios reales y que se apoyen en sus casos (Lemus Weddings, Luvory, Studio Yume, Vexon).',
     priority: 'Prioridad: al menos 5 de los 8 temas deben ser preguntas de decisión de dueños de negocio en Guadalajara/México (costo, plazos, a medida vs plantilla, SEO local, aparecer en ChatGPT y AI Overviews) que se puedan responder con un caso propio. El dominio es joven: prefiere cola larga.',
