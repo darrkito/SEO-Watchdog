@@ -13,6 +13,7 @@ export type AgentSite = {
   capabilities: string[]; // agents this site runs (the rest are shown as waiting, with `pendingNote`)
   pendingNote?: string;
   neverWrite?: string[];
+  seedKeywords?: string[]; // curated topic-research seeds, searched before the top GSC queries (which are usually already written)
   offLimits?: string[];  // query substrings the topic researcher never proposes (services the site no longer sells)
   lang: 'es' | 'en';     // language topics and posts are written in
   research: { context: string; priority: string }; // site-specific lines of the researcher prompt
@@ -232,6 +233,7 @@ const ES_TWIN = `Paridad EN/ES (regla del dueño, obligatoria): además del post
 const ES_TWIN_IMPROVE = `Paridad EN/ES: si el post que mejoras o amplías tiene gemelo en español (busca en _src/posts_es.py un dict con "en": "<slug>"), aplica el MISMO cambio al gemelo, traducido fielmente (mismos ids de <h2>, mismas tablas, mismos enlaces). Si no tiene gemelo en español, no lo crees: deja solo el inglés y dilo explícitamente en tu respuesta. Antes de terminar, enumera los valores de <h2 id> y los hrefs internos y externos de la versión en inglés y confirma que el gemelo en español tiene exactamente los mismos y en el mismo orden.`;
 
 AGENT_SITES['dizaynseo.com'] = {
+  seedKeywords: ['google business profile optimization', 'google business profile categories', 'get more google reviews', 'local citations small business', 'how much does seo cost', 'how long does seo take', 'how much does a small business website cost', 'website redesign seo', 'get recommended by chatgpt', 'generative engine optimization', 'local business schema markup', 'seo audit small business', 'core web vitals small business', 'seo vs google ads'],
   neverWrite: [
     "Tocar archivos generados (api/, md/, blog/, llms*.txt, sitemap.xml, vercel.json, agent-tools.js): los regenera el hook.",
     "Crear o editar páginas fuera de _src/posts_agent.py y _src/posts_es.py (posts nuevos) o de los archivos donde viven el post y su gemelo que se mejoran.",

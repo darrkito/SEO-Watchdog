@@ -187,7 +187,7 @@ export type Cluster = { id: string; primary: string; members: PoolEntry[]; gscIm
 export const DEMAND_DENYLIST = ['fortnite', 'minecraft', 'roblox', 'dibujo', 'png', 'gif', 'meme'];
 const poolKey = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/\s+/g, ' ');
 const clusterWords = (s: string) => [...new Set(wordsOf(s).filter((w) => !STOPWORDS.has(w)).map((w) => w.length > 4 ? w.endsWith('ces') ? w.slice(0, -1) : w.replace(/(?:es|s)$/, '') : w).filter((w) => !['renta', 'alquiler', 'rent', 'rental'].includes(w)))].sort();
-export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; offLimits?: string[]; geoWords?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number; apiKey?: string; paaMax?: number } = {}): Promise<PoolEntry[]> {
+export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { lang: string; country: string; location?: string; services?: string[]; brandTerms?: string[]; offLimits?: string[]; seedKeywords?: string[]; geoWords?: string[]; taken?: string[] }, deps: { fetch?: typeof fetch; expand?: boolean; maxSeeds?: number; apiKey?: string; paaMax?: number } = {}): Promise<PoolEntry[]> {
   const rows = db.prepare("SELECT query, SUM(impressions) impressions, SUM(position * impressions) / NULLIF(SUM(impressions), 0) position FROM metrics WHERE site_id = ? AND source = 'gsc' AND date >= date('now', '-60 days') AND date <= date('now') GROUP BY query HAVING SUM(impressions) >= 1 ORDER BY impressions DESC").all(siteId) as { query: string; impressions: number; position: number | null }[];
   const excluded = new Set(rows.filter((r) => r.position != null && r.position <= 3).map((r) => poolKey(r.query)));
   const brands = [...(opts.brandTerms ?? []), ...(opts.offLimits ?? [])].map(poolKey).filter(Boolean); // offLimits: services the site no longer sells
@@ -199,7 +199,9 @@ export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { 
   };
   for (const row of rows) { const e = add(row.query, 'gsc'); if (e) { const total = e.gscImpressions + row.impressions; e.gscPosition = e.gscPosition == null ? row.position : row.position == null ? e.gscPosition : (e.gscPosition * e.gscImpressions + row.position * row.impressions) / total; e.gscImpressions = total; } }
   const gscKeys = new Set([...entries.keys()]);
-  const seeds = [...new Map([...entries.values()].sort((a, b) => b.gscImpressions - a.gscImpressions).map((e) => [poolKey(e.query), e.query]).concat((opts.services ?? []).map((s) => [poolKey(s), s] as [string, string]))).values()].filter(Boolean).slice(0, deps.maxSeeds ?? 12);
+  const takenSets = (opts.taken ?? []).map((t) => new Set(clusterWords(t)));
+  const covered = (q: string) => { const w = clusterWords(q); return w.length >= 2 && takenSets.some((t) => w.every((x) => t.has(x))); }; // a seed already written about only re-finds the same cluster
+  const seeds = [...new Map((opts.seedKeywords ?? []).map((s) => [poolKey(s), s] as [string, string]).concat([...entries.values()].sort((a, b) => b.gscImpressions - a.gscImpressions).map((e) => [poolKey(e.query), e.query] as [string, string])).concat((opts.services ?? []).map((s) => [poolKey(s), s] as [string, string]))).values()].filter(Boolean).filter((q) => !covered(q)).slice(0, deps.maxSeeds ?? 24);
   if (deps.expand !== false) {
     const modifiers = opts.lang.toLowerCase().startsWith('es') ? ['para', 'precio', 'cuanto', 'como', 'que', 'vs', ...(opts.location ? [opts.location] : [])] : ['for', 'cost', 'how', 'what', 'vs', 'near me'];
     const envMax = process.env.TOPIC_PAA_MAX, paaMax = deps.paaMax ?? (envMax != null && /^\d+$/.test(envMax) ? Number(envMax) : 8);
@@ -231,7 +233,7 @@ export async function buildDemandPool(db: DatabaseSync, siteId: number, opts: { 
     }
   }
   const geo = new Set((opts.geoWords ?? []).flatMap(clusterWords));
-  const reference = [...rows.map((r) => r.query), ...(opts.services ?? [])].map((s) => new Set(clusterWords(s).filter((w) => !geo.has(w))));
+  const reference = [...rows.map((r) => r.query), ...(opts.services ?? []), ...(opts.seedKeywords ?? [])].map((s) => new Set(clusterWords(s).filter((w) => !geo.has(w))));
   const taken = (opts.taken ?? []).map((s) => new Set(clusterWords(s)));
   return [...entries.values()].filter((e) => { const words = clusterWords(e.query); return wordsOf(e.query).length >= 2 && !wordsOf(e.query).some((w) => DEMAND_DENYLIST.includes(w)) && reference.some((ref) => words.filter((w) => !geo.has(w) && ref.has(w)).length >= (e.sources.includes('gsc') ? 1 : 2)) && !(words.length >= 2 && taken.some((t) => t.size <= words.length + 2 && words.every((w) => t.has(w)))); });
 }
