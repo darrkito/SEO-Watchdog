@@ -37,6 +37,53 @@ export function latestPages(db: DatabaseSync, siteId: number): Page[] {
 }
 
 export type Issue = { text: string; fix: string };
+export type RivalRow = { ownUrl: string; ownTitle: string; rivals: { domain: string; url: string; title: string | null; word_count: number; issues: Issue[] }[]; score: number };
+export type RivalOnly = { title: string; url: string; domain: string; theirs: number; fix: string };
+export type RivalBattle = { rows: RivalRow[]; rivalOnly: RivalOnly[]; rivals: { domain: string; pages: number; avgWords: number; faqPages: number; schemaTypes: string[] }[] };
+
+const pageTerms = (p: Page) => terms(`${p.title ?? ''} ${p.h1[0] ?? ''}`);
+const contentPage = (p: Page) => {
+  let path: string;
+  try { path = new URL(p.url).pathname; } catch { return false; }
+  return !!p.title?.trim() && p.word_count >= 80 && !/(?:^|\/)(?:contact(?:o|us)?|nosotros|about|quienes-somos|legal|privacy|privacidad|aviso-de-privacidad|terms|terminos|cart|carrito|checkout|login|log-in|sign-in|mi-cuenta|account)(?:\/|$|[.-])/i.test(path);
+};
+const matchScore = (a: string[], b: string[]) => {
+  const other = new Set(b), shared = a.filter((w) => other.has(w)).length;
+  return shared >= 2 ? shared / (a.length + b.length - shared) : 0;
+};
+
+/** Compare the latest crawls, independently of search discovery. */
+export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
+  if (!db.prepare("SELECT 1 FROM runs WHERE site_id = ? AND status = 'ok' LIMIT 1").get(site.id)) return null;
+  const own = latestPages(db, site.id).filter(contentPage);
+  const watched = db.prepare("SELECT domain, competitor_site_id FROM competitor_candidates WHERE site_id = ? AND status IN ('active','pinned','user_added') AND competitor_site_id IS NOT NULL").all(site.id) as { domain: string; competitor_site_id: number }[];
+  const pages = watched.map((w) => ({ domain: w.domain, pages: latestPages(db, w.competitor_site_id) }));
+  const rivals = pages.map(({ domain, pages: ps }) => ({ domain, pages: ps.length, avgWords: ps.length ? Math.round(ps.reduce((n, p) => n + p.word_count, 0) / ps.length) : 0, faqPages: ps.filter((p) => p.faq_questions.length > 0).length, schemaTypes: [...new Set(ps.flatMap((p) => p.jsonld_types))].sort() }));
+  const rows: RivalRow[] = [];
+  for (const p of own) {
+    const candidates = pages.flatMap(({ domain, pages: ps }) => {
+      const best = ps.map((r) => ({ p: r, score: matchScore(pageTerms(p), pageTerms(r)) })).filter((r) => r.score >= 0.35).sort((a, b) => b.score - a.score || b.p.word_count - a.p.word_count)[0];
+      return best ? [{ domain, ...best }] : [];
+    }).sort((a, b) => b.score - a.score || b.p.word_count - a.p.word_count).slice(0, 3);
+    const compared = candidates.map((r) => ({ ...r, issues: comparePages(firstPart(p.h1[0] || p.title), p, r.p, show(r.domain)) })).filter((r) => r.issues.length);
+    if (compared.length) rows.push({ ownUrl: p.url, ownTitle: p.title!, rivals: compared.map((r) => ({ domain: r.domain, url: r.p.url, title: r.p.title, word_count: r.p.word_count, issues: r.issues })), score: compared.reduce((n, r) => n + r.issues.length, 0) * (1 + candidates[0].score) });
+  }
+  const ownTerms = latestPages(db, site.id).map(pageTerms);
+  const groups = new Map<string, RivalOnly & { sig: string[]; service: boolean }>();
+  for (const { domain, pages: ps } of pages) for (const p of ps) {
+    const title = firstPart(p.h1[0] || p.title), sig = pageTerms(p).sort();
+    if (sig.length < 2 || !title) continue;
+    const key = `${domain} ${sig.join(' ')}`, group = groups.get(key);
+    let path = '';
+    try { path = new URL(p.url).pathname; } catch { /* title and schema can still identify a service */ }
+    const service = /\b(?:renta|alquiler|venta|servicios?|productos?|rentals?|services?|products?|hire|sales?)\b/i.test(`${title} ${path.replace(/[-_/]/g, ' ')}`) || p.jsonld_types.some((t) => t === 'Product' || t === 'Service');
+    if (group) { group.theirs++; group.service ||= service; }
+    else groups.set(key, { title, url: p.url, domain, theirs: 1, sig, service, fix: `Create a page for “${title}” with useful, distinct details about your offering.` });
+  }
+  const ownVocab = new Set(ownTerms.flat());
+  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && g.sig.some((w) => ownVocab.has(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
+  return { rows: rows.sort((a, b) => b.score - a.score).slice(0, 15), rivalOnly, rivals };
+}
 export type KeywordRow = {
   query: string; gsc?: Serp[string]['gsc']; ownRank: number | null; ownUrl: string | null;
   above: { rank: number; domain: string; url: string; watched: boolean }[];
