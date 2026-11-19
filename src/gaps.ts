@@ -6,6 +6,7 @@ import type { Site } from './db.ts';
 import { registrableDomain } from './crawl.ts';
 import { textKey, type Extract } from './extract.ts';
 import type { Serp } from './competitors.ts';
+import { AGENT_SITES } from './agents/sites.ts';
 
 const show = (d: string) => domainToUnicode(d) || d; // xn--… → readable, for sentences
 const STOP = new Set('de la el los las en y para con por del un una al lo le su sus tu que es se mas the of and for in to on with your our you are from how what'.split(' '));
@@ -88,8 +89,9 @@ export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
     const generic = new Set(terms('renta alquiler venta servicio servicios móvil móviles portátil portátiles para obra obras temporal temporales equipada equipado con clima disponible guadalajara zapopan jalisco méxico mexico ciudad'));
     offer = new Set(terms([...(d.services ?? []), d.industry ?? ''].join(' ')).filter((w) => !generic.has(w) && !terms(`${d.city ?? ''} ${d.region ?? ''}`).includes(w)));
   } catch { /* fall back to the site's own vocabulary below */ }
+  const off = (AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')]?.offLimits ?? []).map((w) => textKey(w));
   const ownVocab = offer.size ? offer : new Set(ownTerms.flat());
-  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
+  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !off.some((w) => w && textKey(g.title).includes(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
   return { rows: rows.sort((a, b) => b.score - a.score).slice(0, 15), rivalOnly, rivals };
 }
 export type KeywordRow = {
