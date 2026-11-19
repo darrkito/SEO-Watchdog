@@ -53,6 +53,13 @@ const matchScore = (a: string[], b: string[]) => {
   return shared >= 2 ? shared / (a.length + b.length - shared) : 0;
 };
 
+// Cities outside a local business's area: a rival page "en Cancún" is not a service we compete on.
+const FAR_CITIES = ['cancun', 'manzanillo', 'monterrey', 'tijuana', 'merida', 'queretaro', 'puebla', 'leon', 'cdmx', 'ciudad de mexico', 'toluca', 'veracruz', 'chihuahua', 'hermosillo', 'saltillo', 'mexicali', 'culiacan', 'mazatlan', 'acapulco', 'oaxaca', 'villahermosa', 'tampico', 'torreon', 'durango', 'zacatecas', 'colima', 'tepic', 'playa del carmen', 'los cabos', 'cabo san lucas', 'puerto vallarta', 'aguascalientes', 'san luis potosi', 'guanajuato', 'celaya', 'irapuato', 'cuernavaca', 'pachuca', 'reynosa', 'nuevo leon', 'yucatan', 'quintana roo'];
+const farCity = (title: string, area: { city?: string; region?: string }) => {
+  const key = ` ${textKey(title)} `, home = textKey(`${area.city ?? ''} ${area.region ?? ''}`);
+  return FAR_CITIES.some((c) => key.includes(` ${c} `) && !home.includes(c));
+};
+
 /** Compare the latest crawls, independently of search discovery. */
 export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
   if (!db.prepare("SELECT 1 FROM runs WHERE site_id = ? AND status = 'ok' LIMIT 1").get(site.id)) return null;
@@ -79,19 +86,21 @@ export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
     try { path = new URL(p.url).pathname; } catch { /* title and schema can still identify a service */ }
     const service = /\b(?:renta|alquiler|venta|servicios?|productos?|rentals?|services?|products?|hire|sales?)\b/i.test(`${title} ${path.replace(/[-_/]/g, ' ')}`) || p.jsonld_types.some((t) => t === 'Product' || t === 'Service');
     if (group) { group.theirs++; group.service ||= service; }
-    else groups.set(key, { title, url: p.url, domain, theirs: 1, sig, service, fix: `Create a page for “${title}” with useful, distinct details about your offering.` });
+    else groups.set(key, { title, url: p.url, domain, theirs: 1, sig, service, fix: `Check your own rental range: if you rent an equivalent (same size or use) without its own page, create one for “${title}” with measures, what is included, photos and an FAQ. If you do not rent it, ignore this.` });
   }
   // Only what the business really offers (its editable profile services), minus generic modifiers: "Dormitorios Móviles" must not match "Oficinas Móviles" just on "móviles".
   let offer = new Set<string>();
+  let d0: { city?: string; region?: string } = {};
   try {
     const prof = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string } | undefined;
     const d = prof ? JSON.parse(prof.data_json) as { services?: string[]; industry?: string; city?: string; region?: string } : {};
     const generic = new Set(terms('renta alquiler venta servicio servicios móvil móviles portátil portátiles para obra obras temporal temporales equipada equipado con clima disponible guadalajara zapopan jalisco méxico mexico ciudad'));
+    d0 = d;
     offer = new Set(terms([...(d.services ?? []), d.industry ?? ''].join(' ')).filter((w) => !generic.has(w) && !terms(`${d.city ?? ''} ${d.region ?? ''}`).includes(w)));
   } catch { /* fall back to the site's own vocabulary below */ }
   const off = (AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')]?.offLimits ?? []).map((w) => textKey(w));
   const ownVocab = offer.size ? offer : new Set(ownTerms.flat());
-  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !off.some((w) => w && textKey(g.title).includes(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
+  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !off.some((w) => w && ` ${textKey(g.title)}`.includes(` ${w}`)) && !farCity(g.title, d0) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
   return { rows: rows.sort((a, b) => b.score - a.score).slice(0, 15), rivalOnly, rivals };
 }
 export type KeywordRow = {

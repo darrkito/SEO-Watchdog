@@ -64,3 +64,16 @@ test('pages you lack only cover services in the site profile', () => {
   assert.ok(result.rivalOnly.some((r) => r.title.includes('oficina de obra')));
   assert.ok(!result.rivalOnly.some((r) => /Dormitorios|Plantas/.test(r.title)));
 });
+
+test('pages you lack skip sales and far cities when the site config blocks them', () => {
+  const { db, site, run, page, rival } = fixture();
+  db.exec("CREATE TABLE IF NOT EXISTS site_profiles (site_id INTEGER PRIMARY KEY, data_json TEXT NOT NULL, source TEXT, updated_at TEXT)");
+  db.prepare("INSERT INTO site_profiles VALUES (?, ?, 'user', '')").run(site.id, JSON.stringify({ services: ['Renta de oficinas móviles'], city: 'Zapopan', region: 'Jalisco' }));
+  run(1, 1); run(2, 2); rival('rival.test', 2);
+  page(1, 1, 'https://own.test/', 'Inicio', 'Vexon', 200);
+  page(2, 2, 'https://rival.test/a', 'Renta de oficinas móviles 12x60', 'Renta de oficinas móviles 12x60', 200);
+  page(3, 2, 'https://rival.test/b', 'Renta de oficinas móviles en Cancún', 'Renta de oficinas móviles en Cancún', 200);
+  const titles = rivalBattle(db, site)!.rivalOnly.map((r) => r.title);
+  assert.ok(titles.some((t) => t.includes('12x60')));
+  assert.ok(!titles.some((t) => t.includes('Cancún')));
+});
