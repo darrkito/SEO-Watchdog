@@ -77,3 +77,58 @@ test('pages you lack skip sales and far cities when the site config blocks them'
   assert.ok(titles.some((t) => t.includes('12x60')));
   assert.ok(!titles.some((t) => t.includes('Cancún')));
 });
+
+test('matches model pages only to the same size', () => {
+  const { db, site, run, page, rival } = fixture();
+  run(1, 1); run(2, 2); rival('rival.test', 2);
+  page(1, 1, 'https://own.test/vx-3m', 'Renta oficina móvil VX-3M: 3 m, 3 personas', 'Oficina móvil 3 metros', 100);
+  page(2, 2, 'https://rival.test/cm-3m', 'Oficina móvil de 3 metros | CM-3M', 'Oficina móvil 3 metros', 500);
+  page(3, 2, 'https://rival.test/cm-8m', 'Oficina móvil de 8 metros | CM-8M', 'Oficina móvil 8 metros', 900);
+  const result = rivalBattle(db, site)!;
+  assert.deepEqual(result.rows.flatMap((r) => r.rivals.map((v) => v.url)), ['https://rival.test/cm-3m']);
+  assert.equal(result.own.pages, 1);
+  db.close();
+});
+
+test('does not compare a blog post to a product page', () => {
+  const { db, site, run, page, rival } = fixture();
+  run(1, 1); run(2, 2); rival('rival.test', 2);
+  page(1, 1, 'https://own.test/blog/office', 'Renta oficina móvil', 'Renta oficina móvil', 100, { jsonld_types: ['BlogPosting'] });
+  page(2, 2, 'https://rival.test/office', 'Renta oficina móvil', 'Renta oficina móvil', 500, { jsonld_types: ['Product'] });
+  assert.ok(rivalBattle(db, site)!.rows.every((r) => r.rivals.every((v) => v.issues.every((i) => !i.text.includes('Product')))));
+  db.close();
+});
+
+test('excludes watched domains containing a profile brand', () => {
+  const { db, site, run, page, rival } = fixture();
+  db.exec('CREATE TABLE site_profiles (site_id INTEGER PRIMARY KEY, data_json TEXT NOT NULL, source TEXT, updated_at TEXT)');
+  db.prepare("INSERT INTO site_profiles VALUES (?, ?, 'user', '')").run(site.id, JSON.stringify({ brand_terms: ['Capelton'] }));
+  run(1, 1); run(2, 2); rival('capeltonmexico.com', 2);
+  page(1, 1, 'https://own.test/office', 'Renta oficina móvil', 'Renta oficina móvil', 100);
+  page(2, 2, 'https://capeltonmexico.com/office', 'Renta oficina móvil', 'Renta oficina móvil', 500, { jsonld_types: ['Product'] });
+  const result = rivalBattle(db, site)!;
+  assert.deepEqual(result.rows, []); assert.deepEqual(result.rivalOnly, []); assert.deepEqual(result.rivals, []);
+  db.close();
+});
+
+test('reports original query words in missing lists', () => {
+  const { db, site, run, page, rival } = fixture();
+  run(1, 1); run(2, 2); rival('rival.test', 2);
+  page(1, 1, 'https://own.test/office', 'Renta oficina móvil', 'Renta oficina móvil metros personas', 100);
+  page(2, 2, 'https://rival.test/office', 'Renta oficina móvil metros personas', 'Renta oficina móvil metros personas', 100);
+  const text = rivalBattle(db, site)!.rows.flatMap((r) => r.rivals.flatMap((v) => v.issues.map((i) => i.text))).join(' ');
+  assert.match(text, /missing “metros, personas”/);
+  db.close();
+});
+
+test('deduplicates identical schema advice across own pages', () => {
+  const { db, site, run, page, rival } = fixture();
+  run(1, 1); run(2, 2); rival('rival.test', 2);
+  for (let n = 1; n <= 3; n++) page(n, 1, `https://own.test/office-${n}`, 'Renta oficina móvil', 'Renta oficina móvil', 100);
+  page(4, 2, 'https://rival.test/office', 'Renta oficina móvil', 'Renta oficina móvil', 100, { jsonld_types: ['FAQPage'] });
+  const result = rivalBattle(db, site)!;
+  const issues = result.rows.flatMap((r) => r.rivals.flatMap((v) => v.issues)).filter((i) => /structured data you don't/.test(i.text));
+  assert.equal(issues.length, 1); assert.match(issues[0].text, /\(same gap on 2 other pages of yours\)/);
+  assert.equal(result.own.pages, 3);
+  db.close();
+});

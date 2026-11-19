@@ -23,8 +23,9 @@ const urlKey = (u: string) => { try { const x = new URL(u); return (x.hostname.r
 const firstPart = (t: string | null) => (t ?? '').split(/\s[|–—-]\s/)[0].trim(); // drop "| Brand" suffixes
 // Only schema types that earn something in Google count as advice; the Article family is one type (BlogPosting = Article).
 // Found live: "add Article" to a blog full of BlogPosting, and QAPage/ItemPage/WebApplication suggestions.
+// Store has no Google feature; LocalBusiness covers it.
 // HowTo left out: Google stopped showing HowTo rich results in 2023.
-const USEFUL = new Set(['FAQPage', 'Product', 'Offer', 'AggregateRating', 'Review', 'LocalBusiness', 'Store', 'Service', 'VideoObject', 'Event', 'Article', 'BreadcrumbList']);
+const USEFUL = new Set(['FAQPage', 'Product', 'Offer', 'AggregateRating', 'Review', 'LocalBusiness', 'Service', 'VideoObject', 'Event', 'Article', 'BreadcrumbList']);
 const kind = (t: string) => (/^(Article|BlogPosting|NewsArticle|TechArticle|Report)$/.test(t) ? 'Article' : t);
 const useful = (types: string[]) => new Set(types.map(kind).filter((t) => USEFUL.has(t)));
 
@@ -40,8 +41,29 @@ export function latestPages(db: DatabaseSync, siteId: number): Page[] {
 export type Issue = { text: string; fix: string };
 export type RivalRow = { ownUrl: string; ownTitle: string; rivals: { domain: string; url: string; title: string | null; word_count: number; issues: Issue[] }[]; score: number };
 export type RivalOnly = { title: string; url: string; domain: string; theirs: number; fix: string };
-export type RivalBattle = { rows: RivalRow[]; rivalOnly: RivalOnly[]; rivals: { domain: string; pages: number; avgWords: number; faqPages: number; schemaTypes: string[] }[] };
+type PageSummary = { domain: string; pages: number; avgWords: number; faqPages: number; schemaTypes: string[] };
+export type RivalBattle = { own: PageSummary; rows: RivalRow[]; rivalOnly: RivalOnly[]; rivals: { domain: string; pages: number; avgWords: number; faqPages: number; schemaTypes: string[] }[] };
 
+const pathname = (p: Page) => { try { return new URL(p.url).pathname; } catch { return ''; } };
+const pageKind = (p: Page): 'home' | 'blog' | 'other' => {
+  const path = pathname(p).replace(/\/+$/, '');
+  if (!path) return 'home';
+  return p.jsonld_types.some((t) => /^(BlogPosting|Article|NewsArticle|TechArticle)$/.test(t)) || /^\/(?:en\/)?blog/i.test(path) ? 'blog' : 'other';
+};
+const sizeKey = (p: Page): string | null => {
+  const text = `${p.title ?? ''} ${p.h1[0] ?? ''} ${pathname(p)}`;
+  const metres = text.match(/(\d{1,2}(?:[.,]\d+)?)\s*(?:metros?|mts?|m)\b/i) ?? text.match(/\b[a-z]{1,3}-?(\d{1,2})m\b/i);
+  if (metres) return `m:${metres[1].replace(',', '.')}`;
+  const feet = text.match(/(\d{1,2})\s*['′]?\s*[x×]\s*(\d{1,2})/i);
+  return feet ? `ft:${feet[1]}x${feet[2]}` : null;
+};
+// Search wording of a page: its H1 (the declared topic), model codes removed ("VX-10MRenta de…" -> "Renta de…"), title as fallback.
+const queryFor = (p: Page) => {
+  const raw = (p.h1[0] || p.title || '').replace(/\b[A-Z]{1,3}-\d{1,2}[A-Z]?(?=[A-Z][a-zñáéíóú]|\b)/g, ' ').replace(/\b[a-z]{1,3}-\d{1,2}[a-z]?\b/gi, ' ');
+  return firstPart(raw.replace(/\s+/g, ' ').trim()) || firstPart(p.title);
+};
+const h1Part = (p: Page) => firstPart(p.h1[0] ? p.h1[0].replace(/([a-z0-9])([A-ZÁÉÍÓÚÑ])/g, '$1 $2') : p.title);
+const summary = (domain: string, ps: Page[]): PageSummary => ({ domain, pages: ps.length, avgWords: ps.length ? Math.round(ps.reduce((n, p) => n + p.word_count, 0) / ps.length) : 0, faqPages: ps.filter((p) => p.faq_questions.length > 0).length, schemaTypes: [...new Set(ps.flatMap((p) => p.jsonld_types))].sort() });
 const pageTerms = (p: Page) => terms(`${p.title ?? ''} ${p.h1[0] ?? ''}`);
 const contentPage = (p: Page) => {
   let path: string;
@@ -63,23 +85,47 @@ const farCity = (title: string, area: { city?: string; region?: string }) => {
 /** Compare the latest crawls, independently of search discovery. */
 export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
   if (!db.prepare("SELECT 1 FROM runs WHERE site_id = ? AND status = 'ok' LIMIT 1").get(site.id)) return null;
-  const own = latestPages(db, site.id).filter(contentPage);
+  const ownPages = latestPages(db, site.id);
+  const own = ownPages.filter(contentPage);
+  let brands: string[] = [];
+  try {
+    const prof = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string } | undefined;
+    const d = prof ? JSON.parse(prof.data_json) as { brand_terms?: string[] } : {};
+    brands = (d.brand_terms ?? []).map((b) => b.toLowerCase().replace(/[^a-z0-9]/g, '')).filter((b) => b.length >= 5);
+  } catch { /* no profile or invalid profile */ }
   const watched = db.prepare("SELECT domain, competitor_site_id FROM competitor_candidates WHERE site_id = ? AND status IN ('active','pinned','user_added') AND competitor_site_id IS NOT NULL").all(site.id) as { domain: string; competitor_site_id: number }[];
-  const pages = watched.map((w) => ({ domain: w.domain, pages: latestPages(db, w.competitor_site_id) }));
-  const rivals = pages.map(({ domain, pages: ps }) => ({ domain, pages: ps.length, avgWords: ps.length ? Math.round(ps.reduce((n, p) => n + p.word_count, 0) / ps.length) : 0, faqPages: ps.filter((p) => p.faq_questions.length > 0).length, schemaTypes: [...new Set(ps.flatMap((p) => p.jsonld_types))].sort() }));
+  const pages = watched.filter((w) => {
+    const label = registrableDomain(w.domain).split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+    return !brands.some((b) => label.includes(b));
+  }).map((w) => ({ domain: w.domain, pages: latestPages(db, w.competitor_site_id) }));
+  const rivals = pages.map(({ domain, pages: ps }) => summary(domain, ps));
   const rows: RivalRow[] = [];
   for (const p of own) {
     const candidates = pages.flatMap(({ domain, pages: ps }) => {
-      const best = ps.map((r) => ({ p: r, score: matchScore(pageTerms(p), pageTerms(r)) })).filter((r) => r.score >= 0.35).sort((a, b) => b.score - a.score || b.p.word_count - a.p.word_count)[0];
+      const best = ps.filter((r) => {
+        const a = sizeKey(p), b = sizeKey(r);
+        return pageKind(p) === pageKind(r) && !(a && b && a.split(':')[0] === b.split(':')[0] && a !== b);
+      }).map((r) => ({ p: r, score: matchScore(pageTerms(p), pageTerms(r)) })).filter((r) => r.score >= 0.35).sort((a, b) => b.score - a.score || b.p.word_count - a.p.word_count)[0];
       return best ? [{ domain, ...best }] : [];
     }).sort((a, b) => b.score - a.score || b.p.word_count - a.p.word_count).slice(0, 3);
-    const compared = candidates.map((r) => ({ ...r, issues: comparePages(firstPart(p.h1[0] || p.title), p, r.p, show(r.domain)) })).filter((r) => r.issues.length);
+    const compared = candidates.map((r) => ({ ...r, issues: comparePages(queryFor(p), p, r.p, show(r.domain)) })).filter((r) => r.issues.length);
     if (compared.length) rows.push({ ownUrl: p.url, ownTitle: p.title!, rivals: compared.map((r) => ({ domain: r.domain, url: r.p.url, title: r.p.title, word_count: r.p.word_count, issues: r.issues })), score: compared.reduce((n, r) => n + r.issues.length, 0) * (1 + candidates[0].score) });
   }
-  const ownTerms = latestPages(db, site.id).map(pageTerms);
+  rows.sort((a, b) => b.score - a.score);
+  const seen = new Map<string, { issue: Issue; ownUrl: string; pages: Set<string> }>();
+  for (const row of rows) for (const rival of row.rivals) rival.issues = rival.issues.filter((issue) => {
+    if (!/structured data you don't/.test(issue.text)) return true;
+    const previous = seen.get(issue.text);
+    if (!previous) { seen.set(issue.text, { issue, ownUrl: row.ownUrl, pages: new Set() }); return true; }
+    if (previous.ownUrl !== row.ownUrl) previous.pages.add(row.ownUrl);
+    return false;
+  });
+  for (const { issue, pages: duplicates } of seen.values()) if (duplicates.size) issue.text += ` (same gap on ${duplicates.size} other page${duplicates.size > 1 ? 's' : ''} of yours)`;
+  for (const row of rows) row.rivals = row.rivals.filter((r) => r.issues.length);
+  const ownTerms = ownPages.map(pageTerms);
   const groups = new Map<string, RivalOnly & { sig: string[]; service: boolean }>();
   for (const { domain, pages: ps } of pages) for (const p of ps) {
-    const title = firstPart(p.h1[0] || p.title), sig = pageTerms(p).sort();
+    const title = h1Part(p), sig = pageTerms(p).sort();
     if (sig.length < 2 || !title) continue;
     const key = `${domain} ${sig.join(' ')}`, group = groups.get(key);
     let path = '';
@@ -101,7 +147,7 @@ export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
   const off = (AGENT_SITES[new URL(site.url).hostname.replace(/^www\./, '')]?.offLimits ?? []).map((w) => textKey(w));
   const ownVocab = offer.size ? offer : new Set(ownTerms.flat());
   const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !off.some((w) => w && ` ${textKey(g.title)}`.includes(` ${w}`)) && !farCity(g.title, d0) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
-  return { rows: rows.sort((a, b) => b.score - a.score).slice(0, 15), rivalOnly, rivals };
+  return { own: summary(new URL(site.url).hostname.replace(/^www\./, ''), ownPages), rows: rows.filter((r) => r.rivals.length).slice(0, 15), rivalOnly, rivals };
 }
 export type KeywordRow = {
   query: string; gsc?: Serp[string]['gsc']; ownRank: number | null; ownUrl: string | null;
@@ -118,12 +164,14 @@ export type Battle = {
 /** Own page vs the best-ranked crawled rival page above it, for one search. */
 export function comparePages(query: string, own: Page | undefined, rival: Page | undefined, rivalLabel: string): Issue[] {
   const want = terms(query);
+  const originals = new Map<string, string>();
+  for (const word of textKey(query).split(' ')) if (!originals.has(stem(word))) originals.set(stem(word), word);
   if (!own) return [{ text: `You have no page aimed at “${query}”.${rival ? ` ${rivalLabel} ranks with “${firstPart(rival.title)}”.` : ''}`, fix: `Create a page for this search, with “${query}” in its title and main heading, and link to it from your homepage.` }];
   if (!rival) return [];
   const out: Issue[] = [];
   for (const [field, label, a, b] of [['title', 'title', own.title, rival.title], ['h1', 'main heading (H1)', own.h1[0], rival.h1[0]], ['meta', 'description', own.meta_description, rival.meta_description]] as const) {
     const mine = coverage(a, want), theirs = coverage(b, want);
-    if (mine < 1 && mine < theirs) out.push({ text: `Your ${label} is missing “${missing(a, want).join(', ')}” for “${query}”; ${rivalLabel}'s has ${theirs === 1 ? 'every word' : 'more of them'}${b ? `: “${b}”` : ''}.`, fix: field === 'meta' ? `Rewrite the description to include “${query}” naturally.` : `Put “${query}” in your ${label}.` });
+    if (mine < 1 && mine < theirs) out.push({ text: `Your ${label} is missing “${missing(a, want).map((w) => originals.get(w) ?? w).join(', ')}” for “${query}”; ${rivalLabel}'s has ${theirs === 1 ? 'every word' : 'more of them'}${b ? `: “${b}”` : ''}.`, fix: field === 'meta' ? `Rewrite the description to include “${query}” naturally.` : `Put “${query}” in your ${label}.` });
   }
   if (rival.word_count > 300 && own.word_count < rival.word_count * 0.6) out.push({ text: `${rivalLabel}'s page has ${rival.word_count} words; yours has ${own.word_count}.`, fix: 'Add useful detail: prices or what is included, coverage area, process, photos with captions, FAQs.' });
   const ownSchema = useful(own.jsonld_types);
@@ -186,7 +234,7 @@ export function battle(db: DatabaseSync, site: Site): Battle | null {
   const ownTitles = ownPages.map((p) => new Set(terms(`${p.title ?? ''} ${p.h1[0] ?? ''}`)));
   const groups = new Map<string, Battle['topicGaps'][number] & { sig: string[] }>();
   for (const [domain, ps] of rivalPages) for (const p of ps) {
-    const title = firstPart(p.h1[0] || p.title);
+    const title = h1Part(p);
     const sig = terms(title).filter((w) => vocab.has(w)).sort();
     if (sig.length < 2) continue;
     const key = domain + ' ' + sig.join(' ');
