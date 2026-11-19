@@ -228,3 +228,12 @@ Luvory (#1) and Vexon (#5) run all seven agents (`src/agents/sites.ts`, `hooks.t
 - `AgentSite.offLimits`: query substrings dropped from the pool (same filter as `brand_terms`). dizayn.com.mx lists video, fotograf, redes sociales, social media, community manager, instagram, facebook, tiktok, graphic design, diseno grafico, embudo, funnel (those services were retired 2026-10). Substring match: remove a term if it blocks a good topic.
 - Commits: e0b07f9 (offLimits), 0313fb0 (seedKeywords), 701b3b3 (shortlist). Rejected by hand in the DB: 3 retired-service topics on dizayn.com.mx (ids 174,175,197) and a duplicate review-reply topic on dizaynseo (229).
 - Open: dizayn.com.mx has no `seedKeywords` yet; post id 195 "Agencia de redes sociales en Guadalajara" is published and describes a retired service (owner to decide: retire/redirect).
+
+## 2026-11-19 — Vexon competitors + How to win rebuild
+- Vexon (site id 5) rents oficinas móviles ONLY. Capelton (capeltonmexico.com) is its PARENT, never a rival. `offLimits` + researcher context in `src/agents/sites.ts` block venta/dormitorios/baños/plantas/maquinaria/vigilancia. Profile locked `source='user'`.
+- Added rivals: casetas.mx, commosa.com.mx, multimoviloficinas.com.mx, rentaexpressportatiles.com, tracsa.com.mx, armultiservicios.com, trenta.mx, willscotmexico.com (inserted directly, bad cert chain + robots disallow-all). The Competitors tab lists `competitor_candidates`; link a site with `activate(db, site, candidateId, 'user_added')`, `add --competitor-of` alone does not show.
+- `rivalBattle()` (src/gaps.ts): crawl-based, independent of the SERP snapshot. Same page-kind + same size matching, parent-brand exclusion, profile-services + offLimits + far-city filter for "Rental pages they have and you don't", deduped schema tips, own summary row, honest "no on-page gaps" verdict.
+- `src/serppages.ts` + table `serp_pages` + `wd serp-pages <site>` (also at end of `discover`): fetches the pages Google ranks above the site so `battle()` compares against them.
+- Result for Vexon: on-page beats rivals; gap is Google Maps + authority. Ranks 11-19: #1 clima, #3 obra, #2 remodelación; head terms still outside top 10.
+- Codex job status is per cwd: run `codex-companion status` from the repo dir. Ticket pattern that worked: tell Codex to reply BLOCKED on contradictions; fix the ticket, rerun.
+- Open: tracked search "renta de caseta de obra Guadalajara" is adjacent (owner to decide), Vexon H1 is two block spans (optional `{' '}` fix in VexonWeb).
