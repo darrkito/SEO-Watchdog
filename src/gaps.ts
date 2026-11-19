@@ -19,7 +19,7 @@ export const coverage = (text: string | null | undefined, want: string[]) => {
   return want.filter((w) => have.has(w)).length / want.length;
 };
 const missing = (text: string | null | undefined, want: string[]) => { const have = new Set(terms(text)); return want.filter((w) => !have.has(w)); };
-const urlKey = (u: string) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/$/, '')).toLowerCase(); } catch { return u; } };
+export const urlKey = (u: string) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/$/, '')).toLowerCase(); } catch { return u; } };
 const firstPart = (t: string | null) => (t ?? '').split(/\s[|–—-]\s/)[0].trim(); // drop "| Brand" suffixes
 // Only schema types that earn something in Google count as advice; the Article family is one type (BlogPosting = Article).
 // Found live: "add Article" to a blog full of BlogPosting, and QAPage/ItemPage/WebApplication suggestions.
@@ -82,22 +82,27 @@ const farCity = (title: string, area: { city?: string; region?: string }) => {
   return FAR_CITIES.some((c) => key.includes(` ${c} `) && !home.includes(c));
 };
 
+export function brandTerms(db: DatabaseSync, siteId: number): string[] {
+  try {
+    const prof = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(siteId) as { data_json: string } | undefined;
+    const d = prof ? JSON.parse(prof.data_json) as { brand_terms?: string[] } : {};
+    return (d.brand_terms ?? []).map (b => b.toLowerCase().replace(/[^a-z0-9]/g, '')).filter((b) => b.length >= 5);
+  } catch { return []; }
+}
+export function isBrandDomain(domain: string, brands: string[]): boolean {
+  const label = registrableDomain(domain).split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+  return brands.some((b) => label.includes(b));
+}
+
 /** Compare the latest crawls, independently of search discovery. */
 export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
   if (!db.prepare("SELECT 1 FROM runs WHERE site_id = ? AND status = 'ok' LIMIT 1").get(site.id)) return null;
   const ownPages = latestPages(db, site.id);
   const own = ownPages.filter(contentPage);
-  let brands: string[] = [];
-  try {
-    const prof = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string } | undefined;
-    const d = prof ? JSON.parse(prof.data_json) as { brand_terms?: string[] } : {};
-    brands = (d.brand_terms ?? []).map((b) => b.toLowerCase().replace(/[^a-z0-9]/g, '')).filter((b) => b.length >= 5);
-  } catch { /* no profile or invalid profile */ }
+  const brands = brandTerms(db, site.id);
   const watched = db.prepare("SELECT domain, competitor_site_id FROM competitor_candidates WHERE site_id = ? AND status IN ('active','pinned','user_added') AND competitor_site_id IS NOT NULL").all(site.id) as { domain: string; competitor_site_id: number }[];
-  const pages = watched.filter((w) => {
-    const label = registrableDomain(w.domain).split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-    return !brands.some((b) => label.includes(b));
-  }).map((w) => ({ domain: w.domain, pages: latestPages(db, w.competitor_site_id) }));
+  const pages = watched.filter((w) => !isBrandDomain(w.domain, brands))
+    .map((w) => ({ domain: w.domain, pages: latestPages(db, w.competitor_site_id) }));
   const rivals = pages.map(({ domain, pages: ps }) => summary(domain, ps));
   const rows: RivalRow[] = [];
   for (const p of own) {
@@ -151,7 +156,7 @@ export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
 }
 export type KeywordRow = {
   query: string; gsc?: Serp[string]['gsc']; ownRank: number | null; ownUrl: string | null;
-  above: { rank: number; domain: string; url: string; watched: boolean }[];
+  above: { rank: number; domain: string; url: string; watched: boolean; fetched: boolean }[];
   rival?: { domain: string; url: string; rank: number; title: string | null };
   ownPage?: { url: string; title: string | null }; issues: Issue[]; score: number;
 };
@@ -191,10 +196,18 @@ export function battle(db: DatabaseSync, site: Site): Battle | null {
   const watched = db.prepare("SELECT domain, competitor_site_id FROM competitor_candidates WHERE site_id = ? AND status IN ('active','pinned','user_added') AND competitor_site_id IS NOT NULL").all(site.id) as { domain: string; competitor_site_id: number }[];
   const rivalPages = new Map(watched.map((w) => [w.domain, latestPages(db, w.competitor_site_id)]));
   const rivalByKey = new Map([...rivalPages.values()].flat().map((p) => [p.key, p]));
+  const fetchedDomains = new Set<string>();
+  const stored = db.prepare('SELECT url, domain, extract_json FROM serp_pages WHERE site_id = ?').all(site.id) as { url: string; domain: string; extract_json: string }[];
+  for (const row of stored) {
+    const p = { ...(JSON.parse(row.extract_json) as Extract), key: urlKey(row.url) };
+    fetchedDomains.add(row.domain);
+    if (p.is_html && p.status === 200 && !p.noindex && !rivalByKey.has(p.key)) rivalByKey.set(p.key, p);
+  }
+
 
   const keywords: KeywordRow[] = Object.entries(serp).map(([query, s]) => {
     const mine = s.organic.find((o) => o.domain === ownDomain);
-    const above = s.organic.filter((o) => o.domain !== ownDomain && (!mine || o.rank < mine.rank)).slice(0, 5).map((o) => ({ ...o, watched: rivalPages.has(o.domain) }));
+    const above = s.organic.filter((o) => o.domain !== ownDomain && (!mine || o.rank < mine.rank)).slice(0, 5).map((o) => ({ ...o, watched: rivalPages.has(o.domain), fetched: fetchedDomains.has(o.domain) }));
     const want = terms(query);
     // Our page for this search: the one Google shows, else the page whose title/H1 best covers the search.
     let ownPage = mine ? ownByKey.get(urlKey(mine.url)) : undefined;
@@ -204,7 +217,7 @@ export function battle(db: DatabaseSync, site: Site): Battle | null {
     }
     const r = above.find((o) => rivalByKey.has(urlKey(o.url)));
     const rivalPage = r && rivalByKey.get(urlKey(r.url));
-    const issues = mine && mine.rank === 1 ? [] : comparePages(query, ownPage, rivalPage, show(r?.domain ?? above[0]?.domain ?? 'The top result'));
+    const issues = (mine && mine.rank === 1) || (ownPage && rivalPage && (pageKind(ownPage) === 'blog') !== (pageKind(rivalPage) === 'blog')) ? [] : comparePages(query, ownPage, rivalPage, show(r?.domain ?? above[0]?.domain ?? 'The top result'));
     const gap = mine ? mine.rank - (above[0]?.rank ?? mine.rank) : 10;
     return { query, gsc: s.gsc, ownRank: mine?.rank ?? null, ownUrl: mine?.url ?? null, above, issues, score: ((s.gsc?.impressions ?? 0) + 10) * Math.max(gap, 0),
       ...(r && rivalPage && { rival: { domain: r.domain, url: r.url, rank: r.rank, title: rivalPage.title } }),

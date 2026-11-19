@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS competitor_candidates (
   status TEXT NOT NULL CHECK (status IN ('suggested','active','pinned','user_added','excluded','directory','rejected')),
   discovery_id INTEGER REFERENCES discoveries(id) ON DELETE SET NULL,
   competitor_site_id INTEGER REFERENCES sites(id) ON DELETE SET NULL, UNIQUE (site_id, domain));
+CREATE TABLE IF NOT EXISTS serp_pages (
+  id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  url TEXT NOT NULL, domain TEXT NOT NULL, extract_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (site_id, url));
 -- Agent fleet (src/agents). site_id 0 + agent '*' is the global kill switch.
 CREATE TABLE IF NOT EXISTS agent_settings (
   agent TEXT NOT NULL, site_id INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,

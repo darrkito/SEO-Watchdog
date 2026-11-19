@@ -11,6 +11,7 @@ import { registrableDomain } from './crawl.ts';
 import { textKey } from './extract.ts';
 import { askJson, webSearch, newUsage, costUsd, hasLlm, canWebSearch, MODEL, type Usage, type Loc } from './llm.ts';
 import { topQueries } from './gsc.ts';
+import { collectSerpPages } from './serppages.ts';
 
 export type Profile = {
   business_name: string; industry: string; services: string[]; city: string; region: string; country: string;
@@ -33,7 +34,7 @@ export type Candidate = {
 const PLATFORMS = /(^|\.)(google|youtube|facebook|instagram|tiktok|x|twitter|linkedin|pinterest|reddit|wikipedia|wikimedia|amazon|mercadolibre|mercadolibre\.com|ebay|aliexpress|temu|shein|walmart|apple|microsoft|bing|yahoo|quora|medium|github|whatsapp|t\.me|canva|etsy)\.[a-z.]+$/i;
 const DIRECTORIES = /(^|\.)(yelp|tripadvisor|bodas|zankyou|weddingwire|theknot|paginasamarillas|seccionamarilla|cylex|hotfrog|foursquare|clutch|sortlist|goodfirms|designrush|trustpilot|glassdoor|indeed|computrabajo|occ|doctoralia|habitissimo|homify|cronoshare|fiverr|upwork|99designs|behance|dribbble|opensea|magiceden|coinmarketcap|coingecko)\.[a-z.]+$/i;
 const CTR = [0.3, 0.15, 0.1, 0.07, 0.05, 0.04, 0.03, 0.025, 0.02, 0.015];
-const UA = 'Mozilla/5.0 (compatible; SEOWatchdog/0.1)';
+export const UA = 'Mozilla/5.0 (compatible; SEOWatchdog/0.1)';
 
 /** Network/LLM calls discover() makes; tests swap them for fakes. */
 export type Deps = { askJson: typeof askJson; search: typeof search; fetchRaw: typeof fetchRaw; topQueries: typeof topQueries };
@@ -262,6 +263,10 @@ export async function discover(db: DatabaseSync, site: Site, log = (_: string) =
     directories: directories.length, activated, usage: u, cost_usd: costUsd(u) };
   db.prepare('UPDATE discoveries SET stats_json = ? WHERE id = ?').run(JSON.stringify(stats), discId);
   db.exec('COMMIT');
+  if (!deps.askJson && !deps.search) {
+    try { await collectSerpPages(db, site, { log }); }
+    catch (e) { log(`SERP page collection failed: ${(e as Error).message}`); }
+  }
   return { discoveryId: discId, profile, stats };
 }
 

@@ -6,6 +6,7 @@ import { setPriority } from 'node:os';
 import { openDb, findSite, addSite, type Site } from './db.ts';
 import { runSite } from './crawl.ts';
 import { alertText, sendAlert } from './alert.ts';
+import { collectSerpPages } from './serppages.ts';
 
 const HELP = `seo-watchdog <command>
 
@@ -19,6 +20,7 @@ const HELP = `seo-watchdog <command>
   changes <site> [--run <id>]   change events from a run (default: latest)
   gsc <site> <key.json>     connect Search Console (service-account key) for real keyword demand
   discover <site>           find the site's top competitors (needs ANTHROPIC_API_KEY; SERPER_API_KEY optional)
+  serp-pages <site>         fetch the pages Google ranks above the site, for How to win
   competitors <site>        list discovered competitors and alternatives
   serve [port]              localhost dashboard (default http://127.0.0.1:4321); also runs the agent scheduler
   agent <name> <site>       run one agent now and wait (crawl|collect|analyst|researcher|writer|fixer)
@@ -105,6 +107,10 @@ switch (cmd) {
     const prop = await findProperty(key, s.url).catch((e) => die(e.message));
     db.prepare('UPDATE sites SET gsc_key = ?, gsc_property = ? WHERE id = ?').run(key, prop, s.id);
     console.log(`connected ${s.url} → Search Console property ${prop}`);
+    break;
+  }
+  case 'serp-pages': {
+    console.log(await collectSerpPages(db, site(arg), { log: console.log }));
     break;
   }
   case 'discover': {

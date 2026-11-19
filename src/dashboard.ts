@@ -290,7 +290,7 @@ function winTab(db: DatabaseSync, site: Site): Html {
       ${b.keywords.map((k) => h`<tr><td>${k.query}</td>
         <td>${k.ownRank ? h`<a href="${safeHref(k.ownUrl!)}" target="_blank" rel="noopener">#${k.ownRank}</a>` : h`<span class="muted">not in top 10</span>`}</td>
         <td class="small">${k.gsc ? `${k.gsc.impressions} views · ${k.gsc.clicks} clicks · avg #${k.gsc.position}` : h`<span class="muted">no data</span>`}</td>
-        <td class="small">${k.ownRank === 1 ? chip('good', 'Nobody') : k.above.slice(0, 3).map((a, i) => h`${i ? ', ' : ''}<a href="${safeHref(a.url)}" target="_blank" rel="noopener">${a.watched ? h`<b>${uni(a.domain)}</b>` : uni(a.domain)}</a> #${a.rank}`)}</td></tr>`)}
+        <td class="small">${k.ownRank === 1 ? chip('good', 'Nobody') : k.above.slice(0, 3).map((a, i) => h`${i ? ', ' : ''}<a href="${safeHref(a.url)}" target="_blank" rel="noopener">${(a.watched || a.fetched) ? h`<b>${uni(a.domain)}</b>` : uni(a.domain)}</a> #${a.rank}`)}</td></tr>`)}
     </tbody></table><p class="muted small">Positions count each website once. Bold = a competitor you watch, so its page can be compared with yours.</p></div>
     ${b.reviews ? h`<h2>Google Maps reviews</h2><div class="card"><table><thead><tr><th>Business</th><th class="num">Rating</th><th class="num">Reviews</th></tr></thead><tbody>
       <tr><td><b>You</b></td><td class="num">${b.reviews.own?.rating ?? '—'}</td><td class="num">${b.reviews.own ? (b.reviews.own.reviews ?? 0) : 'not shown'}</td></tr>
