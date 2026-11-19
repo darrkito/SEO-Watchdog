@@ -80,8 +80,16 @@ export function rivalBattle(db: DatabaseSync, site: Site): RivalBattle | null {
     if (group) { group.theirs++; group.service ||= service; }
     else groups.set(key, { title, url: p.url, domain, theirs: 1, sig, service, fix: `Create a page for “${title}” with useful, distinct details about your offering.` });
   }
-  const ownVocab = new Set(ownTerms.flat());
-  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && g.sig.some((w) => ownVocab.has(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
+  // Only what the business really offers (its editable profile services), minus generic modifiers: "Dormitorios Móviles" must not match "Oficinas Móviles" just on "móviles".
+  let offer = new Set<string>();
+  try {
+    const prof = db.prepare('SELECT data_json FROM site_profiles WHERE site_id = ?').get(site.id) as { data_json: string } | undefined;
+    const d = prof ? JSON.parse(prof.data_json) as { services?: string[]; industry?: string; city?: string; region?: string } : {};
+    const generic = new Set(terms('renta alquiler venta servicio servicios móvil móviles portátil portátiles para obra obras temporal temporales equipada equipado con clima disponible guadalajara zapopan jalisco méxico mexico ciudad'));
+    offer = new Set(terms([...(d.services ?? []), d.industry ?? ''].join(' ')).filter((w) => !generic.has(w) && !terms(`${d.city ?? ''} ${d.region ?? ''}`).includes(w)));
+  } catch { /* fall back to the site's own vocabulary below */ }
+  const ownVocab = offer.size ? offer : new Set(ownTerms.flat());
+  const rivalOnly = [...groups.values()].filter((g) => (g.theirs >= 2 || g.service) && terms(g.title).some((w) => ownVocab.has(w)) && !ownTerms.some((o) => g.sig.every((w) => o.includes(w)) || matchScore(o, g.sig) >= 0.35)).sort((a, b) => b.theirs - a.theirs).slice(0, 12).map(({ sig: _, service: _service, ...g }) => g);
   return { rows: rows.sort((a, b) => b.score - a.score).slice(0, 15), rivalOnly, rivals };
 }
 export type KeywordRow = {

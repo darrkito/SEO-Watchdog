@@ -48,3 +48,19 @@ test('returns null without a successful own run', () => {
   assert.equal(rivalBattle(db, site), null);
   db.close();
 });
+
+test('pages you lack only cover services in the site profile', () => {
+  const { db, site, run, page, rival } = fixture();
+  db.exec("CREATE TABLE IF NOT EXISTS site_profiles (site_id INTEGER PRIMARY KEY, data_json TEXT NOT NULL, source TEXT, updated_at TEXT)");
+  db.prepare("INSERT INTO site_profiles VALUES (?, ?, 'user', '')").run(site.id, JSON.stringify({ services: ['Renta de oficinas móviles'], industry: 'Renta de oficinas móviles para obra', city: 'Zapopan', region: 'Jalisco' }));
+  run(1, 1); run(2, 2);
+  rival('rival.test', 2);
+  page(1, 1, 'https://own.test/', 'Inicio', 'Vexon', 200);
+  page(2, 2, 'https://rival.test/dormitorios', 'Dormitorios Móviles', 'Dormitorios Móviles', 200);
+  page(3, 2, 'https://rival.test/plantas', 'Plantas de tratamiento', 'Plantas de tratamiento', 200);
+  page(4, 2, 'https://rival.test/oficina-12x60', 'Renta de oficina de obra 12x60', 'Renta de oficina de obra 12x60', 200);
+  page(5, 2, 'https://rival.test/oficina-8x20', 'Oficina de obra 8x20', 'Oficina de obra 8x20', 200);
+  const result = rivalBattle(db, site)!;
+  assert.ok(result.rivalOnly.some((r) => r.title.includes('oficina de obra')));
+  assert.ok(!result.rivalOnly.some((r) => /Dormitorios|Plantas/.test(r.title)));
+});
